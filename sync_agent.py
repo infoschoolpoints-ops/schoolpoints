@@ -1,0 +1,170 @@
+"""
+Sync Agent (שלב A)
+
+מטרת הקובץ: לספק בסיס לסנכרון עתידי (לא מופעל אוטומטית).
+אין שינוי בעמדות פעילות. אפשר להריץ ידנית בעתיד.
+"""
+import json
+import os
+import time
+import sqlite3
+import urllib.request
+from typing import List, Dict, Any, Optional
+
+try:
+    from database import Database
+except Exception:
+    Database = None
+
+
+DEFAULT_PUSH_URL = ""
+DEFAULT_BATCH_SIZE = 200
+
+
+def _connect(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _load_config(base_dir: str) -> Dict[str, Any]:
+    cfg_path = os.path.join(base_dir, 'config.json')
+    if os.path.exists(cfg_path):
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                return json.load(f) or {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _default_db_path(base_dir: str, cfg: Dict[str, Any]) -> str:
+    try:
+        if cfg.get('db_path'):
+            return str(cfg.get('db_path'))
+        shared = cfg.get('shared_folder') or cfg.get('network_root')
+        if shared:
+            return os.path.join(shared, 'school_points.db')
+    except Exception:
+        pass
+    return os.path.join(base_dir, 'school_points.db')
+
+
+def _resolve_db_path(base_dir: str, cfg: Dict[str, Any]) -> str:
+    if Database is not None:
+        try:
+            db = Database()
+            if getattr(db, 'db_path', None):
+                return str(db.db_path)
+        except Exception:
+            pass
+    return _default_db_path(base_dir, cfg)
+
+
+def _ensure_change_log(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS change_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                action_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                synced_at TIMESTAMP
+            )
+            '''
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def fetch_pending_changes(conn: sqlite3.Connection, limit: int = DEFAULT_BATCH_SIZE) -> List[Dict[str, Any]]:
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT id, entity_type, entity_id, action_type, payload_json, created_at
+            FROM change_log
+            WHERE synced_at IS NULL
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (int(limit),)
+        )
+        rows = cur.fetchall() or []
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        _ensure_change_log(conn)
+        return []
+
+
+def mark_changes_synced(conn: sqlite3.Connection, ids: List[int]) -> None:
+    if not ids:
+        return
+    cur = conn.cursor()
+    cur.execute(
+        f"UPDATE change_log SET synced_at = CURRENT_TIMESTAMP WHERE id IN ({','.join(['?'] * len(ids))})",
+        [int(x) for x in ids]
+    )
+    conn.commit()
+
+
+def push_changes(push_url: str, changes: List[Dict[str, Any]], *, api_key: str = '', tenant_id: str = '', station_id: str = '') -> bool:
+    if not push_url:
+        return False
+    payload = json.dumps({
+        'tenant_id': str(tenant_id or ''),
+        'station_id': str(station_id or ''),
+        'changes': changes
+    }, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(
+        push_url,
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            'api_key': str(api_key or '')
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            _ = resp.read()
+        return True
+    except Exception:
+        return False
+
+
+def run_once(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str = '', station_id: str = '', limit: int = DEFAULT_BATCH_SIZE) -> bool:
+    conn = _connect(db_path)
+    try:
+        changes = fetch_pending_changes(conn, limit=limit)
+        if not changes:
+            return True
+        ok = push_changes(push_url, changes, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+        if ok:
+            ids = [int(c.get('id') or 0) for c in changes if int(c.get('id') or 0) > 0]
+            mark_changes_synced(conn, ids)
+        return ok
+    finally:
+        conn.close()
+
+
+def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: Optional[str] = None) -> None:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cfg = _load_config(base_dir)
+    db_path = db_path or _resolve_db_path(base_dir, cfg)
+    push_url = push_url or str(cfg.get('sync_push_url') or DEFAULT_PUSH_URL).strip()
+    api_key = str(cfg.get('sync_api_key') or '').strip()
+    tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
+    station_id = str(cfg.get('sync_station_id') or '').strip()
+
+    while True:
+        run_once(db_path, push_url, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+        time.sleep(max(5, int(interval_sec)))
+
+
+if __name__ == '__main__':
+    main_loop()
