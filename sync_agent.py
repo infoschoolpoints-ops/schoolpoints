@@ -9,6 +9,7 @@ import os
 import time
 import sqlite3
 import urllib.request
+import urllib.error
 from typing import List, Dict, Any, Optional
 
 try:
@@ -133,7 +134,15 @@ def push_changes(push_url: str, changes: List[Dict[str, Any]], *, api_key: str =
         with urllib.request.urlopen(req, timeout=10) as resp:
             _ = resp.read()
         return True
-    except Exception:
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode('utf-8', errors='ignore')
+        except Exception:
+            body = ''
+        print(f"[SYNC] HTTP {exc.code}: {body}")
+        return False
+    except Exception as exc:
+        print(f"[SYNC] Request error: {exc}")
         return False
 
 
