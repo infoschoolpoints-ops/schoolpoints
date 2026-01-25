@@ -142,11 +142,15 @@ def run_once(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str =
     try:
         changes = fetch_pending_changes(conn, limit=limit)
         if not changes:
+            print('[SYNC] No changes to send')
             return True
         ok = push_changes(push_url, changes, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
         if ok:
+            print(f"[SYNC] Sent {len(changes)} change(s) OK")
             ids = [int(c.get('id') or 0) for c in changes if int(c.get('id') or 0) > 0]
             mark_changes_synced(conn, ids)
+        else:
+            print(f"[SYNC] Failed to send {len(changes)} change(s)")
         return ok
     finally:
         conn.close()
