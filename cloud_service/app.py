@@ -5,6 +5,7 @@ Run locally:
   uvicorn cloud_service.app:app --host 0.0.0.0 --port 8000
 """
 from typing import Dict, Any, List
+import os
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
@@ -29,8 +30,9 @@ class SyncPushRequest(BaseModel):
 @app.post("/sync/push")
 def sync_push(payload: SyncPushRequest, api_key: str = Header(default="")) -> Dict[str, Any]:
     # TODO: replace with real auth + DB persistence
-    if not api_key:
-        raise HTTPException(status_code=401, detail="missing api_key")
+    expected_key = str(os.getenv('SYNC_API_KEY') or '').strip()
+    if expected_key and api_key != expected_key:
+        raise HTTPException(status_code=401, detail="invalid api_key")
     if not payload.tenant_id:
         raise HTTPException(status_code=400, detail="missing tenant_id")
 
