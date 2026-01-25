@@ -93,8 +93,24 @@ def sync_push(payload: SyncPushRequest, api_key: str = Header(default="")) -> Di
     )
     row = cur.fetchone()
     if not row:
-        conn.close()
-        raise HTTPException(status_code=401, detail="invalid api_key")
+        allow_auto = str(os.getenv('AUTO_CREATE_TENANT') or '').strip() == '1'
+        if allow_auto:
+            try:
+                cur.execute(
+                    'INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)',
+                    (payload.tenant_id, payload.tenant_id, api_key)
+                )
+                conn.commit()
+                cur.execute(
+                    'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+                    (payload.tenant_id, api_key)
+                )
+                row = cur.fetchone()
+            except sqlite3.IntegrityError:
+                row = None
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=401, detail="invalid api_key")
 
     for ch in payload.changes:
         cur.execute(
