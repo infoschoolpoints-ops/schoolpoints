@@ -1,0 +1,10 @@
+# חבילות Python נדרשות למערכת ניקוד בית ספר
+# להתקנה: python -m pip install -r requirements.txt
+
+pandas>=2.0.0      # עיבוד נתונים וקריאת Excel
+openpyxl>=3.1.0    # קריאה/כתיבה של קבצי Excel
+Pillow>=10.0.0     # טעינת תמונות (לוגו)
+pyluach>=2.3.0
+python-bidi>=0.4.2
+pyserial>=3.5      # תקשורת עם מסך לקוח (VeriFone MX980L)
+python-multipart>=0.0.7
