@@ -26,7 +26,8 @@ app = FastAPI(title="SchoolPoints Sync")
 def root() -> Response:
     return RedirectResponse(url="/web/login", status_code=302)
 
-APP_BUILD_TAG = "2026-01-27-root-redirect-health"
+APP_BUILD_TAG = "2026-01-27-sync-status-api-key-header"
+ 
 
 
 @app.get("/health", include_in_schema=False)
@@ -443,6 +444,16 @@ def _make_event_id(station_id: str | None, local_id: int | None, created_at: str
     return f"{sid}:{secrets.token_hex(8)}"
 
 
+def _get_api_key(request: Request, api_key: str) -> str:
+    if api_key:
+        return str(api_key)
+    try:
+        # accept both conventions
+        return str(request.headers.get('api_key') or request.headers.get('api-key') or '')
+    except Exception:
+        return ''
+
+
 def _apply_change_to_tenant_db(tconn: sqlite3.Connection, ch: ChangeItem) -> None:
     et = str(ch.entity_type or '').strip()
     at = str(ch.action_type or '').strip()
@@ -511,9 +522,10 @@ def _apply_change_to_tenant_db(tconn: sqlite3.Connection, ch: ChangeItem) -> Non
 
 
 @app.post("/sync/push")
-def sync_push(payload: SyncPushRequest, api_key: str = Header(default="")) -> Dict[str, Any]:
+def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
     if not payload.tenant_id:
         raise HTTPException(status_code=400, detail="missing tenant_id")
+    api_key = _get_api_key(request, api_key).strip()
     if not api_key:
         raise HTTPException(status_code=401, detail="missing api_key")
 
@@ -682,9 +694,10 @@ def _replace_rows(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any
 
 
 @app.post("/sync/snapshot")
-def sync_snapshot(payload: SnapshotPayload, api_key: str = Header(default="")) -> Dict[str, Any]:
+def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
     if not payload.tenant_id:
         raise HTTPException(status_code=400, detail="missing tenant_id")
+    api_key = _get_api_key(request, api_key).strip()
     if not api_key:
         raise HTTPException(status_code=401, detail="missing api_key")
 
@@ -745,9 +758,10 @@ def _scalar_or_none(cur: sqlite3.Cursor) -> Any:
 
 
 @app.get('/sync/status')
-def sync_status(tenant_id: str, api_key: str = Header(default="")) -> Dict[str, Any]:
+def sync_status(tenant_id: str, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
     if not tenant_id:
         raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = _get_api_key(request, api_key).strip()
     if not api_key:
         raise HTTPException(status_code=401, detail='missing api_key')
 

@@ -271,7 +271,7 @@ if __name__ == '__main__':
     base_dir = os.path.dirname(os.path.abspath(__file__))
     cfg = _load_config(base_dir)
     db_path = args.db_path or _resolve_db_path(base_dir, cfg)
-    api_key = str(cfg.get('sync_api_key') or '').strip()
+    api_key = str(cfg.get('sync_api_key') or cfg.get('api_key') or cfg.get('sync_key') or '').strip()
     tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
     station_id = str(cfg.get('sync_station_id') or '').strip()
 
