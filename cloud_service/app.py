@@ -492,68 +492,79 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
     if USE_POSTGRES:
         schema = _tenant_schema(tenant_id)
         conn = _db()
-        cur = conn.cursor()
-        cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
-        cur.execute(
-            f'''
-            CREATE TABLE IF NOT EXISTS "{schema}".teachers (
-                id BIGINT PRIMARY KEY,
-                name TEXT,
-                card_number TEXT,
-                card_number2 TEXT,
-                card_number3 TEXT,
-                is_admin INTEGER DEFAULT 0,
-                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+        try:
+            cur = conn.cursor()
+            cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".teachers (
+                    id BIGINT PRIMARY KEY,
+                    name TEXT,
+                    card_number TEXT,
+                    card_number2 TEXT,
+                    card_number3 TEXT,
+                    is_admin INTEGER DEFAULT 0,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            f'''
-            CREATE TABLE IF NOT EXISTS "{schema}".students (
-                id BIGINT PRIMARY KEY,
-                first_name TEXT,
-                last_name TEXT,
-                class_name TEXT,
-                points INTEGER DEFAULT 0,
-                card_number TEXT,
-                id_number TEXT,
-                serial_number BIGINT,
-                photo_number BIGINT,
-                private_message TEXT,
-                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".students (
+                    id BIGINT PRIMARY KEY,
+                    first_name TEXT,
+                    last_name TEXT,
+                    class_name TEXT,
+                    points INTEGER DEFAULT 0,
+                    card_number TEXT,
+                    id_number TEXT,
+                    serial_number BIGINT,
+                    photo_number BIGINT,
+                    private_message TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            f'''
-            CREATE TABLE IF NOT EXISTS "{schema}".settings (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".settings (
+                    "key" TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            f'''
-            CREATE TABLE IF NOT EXISTS "{schema}".points_log (
-                id BIGSERIAL PRIMARY KEY,
-                student_id BIGINT,
-                old_points INTEGER,
-                new_points INTEGER,
-                delta INTEGER,
-                reason TEXT,
-                actor_name TEXT,
-                action_type TEXT,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".points_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    student_id BIGINT,
+                    old_points INTEGER,
+                    new_points INTEGER,
+                    delta INTEGER,
+                    reason TEXT,
+                    actor_name TEXT,
+                    action_type TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        conn.commit()
-        conn.close()
-        return schema
+            conn.commit()
+            return schema
+        except Exception as e:
+            try:
+                print(f"[TENANT-DB] ensure failed tenant={tenant_id} schema={schema}: {e}", file=sys.stderr)
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     dst = _tenant_school_db_path(tenant_id)
     if os.path.isfile(dst):
@@ -694,14 +705,12 @@ def _get_api_key(request: Request, api_key: str) -> str:
         return ''
 
 
-def _apply_change_to_tenant_db(tconn, ch: ChangeItem) -> None:
+def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
     et = str(ch.entity_type or '').strip()
     at = str(ch.action_type or '').strip()
     payload = {}
     try:
         payload = json.loads(ch.payload_json or '{}') if (ch.payload_json is not None) else {}
-        if payload is None:
-            payload = {}
     except Exception:
         payload = {}
 
@@ -745,9 +754,9 @@ def _apply_change_to_tenant_db(tconn, ch: ChangeItem) -> None:
             pass
         return
 
-    if et == 'setting' and at == 'update':
-        key = _safe_str(payload.get('key') or ch.entity_id or '').strip()
-        value = _safe_str(payload.get('value') or '').strip()
+    if et == 'setting':
+        key = _safe_str(payload.get('key') or payload.get('name') or payload.get('setting') or '').strip()
+        value = _safe_str(payload.get('value') or payload.get('val') or '').strip()
         if not key:
             return
         cur = tconn.cursor()
@@ -755,17 +764,17 @@ def _apply_change_to_tenant_db(tconn, ch: ChangeItem) -> None:
             cur.execute(
                 _sql_placeholder(
                     '''
-                    INSERT INTO settings (key, value) VALUES (?, ?)
-                    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
+                    INSERT INTO settings ("key", value) VALUES (?, ?)
+                    ON CONFLICT("key") DO UPDATE SET value = EXCLUDED.value
                     '''
                 ),
                 (key, value)
             )
         except Exception:
             try:
-                cur.execute(_sql_placeholder('UPDATE settings SET value = ? WHERE key = ?'), (value, key))
+                cur.execute(_sql_placeholder('UPDATE settings SET value = ? WHERE "key" = ?'), (value, key))
                 if cur.rowcount == 0:
-                    cur.execute(_sql_placeholder('INSERT INTO settings (key, value) VALUES (?, ?)'), (key, value))
+                    cur.execute(_sql_placeholder('INSERT INTO settings ("key", value) VALUES (?, ?)'), (key, value))
             except Exception:
                 pass
         return
@@ -1021,7 +1030,14 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
             raise HTTPException(status_code=401, detail="invalid api_key")
     conn.close()
 
-    tconn = _tenant_school_db(payload.tenant_id)
+    try:
+        tconn = _tenant_school_db(payload.tenant_id)
+    except Exception as e:
+        try:
+            print(f"[SNAPSHOT] open tenant db failed tenant={payload.tenant_id}: {e}", file=sys.stderr)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"snapshot failed: cannot open tenant db: {e}")
     try:
         _begin_tenant_write(tconn)
         teachers_n = 0
@@ -1436,8 +1452,17 @@ def web_institution_login(
 
     try:
         _ensure_tenant_db_exists(tenant_id.strip())
-    except Exception:
-        body = "<h2>שגיאת מערכת</h2><p>לא ניתן ליצור/לפתוח את מסד הנתונים של המוסד.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">חזרה</a></div>"
+    except Exception as e:
+        try:
+            print(f"[WEB] open tenant db failed tenant={tenant_id.strip()}: {e}", file=sys.stderr)
+        except Exception:
+            pass
+        body = (
+            "<h2>שגיאת מערכת</h2>"
+            "<p>לא ניתן ליצור/לפתוח את מסד הנתונים של המוסד.</p>"
+            "<pre style=\"white-space:pre-wrap;direction:ltr\">" + _safe_str(e) + "</pre>"
+            "<div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">חזרה</a></div>"
+        )
         return HTMLResponse(_public_web_shell("כניסה למערכת", body))
 
     response = RedirectResponse(url="/web/teacher-login", status_code=302)
