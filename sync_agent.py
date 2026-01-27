@@ -260,6 +260,7 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description='SchoolPoints Sync Agent')
     p.add_argument('--once', action='store_true', help='Run one change-log push iteration and exit')
     p.add_argument('--snapshot', action='store_true', help='Send a full snapshot (teachers+students) and exit')
+    p.add_argument('--interval-sec', default=60, type=int, help='Sync loop interval in seconds (default: 60)')
     p.add_argument('--db-path', default=None, help='Override DB path')
     p.add_argument('--push-url', default=None, help='Override push URL (/sync/push)')
     p.add_argument('--snapshot-url', default=None, help='Override snapshot URL (/sync/snapshot)')
@@ -294,4 +295,4 @@ if __name__ == '__main__':
         ok = run_once(db_path, push_url, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
         print('[SYNC] OK' if ok else '[SYNC] FAILED')
     else:
-        main_loop()
+        main_loop(interval_sec=max(5, int(args.interval_sec or 60)))
