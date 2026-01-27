@@ -10,6 +10,7 @@ import time
 import sqlite3
 import urllib.request
 import urllib.error
+import argparse
 from typing import List, Dict, Any, Optional
 
 try:
@@ -146,6 +147,82 @@ def push_changes(push_url: str, changes: List[Dict[str, Any]], *, api_key: str =
         return False
 
 
+def _fetch_all(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> List[Dict[str, Any]]:
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    rows = cur.fetchall() or []
+    return [dict(r) for r in rows]
+
+
+def build_snapshot(conn: sqlite3.Connection) -> Dict[str, Any]:
+    teachers = []
+    students = []
+    try:
+        teachers = _fetch_all(
+            conn,
+            """
+            SELECT id, name, card_number, card_number2, card_number3, is_admin,
+                   can_edit_student_card, can_edit_student_photo,
+                   bonus_max_points_per_student, bonus_max_total_runs, bonus_runs_used,
+                   bonus_runs_reset_date, bonus_points_used, bonus_points_reset_date,
+                   created_at, updated_at
+              FROM teachers
+            ORDER BY id ASC
+            """
+        )
+    except Exception:
+        teachers = []
+    try:
+        students = _fetch_all(
+            conn,
+            """
+            SELECT id, serial_number, last_name, first_name, class_name, points, card_number,
+                   id_number, photo_number, private_message, created_at, updated_at
+              FROM students
+            ORDER BY id ASC
+            """
+        )
+    except Exception:
+        students = []
+    return {
+        'teachers': teachers,
+        'students': students,
+    }
+
+
+def push_snapshot(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str = '', tenant_id: str = '', station_id: str = '') -> bool:
+    if not snapshot_url:
+        return False
+    payload = json.dumps({
+        'tenant_id': str(tenant_id or ''),
+        'station_id': str(station_id or ''),
+        'teachers': snapshot.get('teachers') or [],
+        'students': snapshot.get('students') or [],
+    }, ensure_ascii=False).encode('utf-8')
+    req = urllib.request.Request(
+        snapshot_url,
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            'api_key': str(api_key or '')
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            _ = resp.read()
+        return True
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode('utf-8', errors='ignore')
+        except Exception:
+            body = ''
+        print(f"[SNAPSHOT] HTTP {exc.code}: {body}")
+        return False
+    except Exception as exc:
+        print(f"[SNAPSHOT] Request error: {exc}")
+        return False
+
+
 def run_once(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str = '', station_id: str = '', limit: int = DEFAULT_BATCH_SIZE) -> bool:
     conn = _connect(db_path)
     try:
@@ -179,5 +256,42 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         time.sleep(max(5, int(interval_sec)))
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description='SchoolPoints Sync Agent')
+    p.add_argument('--once', action='store_true', help='Run one change-log push iteration and exit')
+    p.add_argument('--snapshot', action='store_true', help='Send a full snapshot (teachers+students) and exit')
+    p.add_argument('--db-path', default=None, help='Override DB path')
+    p.add_argument('--push-url', default=None, help='Override push URL (/sync/push)')
+    p.add_argument('--snapshot-url', default=None, help='Override snapshot URL (/sync/snapshot)')
+    return p.parse_args()
+
+
 if __name__ == '__main__':
-    main_loop()
+    args = _parse_args()
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    cfg = _load_config(base_dir)
+    db_path = args.db_path or _resolve_db_path(base_dir, cfg)
+    api_key = str(cfg.get('sync_api_key') or '').strip()
+    tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
+    station_id = str(cfg.get('sync_station_id') or '').strip()
+
+    if args.snapshot:
+        snapshot_url = args.snapshot_url or str(cfg.get('sync_snapshot_url') or '').strip()
+        if not snapshot_url:
+            base = str(cfg.get('sync_push_url') or '').strip()
+            if base.endswith('/sync/push'):
+                snapshot_url = base[:-len('/sync/push')] + '/sync/snapshot'
+        conn = _connect(db_path)
+        try:
+            snap = build_snapshot(conn)
+        finally:
+            conn.close()
+        print(f"[SNAPSHOT] Teachers: {len(snap.get('teachers') or [])} | Students: {len(snap.get('students') or [])}")
+        ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+        print('[SNAPSHOT] OK' if ok else '[SNAPSHOT] FAILED')
+    elif args.once:
+        push_url = args.push_url or str(cfg.get('sync_push_url') or DEFAULT_PUSH_URL).strip()
+        ok = run_once(db_path, push_url, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+        print('[SYNC] OK' if ok else '[SYNC] FAILED')
+    else:
+        main_loop()

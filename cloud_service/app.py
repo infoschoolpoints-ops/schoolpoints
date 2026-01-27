@@ -179,8 +179,16 @@ def web_build() -> Dict[str, Any]:
 
 
 def _read_text_file(path: str) -> str:
+    if not path or not os.path.isfile(path):
+        return ""
+    for enc in ("utf-8", "utf-8-sig", "cp1255", "windows-1255", "latin-1"):
+        try:
+            with open(path, 'r', encoding=enc) as f:
+                return f.read()
+        except Exception:
+            continue
     try:
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             return f.read()
     except Exception:
         return ""
@@ -194,6 +202,7 @@ def _public_web_shell(title: str, body_html: str) -> str:
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>{title}</title>
+      <link rel="icon" href="/web/assets/icons/public.png" />
       <style>
         :root {{ --navy:#2f3e4e; --mint:#1abc9c; --sky:#3498db; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
         body {{ margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction: rtl; }}
@@ -253,6 +262,25 @@ def _init_db() -> None:
             payload_json TEXT,
             created_at TEXT,
             received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS sync_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL,
+            event_id TEXT NOT NULL,
+            station_id TEXT,
+            change_local_id INTEGER,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT,
+            action_type TEXT NOT NULL,
+            payload_json TEXT,
+            created_at TEXT,
+            received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(tenant_id, event_id)
         )
         '''
     )
@@ -383,6 +411,105 @@ class SyncPushRequest(BaseModel):
     changes: List[ChangeItem]
 
 
+class SnapshotPayload(BaseModel):
+    tenant_id: str
+    station_id: str | None = None
+    teachers: List[Dict[str, Any]] = []
+    students: List[Dict[str, Any]] = []
+
+
+def _safe_int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def _safe_str(v: Any) -> str:
+    try:
+        return str(v)
+    except Exception:
+        return ''
+
+
+def _make_event_id(station_id: str | None, local_id: int | None, created_at: str | None) -> str:
+    sid = _safe_str(station_id).strip() or 'unknown'
+    lid = _safe_int(local_id, 0)
+    ca = _safe_str(created_at).strip()
+    if lid:
+        return f"{sid}:{lid}"
+    if ca:
+        return f"{sid}:{ca}"
+    return f"{sid}:{secrets.token_hex(8)}"
+
+
+def _apply_change_to_tenant_db(tconn: sqlite3.Connection, ch: ChangeItem) -> None:
+    et = str(ch.entity_type or '').strip()
+    at = str(ch.action_type or '').strip()
+    payload = {}
+    try:
+        payload = json.loads(ch.payload_json or '{}') if (ch.payload_json is not None) else {}
+        if payload is None:
+            payload = {}
+    except Exception:
+        payload = {}
+
+    if et == 'student_points' and at == 'update':
+        student_id = _safe_int(ch.entity_id, 0)
+        if student_id <= 0:
+            return
+        old_points = _safe_int(payload.get('old_points'), 0)
+        new_points = _safe_int(payload.get('new_points'), 0)
+        delta = int(new_points - old_points)
+        reason = _safe_str(payload.get('reason') or '').strip()
+
+        cur = tconn.cursor()
+        cur.execute('SELECT points FROM students WHERE id = ? LIMIT 1', (student_id,))
+        row = cur.fetchone()
+        if not row:
+            return
+        cur_points = _safe_int(row[0] if not isinstance(row, sqlite3.Row) else row['points'], 0)
+        final_points = int(cur_points + delta)
+        cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (final_points, student_id))
+        try:
+            cur.execute(
+                '''
+                INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (int(student_id), int(cur_points), int(final_points), int(delta), reason, 'sync', 'sync')
+            )
+        except Exception:
+            pass
+        return
+
+    if et == 'setting' and at == 'update':
+        key = _safe_str(payload.get('key') or ch.entity_id or '').strip()
+        value = _safe_str(payload.get('value') or '').strip()
+        if not key:
+            return
+        cur = tconn.cursor()
+        try:
+            cur.execute(
+                '''
+                INSERT INTO settings (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                ''',
+                (key, value)
+            )
+        except Exception:
+            try:
+                cur.execute('UPDATE settings SET value = ? WHERE key = ?', (value, key))
+                if cur.rowcount == 0:
+                    cur.execute('INSERT INTO settings (key, value) VALUES (?, ?)', (key, value))
+            except Exception:
+                pass
+        return
+
+    # other entities are recorded as raw changes only (no apply yet)
+    return
+
+
 @app.post("/sync/push")
 def sync_push(payload: SyncPushRequest, api_key: str = Header(default="")) -> Dict[str, Any]:
     if not payload.tenant_id:
@@ -417,31 +544,190 @@ def sync_push(payload: SyncPushRequest, api_key: str = Header(default="")) -> Di
             conn.close()
             raise HTTPException(status_code=401, detail="invalid api_key")
 
-    for ch in payload.changes:
-        cur.execute(
-            '''
-            INSERT INTO changes (tenant_id, station_id, entity_type, entity_id, action_type, payload_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                payload.tenant_id,
-                payload.station_id,
-                ch.entity_type,
-                ch.entity_id,
-                ch.action_type,
-                ch.payload_json,
-                ch.created_at
-            )
-        )
-    conn.commit()
-    conn.close()
+    applied = 0
+    skipped = 0
+    errors = 0
 
-    # placeholder behavior
+    tconn = _tenant_school_db(payload.tenant_id)
+    try:
+        tconn.execute('BEGIN IMMEDIATE')
+
+        for ch in payload.changes:
+            # always record raw change
+            cur.execute(
+                '''
+                INSERT INTO changes (tenant_id, station_id, entity_type, entity_id, action_type, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    payload.tenant_id,
+                    payload.station_id,
+                    ch.entity_type,
+                    ch.entity_id,
+                    ch.action_type,
+                    ch.payload_json,
+                    ch.created_at
+                )
+            )
+
+            event_id = _make_event_id(payload.station_id, ch.id, ch.created_at)
+            try:
+                cur.execute(
+                    '''
+                    INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        payload.tenant_id,
+                        event_id,
+                        payload.station_id,
+                        int(ch.id or 0),
+                        ch.entity_type,
+                        ch.entity_id,
+                        ch.action_type,
+                        ch.payload_json,
+                        ch.created_at,
+                    )
+                )
+            except sqlite3.IntegrityError:
+                skipped += 1
+                continue
+            except Exception:
+                errors += 1
+                continue
+
+            try:
+                _apply_change_to_tenant_db(tconn, ch)
+                applied += 1
+            except Exception:
+                errors += 1
+
+        conn.commit()
+        tconn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            tconn.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"sync push failed: {e}")
+    finally:
+        conn.close()
+        tconn.close()
+
     return {
         "ok": True,
         "received": len(payload.changes),
+        "applied": applied,
+        "skipped": skipped,
+        "errors": errors,
         "tenant_id": payload.tenant_id,
         "station_id": payload.station_id,
+    }
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
+    cur = conn.cursor()
+    cur.execute(f"PRAGMA table_info({table})")
+    rows = cur.fetchall() or []
+    cols = []
+    for r in rows:
+        try:
+            cols.append(str(r[1]))
+        except Exception:
+            try:
+                cols.append(str(r['name']))
+            except Exception:
+                pass
+    return cols
+
+
+def _replace_rows(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any]]) -> int:
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM {table}")
+    if not rows:
+        return 0
+
+    cols = _table_columns(conn, table)
+    if not cols:
+        return 0
+
+    allowed = set(cols)
+    allowed.discard('id')
+    allowed.discard('created_at')
+    allowed.discard('updated_at')
+
+    insert_cols = []
+    for k in (rows[0] or {}).keys():
+        if k in allowed:
+            insert_cols.append(k)
+    if not insert_cols:
+        for k in cols:
+            if k in allowed:
+                insert_cols.append(k)
+    if not insert_cols:
+        return 0
+
+    placeholders = ','.join(['?'] * len(insert_cols))
+    sql = f"INSERT INTO {table} ({','.join(insert_cols)}) VALUES ({placeholders})"
+    values = []
+    for r in rows:
+        r = r or {}
+        values.append([r.get(c) for c in insert_cols])
+    cur.executemany(sql, values)
+    return int(len(values))
+
+
+@app.post("/sync/snapshot")
+def sync_snapshot(payload: SnapshotPayload, api_key: str = Header(default="")) -> Dict[str, Any]:
+    if not payload.tenant_id:
+        raise HTTPException(status_code=400, detail="missing tenant_id")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="missing api_key")
+
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+        (payload.tenant_id, api_key)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=401, detail="invalid api_key")
+
+    tconn = _tenant_school_db(payload.tenant_id)
+    try:
+        tconn.execute('BEGIN IMMEDIATE')
+        teachers_n = 0
+        students_n = 0
+        try:
+            teachers_n = _replace_rows(tconn, 'teachers', payload.teachers or [])
+        except Exception:
+            teachers_n = 0
+        try:
+            students_n = _replace_rows(tconn, 'students', payload.students or [])
+        except Exception:
+            students_n = 0
+        tconn.commit()
+    except Exception as e:
+        try:
+            tconn.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"snapshot failed: {e}")
+    finally:
+        tconn.close()
+
+    return {
+        'ok': True,
+        'tenant_id': payload.tenant_id,
+        'station_id': payload.station_id,
+        'teachers': teachers_n,
+        'students': students_n,
     }
 
 
@@ -503,6 +789,57 @@ def app_version() -> Dict[str, Any]:
     }
 
 
+@app.get("/web/equipment-required", response_class=HTMLResponse)
+def web_equipment_required() -> str:
+    path = os.path.join(ROOT_DIR, 'equipment_required.html')
+    html = _read_text_file(path)
+    if not html:
+        body = "<h2>רשימת ציוד נדרש</h2><p>העמוד עדיין לא זמין.</p>"
+        return _public_web_shell("רשימת ציוד נדרש", body)
+    html = str(html)
+    html = html.replace('src="equipment_required_files/', 'src="/web/assets/equipment_required_files/')
+    html = html.replace("src='equipment_required_files/", "src='/web/assets/equipment_required_files/")
+    if '</head>' in html:
+        html = html.replace('</head>', '<link rel="icon" href="/web/assets/icons/public.png" /></head>')
+    return html
+
+
+@app.get("/web/download", response_class=HTMLResponse)
+def web_download() -> str:
+    download_url = "https://drive.google.com/drive/folders/1jM8CpSPbO0avrmNLA3MBcCPXpdC0JGxc?usp=sharing"
+    body = f"""
+    <div style=\"text-align:center;\">
+      <div style=\"font-size:22px;font-weight:900;\">הורדת התוכנה</div>
+      <div style=\"margin-top:10px;line-height:1.8;\">ההתקנה נמצאת בתיקיית Google Drive.</div>
+      <div class=\"actionbar\" style=\"justify-content:center;\">
+        <a class=\"green\" href=\"{download_url}\" target=\"_blank\" rel=\"noopener\">להורדה</a>
+        <a class=\"blue\" href=\"/web/guide\">מדריך</a>
+        <a class=\"gray\" href=\"/web/login\">חזרה</a>
+      </div>
+      <div class=\"small\">build: {APP_BUILD_TAG}</div>
+    </div>
+    """
+    return _public_web_shell("הורדה", body)
+
+
+@app.get("/web/contact", response_class=HTMLResponse)
+def web_contact() -> str:
+    email = "info.schoolpoints@gmail.com"
+    body = f"""
+    <div style=\"text-align:center;\">
+      <div style=\"font-size:22px;font-weight:900;\">צור קשר</div>
+      <div style=\"margin-top:10px;line-height:1.8;\">ליצירת קשר: <a href=\"mailto:{email}\">{email}</a></div>
+      <div class=\"actionbar\" style=\"justify-content:center;\">
+        <a class=\"green\" href=\"mailto:{email}\">שליחת מייל</a>
+        <a class=\"blue\" href=\"/web/guide\">מדריך</a>
+        <a class=\"gray\" href=\"/web/login\">חזרה</a>
+      </div>
+      <div class=\"small\">build: {APP_BUILD_TAG}</div>
+    </div>
+    """
+    return _public_web_shell("צור קשר", body)
+
+
 @app.get("/web/assets/{asset_path:path}")
 def web_assets(asset_path: str) -> Response:
     safe_rel = str(asset_path or '').replace('\\', '/').lstrip('/').strip()
@@ -515,6 +852,18 @@ def web_assets(asset_path: str) -> Response:
         icon_path = os.path.join(ROOT_DIR, 'icons', icon_rel)
         if os.path.isfile(icon_path):
             return FileResponse(icon_path)
+        alt_icon_paths = [
+            os.path.join(ROOT_DIR, 'תמונות', 'להוראות', icon_rel),
+            os.path.join(ROOT_DIR, 'dist', 'SchoolPoints_Admin', '_internal', 'תמונות', 'להוראות', icon_rel),
+        ]
+        for p in alt_icon_paths:
+            if os.path.isfile(p):
+                return FileResponse(p)
+        raise HTTPException(status_code=404)
+    if safe_rel.startswith('equipment_required_files/'):
+        abs_path = os.path.join(ROOT_DIR, safe_rel)
+        if os.path.isfile(abs_path):
+            return FileResponse(abs_path)
         raise HTTPException(status_code=404)
     abs_path = os.path.join(ROOT_DIR, 'תמונות', safe_rel)
     if not os.path.isfile(abs_path):
@@ -524,6 +873,7 @@ def web_assets(asset_path: str) -> Response:
             'optimized_logo_method7.png',
             'user_logo_method7.png',
             'user_logo_minimal.png',
+            'לוגו אשראיכם.png',
         }
         if safe_rel in allowed_root_files:
             alt = os.path.join(ROOT_DIR, safe_rel)
@@ -540,21 +890,30 @@ def web_guide() -> str:
     if not html:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין בקובץ זה.</p>"
         return _public_web_shell("מדריך", body)
+    html = str(html)
+    html = html.replace('file:///C:/ProgramData/SchoolPoints/equipment_required.html', '/web/equipment-required')
+    html = html.replace('file:///C:/ProgramData/SchoolPoints/guide_user_embedded.html', '/web/guide')
     return html
 
 
 @app.get("/web/login", response_class=HTMLResponse)
 def web_login() -> str:
-    marketing_path = os.path.join(ROOT_DIR, 'תמונות', 'marketing_schoolpoints.html')
-    marketing = _read_text_file(marketing_path)
-    if marketing:
-        html = str(marketing)
-        html = html.replace('src="תמונות/', 'src="/web/assets/')
-        html = html.replace("src='תמונות/", "src='/web/assets/")
-        if '</body>' in html:
+    template_path = os.path.join(ROOT_DIR, '!DOCTYPE .html')
+    template = _read_text_file(template_path)
+    if template:
+        html = str(template)
+        html = html.replace('<div class="logo-placeholder">', '<div class="logo-placeholder"><img src="/web/assets/icons/public.png" alt="SchoolPoints" style="width:100%;height:100%;object-fit:contain;" />')
+        html = html.replace('🎓', '')
+        html = html.replace('<div class="subtitle">אשראיכם</div>', '<div style="display:flex;justify-content:center;margin:14px 0 6px;"><img src="/web/assets/לוגו%20אשראיכם.png" alt="אשראיכם" style="max-width:520px;width:min(78vw,520px);height:auto;filter:drop-shadow(0 10px 25px rgba(0,0,0,.25));" /></div>')
+        html = html.replace('background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);', 'background: radial-gradient(1200px 600px at 20% 10%, #1d4ed8 0%, rgba(29, 78, 216, 0) 55%), radial-gradient(900px 500px at 80% 20%, #7c3aed 0%, rgba(124, 58, 237, 0) 55%), linear-gradient(180deg, #0f172a 0%, #1e293b 100%);')
+        html = html.replace('<div class="english-title">SCHOOLPOINTS</div>', '<div class="english-title" style="font-size:18px; letter-spacing: 3px; opacity:.85;">SCHOOLPOINTS</div>')
+        html = html.replace('href="#" class="cta-button">צור קשר עכשיו</a>', 'href="/web/signin" class="cta-button">כניסה למערכת</a>')
+        if '</head>' in html:
+            html = html.replace('</head>', '<link rel="icon" href="/web/assets/icons/public.png" /></head>')
+        if '</section>' in html:
             html = html.replace(
-                '</body>',
-                f'<div style="max-width:1100px;margin:20px auto 40px;padding:0 16px;color:rgba(255,255,255,.7);font-size:12px;">build: {APP_BUILD_TAG}</div></body>'
+                '</section>\n\n    <!-- Features Section -->',
+                '</section>\n\n    <section class="cta" style="margin-top:40px;">\n        <div style="display:flex; gap:12px; justify-content:center; flex-wrap:wrap;">\n            <a href="/web/signin" class="cta-button">כניסה למערכת</a>\n            <a href="/web/guide" class="cta-button" style="background:rgba(255,255,255,.92); color:#0f172a;">מדריך</a>\n            <a href="/web/download" class="cta-button" style="background:rgba(255,255,255,.92); color:#0f172a;">הורדה</a>\n            <a href="/web/contact" class="cta-button" style="background:rgba(255,255,255,.92); color:#0f172a;">צור קשר</a>\n        </div>\n        <div style="margin-top:14px; font-size:12px; opacity:.8; color:white;">build: ' + APP_BUILD_TAG + '</div>\n    </section>\n\n    <!-- Features Section -->'
             )
         return html
 
@@ -727,6 +1086,7 @@ def _basic_web_shell(title: str, body_html: str) -> str:
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>{title}</title>
+      <link rel="icon" href="/web/assets/icons/public.png" />
       <style>
         :root {{ --navy:#2f3e4e; --mint:#1abc9c; --sky:#3498db; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
         body {{ margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction: rtl; }}
