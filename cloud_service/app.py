@@ -744,7 +744,6 @@ def _replace_rows(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any
         return 0
 
     allowed = set(cols)
-    allowed.discard('id')
     allowed.discard('created_at')
     allowed.discard('updated_at')
 
