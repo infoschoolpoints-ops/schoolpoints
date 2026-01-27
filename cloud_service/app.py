@@ -12,13 +12,29 @@ import csv
 import io
 import json
 import secrets
+import hashlib
+import hmac
+import shutil
 from fastapi import FastAPI, Header, HTTPException, Form, Query, Request
-from fastapi.responses import HTMLResponse, Response, RedirectResponse
+from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="SchoolPoints Sync")
 
-APP_BUILD_TAG = "2026-01-26-webroutes"
+
+@app.get("/", include_in_schema=False)
+def root() -> Response:
+    return RedirectResponse(url="/web/login", status_code=302)
+
+APP_BUILD_TAG = "2026-01-27-root-redirect-health"
+
+
+@app.get("/health", include_in_schema=False)
+def health() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "build": APP_BUILD_TAG,
+    }
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
@@ -122,10 +138,88 @@ def _web_tenant_from_cookie(request: Request) -> str:
     return str(request.cookies.get('web_tenant') or '').strip()
 
 
+def _web_teacher_from_cookie(request: Request) -> str:
+    return str(request.cookies.get('web_teacher') or '').strip()
+
+
 def _web_require_login(request: Request) -> Response | None:
     if _web_auth_ok(request):
         return None
     return RedirectResponse(url="/web/login", status_code=302)
+
+
+def _web_require_tenant(request: Request) -> Response | None:
+    tenant_id = _web_tenant_from_cookie(request)
+    if tenant_id:
+        return None
+    return RedirectResponse(url="/web/signin", status_code=302)
+
+
+def _web_require_teacher(request: Request) -> Response | None:
+    tenant_guard = _web_require_tenant(request)
+    if tenant_guard:
+        return tenant_guard
+    if _web_teacher_from_cookie(request):
+        return None
+    return RedirectResponse(url="/web/teacher-login", status_code=302)
+
+
+@app.get("/web/build")
+def web_build() -> Dict[str, Any]:
+    routes = []
+    for r in getattr(app, "routes", []) or []:
+        path = getattr(r, "path", None)
+        if path:
+            routes.append(path)
+    routes = sorted(set(routes))
+    return {
+        "build": APP_BUILD_TAG,
+        "routes": routes,
+    }
+
+
+def _read_text_file(path: str) -> str:
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _public_web_shell(title: str, body_html: str) -> str:
+    return f"""
+    <!doctype html>
+    <html lang="he">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>{title}</title>
+      <style>
+        :root {{ --navy:#2f3e4e; --mint:#1abc9c; --sky:#3498db; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
+        body {{ margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction: rtl; }}
+        .wrap {{ max-width: 980px; margin: 24px auto; padding: 0 16px; }}
+        .card {{ background:#fff; border-radius:10px; padding:20px; border:1px solid var(--line); box-shadow:0 6px 18px rgba(40,55,70,.08); }}
+        .titlebar {{ background:var(--navy); color:#fff; padding:14px 18px; border-radius:10px 10px 0 0; margin:-20px -20px 16px; }}
+        .titlebar h2 {{ margin:0; font-size:20px; }}
+        .actionbar {{ margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }}
+        .actionbar a {{ padding:10px 14px; border-radius:8px; color:#fff; text-decoration:none; border:none; font-weight:700; }}
+        .actionbar .green {{ background:#2ecc71; }}
+        .actionbar .blue {{ background:#3498db; }}
+        .actionbar .gray {{ background:#95a5a6; }}
+        .small {{ font-size:13px; color:#637381; text-align:center; margin-top:10px; }}
+        .small a {{ color:#1f2d3a; }}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          <div class="titlebar"><h2>{title}</h2></div>
+          {body_html}
+        </div>
+      </div>
+    </body>
+    </html>
+    """
 
 
 def _init_db() -> None:
@@ -138,10 +232,15 @@ def _init_db() -> None:
             tenant_id TEXT NOT NULL UNIQUE,
             name TEXT NOT NULL,
             api_key TEXT NOT NULL,
+            password_hash TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         '''
     )
+    try:
+        cur.execute('ALTER TABLE institutions ADD COLUMN password_hash TEXT')
+    except Exception:
+        pass
     cur.execute(
         '''
         CREATE TABLE IF NOT EXISTS changes (
@@ -161,6 +260,86 @@ def _init_db() -> None:
     conn.close()
 
 
+def _pbkdf2_hash(password: str, salt: bytes | None = None) -> str:
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    dk = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 200_000)
+    return f"pbkdf2_sha256$200000${salt.hex()}${dk.hex()}"
+
+
+def _pbkdf2_verify(password: str, hashed: str) -> bool:
+    try:
+        scheme, iters_s, salt_hex, dk_hex = (hashed or '').split('$', 3)
+        if scheme != 'pbkdf2_sha256':
+            return False
+        iters = int(iters_s)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(dk_hex)
+        actual = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iters)
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+def _tenant_db_dir() -> str:
+    path = os.path.join(DATA_DIR, 'tenants')
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _tenant_school_db_path(tenant_id: str) -> str:
+    safe = ''.join([c for c in str(tenant_id or '').strip() if c.isalnum() or c in ('-', '_')])
+    if not safe:
+        safe = 'unknown'
+    return os.path.join(_tenant_db_dir(), f"{safe}.db")
+
+
+def _ensure_tenant_db_exists(tenant_id: str) -> str:
+    dst = _tenant_school_db_path(tenant_id)
+    if os.path.isfile(dst):
+        return dst
+    template = _school_db_path()
+    try:
+        if os.path.isfile(template):
+            shutil.copyfile(template, dst)
+            return dst
+    except Exception:
+        pass
+    # minimal fallback
+    conn = sqlite3.connect(dst)
+    cur = conn.cursor()
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS teachers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            card_number TEXT,
+            card_number2 TEXT,
+            card_number3 TEXT,
+            is_admin INTEGER DEFAULT 0
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS students (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            first_name TEXT,
+            last_name TEXT,
+            class_name TEXT,
+            points INTEGER DEFAULT 0,
+            card_number TEXT,
+            id_number TEXT,
+            serial_number INTEGER,
+            photo_number INTEGER
+        )
+        '''
+    )
+    conn.commit()
+    conn.close()
+    return dst
+
+
 def _school_db_path() -> str:
     if Database is not None:
         try:
@@ -172,6 +351,13 @@ def _school_db_path() -> str:
 
 def _school_db() -> sqlite3.Connection:
     db_path = _school_db_path()
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _tenant_school_db(tenant_id: str) -> sqlite3.Connection:
+    db_path = _ensure_tenant_db_exists(tenant_id)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
@@ -292,6 +478,8 @@ def admin_setup_form(admin_key: str = '') -> str:
             <input name="name" required />
             <label>Tenant ID</label>
             <input name="tenant_id" required />
+            <label>סיסמת מוסד</label>
+            <input name="institution_password" type="password" required />
             <label>API Key (אופציונלי - יווצר אוטומטית)</label>
             <input name="api_key" placeholder="השאר ריק ליצירה אוטומטית" />
             <button type="submit">צור מוסד</button>
@@ -315,29 +503,197 @@ def app_version() -> Dict[str, Any]:
     }
 
 
+@app.get("/web/assets/{asset_path:path}")
+def web_assets(asset_path: str) -> Response:
+    safe_rel = str(asset_path or '').replace('\\', '/').lstrip('/').strip()
+    if not safe_rel or '..' in safe_rel.split('/'):
+        raise HTTPException(status_code=404)
+    if safe_rel.startswith('icons/'):
+        icon_rel = safe_rel[len('icons/'):].strip()
+        if not icon_rel or '/' in icon_rel.strip('/'):
+            raise HTTPException(status_code=404)
+        icon_path = os.path.join(ROOT_DIR, 'icons', icon_rel)
+        if os.path.isfile(icon_path):
+            return FileResponse(icon_path)
+        raise HTTPException(status_code=404)
+    abs_path = os.path.join(ROOT_DIR, 'תמונות', safe_rel)
+    if not os.path.isfile(abs_path):
+        allowed_root_files = {
+            'final_logo_correct.png',
+            'final_logo_method7.png',
+            'optimized_logo_method7.png',
+            'user_logo_method7.png',
+            'user_logo_minimal.png',
+        }
+        if safe_rel in allowed_root_files:
+            alt = os.path.join(ROOT_DIR, safe_rel)
+            if os.path.isfile(alt):
+                return FileResponse(alt)
+        raise HTTPException(status_code=404)
+    return FileResponse(abs_path)
+
+
+@app.get("/web/guide", response_class=HTMLResponse)
+def web_guide() -> str:
+    guide_path = os.path.join(ROOT_DIR, 'guide_user_embedded.html')
+    html = _read_text_file(guide_path)
+    if not html:
+        body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין בקובץ זה.</p>"
+        return _public_web_shell("מדריך", body)
+    return html
+
+
 @app.get("/web/login", response_class=HTMLResponse)
 def web_login() -> str:
-    institutions = _institutions()
-    options = "".join(
-        f"<option value='{i['tenant_id']}'>{i['name']} ({i['tenant_id']})</option>"
-        for i in institutions
-    )
-    body = f"""
-    <h2>כניסה למערכת</h2>
-    <form method="post">
-      <label>שם משתמש</label>
-      <input name="username" required />
-      <label>סיסמה</label>
-      <input name="password" type="password" required />
-      <label>מוסד</label>
-      <select name="tenant_id" required>{options}</select>
-      <button type="submit">התחברות</button>
-    </form>
+    marketing_path = os.path.join(ROOT_DIR, 'תמונות', 'marketing_schoolpoints.html')
+    marketing = _read_text_file(marketing_path)
+    if marketing:
+        html = str(marketing)
+        html = html.replace('src="תמונות/', 'src="/web/assets/')
+        html = html.replace("src='תמונות/", "src='/web/assets/")
+        if '</body>' in html:
+            html = html.replace(
+                '</body>',
+                f'<div style="max-width:1100px;margin:20px auto 40px;padding:0 16px;color:rgba(255,255,255,.7);font-size:12px;">build: {APP_BUILD_TAG}</div></body>'
+            )
+        return html
+
+    body = """
+    <div style="text-align:center; padding: 24px 10px;">
+      <div style="font-size:40px; font-weight:800;">SCHOOLPOINT</div>
+      <div style="font-size:16px; margin-top:8px;">תוכנת הניקוד</div>
+      <div class="actionbar" style="margin-top:18px;">
+        <a class="green" href="/web/signin">כניסה למערכת</a>
+        <a class="blue" href="/web/guide">מדריך</a>
+        <a class="gray" href="/web/download">הורדת התוכנה</a>
+        <a class="gray" href="/web/contact">צור קשר</a>
+      </div>
+      <div style="margin-top:12px; font-size:12px; color:#6b7280;">build: """ + APP_BUILD_TAG + """</div>
+    </div>
     """
-    return _basic_web_shell("כניסה למערכת", body)
+    return _public_web_shell("SchoolPoints", body)
 
 
-@app.post("/web/login", response_class=HTMLResponse)
+@app.get("/web/signin", response_class=HTMLResponse)
+def web_signin() -> str:
+    body = """
+    <style>
+      .hero { display:flex; gap:18px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:14px; }
+      .brand { display:flex; gap:12px; align-items:center; }
+      .brand img { width:64px; height:64px; object-fit:contain; border-radius:12px; background:#fff; border:1px solid var(--line); box-shadow:0 6px 16px rgba(40,55,70,.08); }
+      .brand .t1 { font-size:22px; font-weight:900; letter-spacing:.5px; }
+      .brand .t2 { font-size:13px; color:#637381; margin-top:2px; }
+      .panel { display:grid; grid-template-columns: 1fr; gap:12px; }
+      form { display:grid; grid-template-columns: 1fr; gap:10px; max-width: 460px; margin: 6px auto 0; }
+      label { font-weight:700; font-size:13px; }
+      input { width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }
+      button { padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:800; cursor:pointer; font-size:15px; }
+      .hint { text-align:center; font-size:12px; color:#637381; margin-top:8px; }
+    </style>
+    <div class="hero">
+      <div class="brand">
+        <img src="/web/assets/icons/public.png" alt="SchoolPoints" />
+        <div>
+          <div class="t1">SCHOOLPOINTS</div>
+          <div class="t2">מערכת נקודות לבית ספר</div>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <form method="post" action="/web/institution-login">
+        <label>קוד מוסד</label>
+        <input name="tenant_id" placeholder="" required />
+        <label>סיסמת מוסד</label>
+        <input name="institution_password" type="password" required />
+        <button type="submit">התחברות</button>
+      </form>
+      <div class="hint">build: """ + APP_BUILD_TAG + """</div>
+    </div>
+    """
+    return _public_web_shell("כניסה למערכת", body)
+
+
+@app.post("/web/institution-login", response_class=HTMLResponse)
+def web_institution_login(
+    tenant_id: str = Form(...),
+    institution_password: str = Form(...)
+) -> Response:
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        'SELECT tenant_id, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1',
+        (tenant_id.strip(),)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row or not (row['password_hash'] or '').strip():
+        body = "<h2>שגיאת התחברות</h2><p>קוד מוסד או סיסמת מוסד לא תקינים.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">נסה שוב</a></div>"
+        return HTMLResponse(_public_web_shell("כניסה למערכת", body))
+    if not _pbkdf2_verify(institution_password.strip(), str(row['password_hash'])):
+        body = "<h2>שגיאת התחברות</h2><p>קוד מוסד או סיסמת מוסד לא תקינים.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">נסה שוב</a></div>"
+        return HTMLResponse(_public_web_shell("כניסה למערכת", body))
+
+    try:
+        _ensure_tenant_db_exists(tenant_id.strip())
+    except Exception:
+        body = "<h2>שגיאת מערכת</h2><p>לא ניתן ליצור/לפתוח את מסד הנתונים של המוסד.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">חזרה</a></div>"
+        return HTMLResponse(_public_web_shell("כניסה למערכת", body))
+
+    response = RedirectResponse(url="/web/teacher-login", status_code=302)
+    response.set_cookie("web_tenant", tenant_id.strip(), httponly=True)
+    response.delete_cookie("web_teacher")
+    return response
+
+
+@app.get("/web/teacher-login", response_class=HTMLResponse)
+def web_teacher_login(request: Request) -> Response:
+    guard = _web_require_tenant(request)
+    if guard:
+        return guard
+    body = """
+    <style>
+      .panel { display:grid; grid-template-columns: 1fr; gap:12px; }
+      form { display:grid; grid-template-columns: 1fr; gap:10px; max-width: 460px; margin: 6px auto 0; }
+      label { font-weight:700; font-size:13px; }
+      input { width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }
+      button { padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:800; cursor:pointer; font-size:15px; }
+      .hint { text-align:center; font-size:12px; color:#637381; margin-top:8px; }
+    </style>
+    <div class="panel">
+      <form method="post" action="/web/teacher-login">
+        <label>סיסמת מורה / מנהל</label>
+        <input name="card_number" type="password" required />
+        <button type="submit">כניסה</button>
+      </form>
+    </div>
+    """
+    return HTMLResponse(_public_web_shell("כניסה", body))
+
+
+@app.post("/web/teacher-login", response_class=HTMLResponse)
+def web_teacher_login_submit(request: Request, card_number: str = Form(...)) -> Response:
+    guard = _web_require_tenant(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    cur = conn.cursor()
+    cur.execute(
+        'SELECT id, name, is_admin FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1',
+        (card_number.strip(), card_number.strip(), card_number.strip())
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        body = "<h2>שגיאת התחברות</h2><p>סיסמת מורה/מנהל לא תקינה.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/teacher-login\">נסה שוב</a></div>"
+        return HTMLResponse(_public_web_shell("כניסה", body))
+    response = RedirectResponse(url="/web/admin", status_code=302)
+    response.set_cookie("web_user", "1", httponly=True)
+    response.set_cookie("web_teacher", str(row['id']), httponly=True)
+    return response
+
+
+@app.post("/web/admin-login", response_class=HTMLResponse)
 def web_login_submit(
     username: str = Form(...),
     password: str = Form(...),
@@ -345,8 +701,8 @@ def web_login_submit(
 ) -> Response:
     creds = _web_auth_credentials()
     if username.strip() != creds['user'] or password.strip() != creds['pass']:
-        body = "<h2>שגיאת התחברות</h2><p>שם משתמש או סיסמה לא תקינים.</p>"
-        return HTMLResponse(_basic_web_shell("כניסה למערכת", body))
+        body = "<h2>שגיאת התחברות</h2><p>שם משתמש או סיסמה לא תקינים.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">נסה שוב</a></div>"
+        return HTMLResponse(_public_web_shell("כניסה למערכת", body))
     response = RedirectResponse(url="/web/admin", status_code=302)
     response.set_cookie("web_user", username.strip(), httponly=True)
     response.set_cookie("web_tenant", tenant_id.strip(), httponly=True)
@@ -358,6 +714,7 @@ def web_logout() -> Response:
     response = RedirectResponse(url="/web/login", status_code=302)
     response.delete_cookie("web_user")
     response.delete_cookie("web_tenant")
+    response.delete_cookie("web_teacher")
     return response
 
 
@@ -404,17 +761,24 @@ def _basic_web_shell(title: str, body_html: str) -> str:
             מוסדות: {status['inst_total']} | שינויים: {status['changes_total']} | שינוי אחרון: {status['last_received']}
           </div>
           <div class="tabs">
-            <a class="tab" href="/web/admin">ניהול תלמידים</a>
+            <a class="tab" href="/web/admin">תלמידים</a>
+            <a class="tab" href="/web/upgrades">שדרוגים</a>
+            <a class="tab" href="/web/messages">הודעות</a>
+            <a class="tab" href="/web/special-bonus">בונוס מיוחד</a>
+            <a class="tab" href="/web/time-bonus">בונוס זמנים</a>
+            <a class="tab" href="/web/teachers">ניהול מורים</a>
+            <a class="tab" href="/web/system-settings">הגדרות מערכת</a>
+            <a class="tab" href="/web/display-settings">הגדרות תצוגה</a>
             <a class="tab" href="/web/bonuses">בונוסים</a>
             <a class="tab" href="/web/holidays">חגים/חופשות</a>
+            <a class="tab" href="/web/cashier">קופה</a>
+            <a class="tab" href="/web/reports">דוחות</a>
             <a class="tab" href="/web/logs">לוגים</a>
-            <a class="tab" href="/web/settings">הגדרות</a>
           </div>
           {body_html}
           <div class="links">
-            <a href="/web/admin">עמדת ניהול ווב</a>
-            <a href="/admin/institutions">מוסדות</a>
-            <a href="/admin/sync-status">סטטוס סינכרון</a>
+            <a href="/web/admin">עמדת ניהול</a>
+            <a href="/web/logout">יציאה</a>
           </div>
         </div>
       </div>
@@ -423,9 +787,107 @@ def _basic_web_shell(title: str, body_html: str) -> str:
     """
 
 
+@app.get("/web/cashier", response_class=HTMLResponse)
+def web_cashier(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>עמדת קופה</h2>
+    <p>מסך קופה יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/cashier">➕ מוצר חדש</a>
+      <a class="blue" href="/web/cashier">🧾 היסטוריית רכישות</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("עמדת קופה", body)
+
+
+@app.get("/web/ads-media", response_class=HTMLResponse)
+def web_ads_media(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>הודעות / פרסומות / מדיה</h2>
+    <p>מסך ניהול מדיה יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="purple" href="/web/ads-media">⬆️ העלאת מדיה</a>
+      <a class="blue" href="/web/messages">↩️ למסך הודעות</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("מדיה", body)
+
+
+@app.get("/web/colors", response_class=HTMLResponse)
+def web_colors(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>צבעים</h2>
+    <p>מסך ניהול צבעים/טווחי נקודות יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/colors">➕ טווח חדש</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("צבעים", body)
+
+
+@app.get("/web/sounds", response_class=HTMLResponse)
+def web_sounds(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>צלילים</h2>
+    <p>מסך ניהול צלילים יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="purple" href="/web/sounds">⬆️ העלאת צליל</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("צלילים", body)
+
+
+@app.get("/web/coins", response_class=HTMLResponse)
+def web_coins(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>מטבעות ויעדים</h2>
+    <p>מסך ניהול מטבעות/יעדים יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/coins">➕ הוסף מטבע</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("מטבעות", body)
+
+
+@app.get("/web/reports", response_class=HTMLResponse)
+def web_reports(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>דוחות</h2>
+    <p>מסך דוחות יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="blue" href="/web/export/download">⬇️ ייצוא תלמידים (CSV)</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("דוחות", body)
+
+
 @app.get("/web/students/new", response_class=HTMLResponse)
 def web_student_new(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -460,10 +922,11 @@ def web_student_new_submit(
     id_number: str = Form(default=""),
     points: int = Form(default=0)
 ):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
-    conn = _school_db()
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute(
         '''
@@ -483,7 +946,7 @@ def web_student_new_submit(
 
 @app.get("/web/students/edit", response_class=HTMLResponse)
 def web_student_edit(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -512,10 +975,11 @@ def web_student_edit_submit(
     points: int = Form(default=0),
     private_message: str = Form(default="")
 ) -> str:
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
-    conn = _school_db()
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute(
         'UPDATE students SET points = ?, private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
@@ -532,7 +996,7 @@ def web_student_edit_submit(
 
 @app.get("/web/students/delete", response_class=HTMLResponse)
 def web_student_delete(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -552,10 +1016,11 @@ def web_student_delete(request: Request):
 
 @app.post("/web/students/delete", response_class=HTMLResponse)
 def web_student_delete_submit(request: Request, student_id: int = Form(...)):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
-    conn = _school_db()
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute('DELETE FROM students WHERE id = ?', (int(student_id),))
     conn.commit()
@@ -569,7 +1034,7 @@ def web_student_delete_submit(request: Request, student_id: int = Form(...)):
 
 @app.get("/web/import", response_class=HTMLResponse)
 def web_import(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -585,7 +1050,7 @@ def web_import(request: Request):
 
 @app.get("/web/export", response_class=HTMLResponse)
 def web_export(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -601,10 +1066,11 @@ def web_export(request: Request):
 
 @app.get("/web/export/download")
 def web_export_download(request: Request) -> Response:
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
-    conn = _school_db()
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute(
         '''
@@ -633,7 +1099,7 @@ def web_export_download(request: Request) -> Response:
 
 @app.get("/web/bonuses", response_class=HTMLResponse)
 def web_bonuses(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -649,7 +1115,7 @@ def web_bonuses(request: Request):
 
 @app.get("/web/holidays", response_class=HTMLResponse)
 def web_holidays(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -663,9 +1129,133 @@ def web_holidays(request: Request):
     return _basic_web_shell("חגים וחופשות", body)
 
 
+@app.get("/web/upgrades", response_class=HTMLResponse)
+def web_upgrades(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>שדרוגים</h2>
+    <p>מסך שדרוגים יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/upgrades">⬆️ העלאת גרסה</a>
+      <a class="blue" href="/web/upgrades">📦 ניהול גרסאות</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("שדרוגים", body)
+
+
+@app.get("/web/messages", response_class=HTMLResponse)
+def web_messages(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>הודעות כלליות</h2>
+    <p>מסך ניהול הודעות כלליות יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/messages">➕ הודעה חדשה</a>
+      <a class="purple" href="/web/ads-media">🖼️ מדיה / פרסומות</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("הודעות כלליות", body)
+
+
+@app.get("/web/special-bonus", response_class=HTMLResponse)
+def web_special_bonus(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>בונוס מיוחד</h2>
+    <p>מסך בונוס מיוחד יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/special-bonus">➕ יצירת בונוס מיוחד</a>
+      <a class="blue" href="/web/bonuses">↩️ למסך בונוסים</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("בונוס מיוחד", body)
+
+
+@app.get("/web/time-bonus", response_class=HTMLResponse)
+def web_time_bonus(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>בונוס זמנים</h2>
+    <p>מסך בונוס זמנים יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/time-bonus">➕ כלל חדש</a>
+      <a class="blue" href="/web/holidays">📅 חגים/חופשות</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("בונוס זמנים", body)
+
+
+@app.get("/web/teachers", response_class=HTMLResponse)
+def web_teachers(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>ניהול מורים</h2>
+    <p>מסך ניהול מורים והרשאות יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/teachers">➕ הוסף מורה</a>
+      <a class="blue" href="/web/teachers">🏷️ ניהול כיתות למורה</a>
+      <a class="orange" href="/web/teachers">🔐 הרשאות מנהל</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("ניהול מורים", body)
+
+
+@app.get("/web/system-settings", response_class=HTMLResponse)
+def web_system_settings(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>הגדרות מערכת</h2>
+    <p>מסך הגדרות מערכת יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="green" href="/web/system-settings">💾 שמירה</a>
+      <a class="blue" href="/web/system-settings">📁 תיקייה משותפת</a>
+      <a class="blue" href="/web/system-settings">🖼️ לוגו</a>
+      <a class="blue" href="/web/system-settings">🧑‍🎓 תיקיית תמונות תלמידים</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("הגדרות מערכת", body)
+
+
+@app.get("/web/display-settings", response_class=HTMLResponse)
+def web_display_settings(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    body = """
+    <h2>הגדרות תצוגה</h2>
+    <p>מסך הגדרות תצוגה יתווסף כאן.</p>
+    <div class="actionbar">
+      <a class="blue" href="/web/colors">🎨 צבעים</a>
+      <a class="blue" href="/web/sounds">🔊 צלילים</a>
+      <a class="blue" href="/web/coins">🪙 מטבעות</a>
+      <a class="blue" href="/web/holidays">📅 חגים/חופשות</a>
+      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    </div>
+    """
+    return _basic_web_shell("הגדרות תצוגה", body)
+
+
 @app.get("/web/logs", response_class=HTMLResponse)
 def web_logs(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -681,7 +1271,7 @@ def web_logs(request: Request):
 
 @app.get("/web/settings", response_class=HTMLResponse)
 def web_settings(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
     body = """
@@ -750,6 +1340,7 @@ def admin_changes(admin_key: str = '') -> str:
     expected = str(os.getenv('ADMIN_KEY') or '').strip()
     if expected and admin_key != expected:
         return "<h3>Invalid admin key</h3>"
+    status_bar = _admin_status_bar()
     conn = _db()
     cur = conn.cursor()
     cur.execute(
@@ -789,7 +1380,7 @@ def admin_changes(admin_key: str = '') -> str:
     <body>
       <div class="wrap">
         <div class="card">
-          """ + _admin_status_bar() + """
+          {status_bar}
           <h2>שינויים אחרונים</h2>
           <table>
             <thead>
@@ -814,13 +1405,14 @@ def admin_institutions(admin_key: str = '') -> str:
     expected = str(os.getenv('ADMIN_KEY') or '').strip()
     if expected and admin_key != expected:
         return "<h3>Invalid admin key</h3>"
+    status_bar = _admin_status_bar()
     conn = _db()
     cur = conn.cursor()
-    cur.execute('SELECT tenant_id, name, api_key, created_at FROM institutions ORDER BY id DESC')
+    cur.execute('SELECT tenant_id, name, api_key, password_hash, created_at FROM institutions ORDER BY id DESC')
     rows = cur.fetchall() or []
     conn.close()
     items = "".join(
-        f"<tr><td>{r['tenant_id']}</td><td>{r['name']}</td><td>{r['api_key']}</td><td>{r['created_at']}</td></tr>"
+        f"<tr><td>{r['tenant_id']}</td><td>{r['name']}</td><td>{r['api_key']}</td><td>{'כן' if (r['password_hash'] or '').strip() else 'לא'}</td><td><a href='/admin/institutions/password?tenant_id={r['tenant_id']}&admin_key={admin_key}'>עדכן סיסמה</a></td><td>{r['created_at']}</td></tr>"
         for r in rows
     )
     return f"""
@@ -845,11 +1437,11 @@ def admin_institutions(admin_key: str = '') -> str:
     <body>
       <div class="wrap">
         <div class="card">
-          """ + _admin_status_bar() + """
+          {status_bar}
           <h2>מוסדות רשומים</h2>
           <table>
             <thead>
-              <tr><th>Tenant ID</th><th>שם מוסד</th><th>API Key</th><th>נוצר</th></tr>
+              <tr><th>Tenant ID</th><th>שם מוסד</th><th>API Key</th><th>סיסמה הוגדרה</th><th>סיסמת מוסד</th><th>נוצר</th></tr>
             </thead>
             <tbody>{items}</tbody>
           </table>
@@ -864,6 +1456,76 @@ def admin_institutions(admin_key: str = '') -> str:
     """
 
 
+@app.get("/admin/institutions/password", response_class=HTMLResponse)
+def admin_institution_password_form(tenant_id: str, admin_key: str = '') -> str:
+    expected = str(os.getenv('ADMIN_KEY') or '').strip()
+    if expected and admin_key != expected:
+        return "<h3>Invalid admin key</h3>"
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute('SELECT tenant_id, name FROM institutions WHERE tenant_id = ? LIMIT 1', (tenant_id.strip(),))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return "<h3>Tenant not found</h3>"
+    return f"""
+    <!doctype html>
+    <html lang="he">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>עדכון סיסמת מוסד</title>
+      <style>
+        body {{ margin:0; font-family: Arial, sans-serif; background:#f2f5f6; color:#1f2d3a; direction: rtl; }}
+        .wrap {{ max-width: 720px; margin: 30px auto; padding: 0 16px; }}
+        .card {{ background:#fff; border-radius:14px; padding:20px; border:1px solid #e1e8ee; }}
+        label {{ display:block; margin:10px 0 6px; font-weight:600; }}
+        input {{ width:100%; padding:10px; border:1px solid #d9e2ec; border-radius:8px; }}
+        button {{ margin-top:14px; padding:10px 16px; border:none; border-radius:8px; background:#1abc9c; color:#fff; font-weight:600; cursor:pointer; }}
+        .links {{ margin-top:16px; font-size:13px; }}
+        .links a {{ color:#1f2d3a; text-decoration:none; margin-left:10px; }}
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          """ + _admin_status_bar() + f"""
+          <h2>עדכון סיסמת מוסד</h2>
+          <div style="margin-bottom:10px;">מוסד: <b>{row['name']}</b> ({row['tenant_id']})</div>
+          <form method="post" action="/admin/institutions/password">
+            <input type="hidden" name="tenant_id" value="{row['tenant_id']}" />
+            <label>סיסמת מוסד חדשה</label>
+            <input name="institution_password" type="password" required />
+            <button type="submit">שמירה</button>
+          </form>
+          <div class="links">
+            <a href="/admin/institutions?admin_key={admin_key}">חזרה לרשימת מוסדות</a>
+          </div>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+
+@app.post("/admin/institutions/password", response_class=HTMLResponse)
+def admin_institution_password_submit(
+    tenant_id: str = Form(...),
+    institution_password: str = Form(...),
+    admin_key: str = ''
+) -> str:
+    expected = str(os.getenv('ADMIN_KEY') or '').strip()
+    if expected and admin_key != expected:
+        return "<h3>Invalid admin key</h3>"
+    conn = _db()
+    cur = conn.cursor()
+    pw_hash = _pbkdf2_hash(institution_password.strip())
+    cur.execute('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?', (pw_hash, tenant_id.strip()))
+    conn.commit()
+    conn.close()
+    return f"<h3>סיסמת מוסד עודכנה.</h3><p><a href='/admin/institutions?admin_key={admin_key}'>חזרה לרשימת מוסדות</a></p>"
+
+
 @app.get("/api/students")
 def api_students(
     request: Request,
@@ -872,11 +1534,13 @@ def api_students(
     offset: int = Query(default=0, ge=0),
     tenant_id: str = Query(default='')
 ) -> Dict[str, Any]:
-    cookie_tenant = _web_tenant_from_cookie(request)
-    active_tenant = cookie_tenant or _current_tenant_id()
+    guard = _web_require_teacher(request)
+    if guard:
+        return {"items": [], "limit": limit, "offset": offset, "query": q}
+    active_tenant = _web_tenant_from_cookie(request)
     if active_tenant and tenant_id and tenant_id != active_tenant:
         return {"items": [], "limit": limit, "offset": offset, "query": q}
-    conn = _school_db()
+    conn = _tenant_school_db(active_tenant)
     cur = conn.cursor()
     query = """
         SELECT id, first_name, last_name, class_name, points, card_number, id_number, serial_number, photo_number
@@ -903,15 +1567,11 @@ def api_students(
 
 @app.get("/web/admin", response_class=HTMLResponse)
 def web_admin(request: Request):
-    guard = _web_require_login(request)
+    guard = _web_require_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request) or _current_tenant_id()
-    institutions = _institutions()
-    options = "".join(
-        f"<option value='{i['tenant_id']}'{' selected' if i['tenant_id'] == tenant_id else ''}>{i['name']} ({i['tenant_id']})</option>"
-        for i in institutions
-    )
+    tenant_id = _web_tenant_from_cookie(request)
+    tenant_json = json.dumps(str(tenant_id or ''))
     js = """
       <script>
         const rowsEl = document.getElementById('rows');
@@ -921,8 +1581,7 @@ def web_admin(request: Request):
         async function load() {
           statusEl.textContent = 'טוען...';
           const q = encodeURIComponent(searchEl.value || '');
-          const tenant = document.getElementById('tenant').value || '';
-          const resp = await fetch(`/api/students?q=${q}&tenant_id=${encodeURIComponent(tenant)}`);
+          const resp = await fetch(`/api/students?q=${q}`);
           const data = await resp.json();
           rowsEl.innerHTML = data.items.map(r => `
             <tr>
@@ -935,7 +1594,6 @@ def web_admin(request: Request):
             </tr>`).join('');
           statusEl.textContent = `נטענו ${data.items.length} תלמידים`;
         }
-        document.getElementById('tenant').addEventListener('change', load);
         searchEl.addEventListener('input', () => {
           clearTimeout(timer);
           timer = setTimeout(load, 300);
@@ -981,14 +1639,17 @@ def web_admin(request: Request):
           <span>מערכת ניהול נקודות · <a href="/web/logout" style="color:#fff;">יציאה</a></span>
         </div>
         <div class="tabs">
-          <a class="tab" href="/admin/setup">רישום מוסד</a>
-          <a class="tab" href="/admin/institutions">מוסדות</a>
-          <a class="tab" href="/admin/sync-status">סטטוס סינכרון</a>
-          <a class="tab" href="/admin/changes">שינויים אחרונים</a>
+          <a class="tab" href="/web/admin">תלמידים</a>
+          <a class="tab" href="/web/upgrades">שדרוגים</a>
+          <a class="tab" href="/web/messages">הודעות</a>
+          <a class="tab" href="/web/special-bonus">בונוס מיוחד</a>
+          <a class="tab" href="/web/time-bonus">בונוס זמנים</a>
+          <a class="tab" href="/web/teachers">ניהול מורים</a>
+          <a class="tab" href="/web/system-settings">הגדרות מערכת</a>
+          <a class="tab" href="/web/display-settings">הגדרות תצוגה</a>
           <a class="tab" href="/web/bonuses">בונוסים</a>
           <a class="tab" href="/web/holidays">חגים/חופשות</a>
           <a class="tab" href="/web/logs">לוגים</a>
-          <a class="tab" href="/web/settings">הגדרות</a>
         </div>
         <div class="actions" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px;">
           <a class="btn-green" href="/web/students/new">➕ הוסף תלמיד</a>
@@ -999,7 +1660,7 @@ def web_admin(request: Request):
         </div>
         <div class="searchbar">
           <label>מוסד פעיל:</label>
-          <select id="tenant" disabled>{options}</select>
+          <input value="" id="tenant" disabled style="min-width:160px;" />
           <input id="search" placeholder="חיפוש" />
           <span id="status" style="color:#637381;">טוען...</span>
         </div>
@@ -1029,6 +1690,12 @@ def web_admin(request: Request):
         </div>
       </div>
       {js}
+      <script>
+        try {{
+          document.getElementById('tenant').value = "";
+          document.getElementById('tenant').value = {tenant_json};
+        }} catch(e) {{}}
+      </script>
     </body>
     </html>
     """
@@ -1038,6 +1705,7 @@ def web_admin(request: Request):
 def admin_setup_submit(
     name: str = Form(...),
     tenant_id: str = Form(...),
+    institution_password: str = Form(...),
     api_key: str = Form(default=''),
     admin_key: str = ''
 ) -> str:
@@ -1047,12 +1715,14 @@ def admin_setup_submit(
     conn = _db()
     cur = conn.cursor()
     api_key = api_key.strip() or secrets.token_urlsafe(16)
+    pw_hash = _pbkdf2_hash(institution_password.strip())
     try:
         cur.execute(
-            'INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)',
-            (tenant_id.strip(), name.strip(), api_key)
+            'INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)',
+            (tenant_id.strip(), name.strip(), api_key, pw_hash)
         )
         conn.commit()
+        _ensure_tenant_db_exists(tenant_id.strip())
         return f"<h3>Institution created.</h3><p>API Key: <b>{api_key}</b></p><p>עדכן ב־config.json: sync_api_key, sync_tenant_id</p>"
     except sqlite3.IntegrityError:
         return "<h3>Tenant ID already exists.</h3>"
