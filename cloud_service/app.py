@@ -731,6 +731,101 @@ def sync_snapshot(payload: SnapshotPayload, api_key: str = Header(default="")) -
     }
 
 
+def _scalar_or_none(cur: sqlite3.Cursor) -> Any:
+    row = cur.fetchone()
+    if not row:
+        return None
+    try:
+        return row[0]
+    except Exception:
+        try:
+            return list(row)[0]
+        except Exception:
+            return None
+
+
+@app.get('/sync/status')
+def sync_status(tenant_id: str, api_key: str = Header(default="")) -> Dict[str, Any]:
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    if not api_key:
+        raise HTTPException(status_code=401, detail='missing api_key')
+
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+        (tenant_id, api_key)
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=401, detail='invalid api_key')
+
+    tconn = _tenant_school_db(tenant_id)
+    try:
+        tcur = tconn.cursor()
+
+        teachers_count = 0
+        students_count = 0
+        teachers_max_updated_at = None
+        students_max_updated_at = None
+
+        try:
+            tcur.execute('SELECT COUNT(*) FROM teachers')
+            teachers_count = _safe_int(_scalar_or_none(tcur), 0)
+        except Exception:
+            teachers_count = 0
+        try:
+            tcur.execute('SELECT COUNT(*) FROM students')
+            students_count = _safe_int(_scalar_or_none(tcur), 0)
+        except Exception:
+            students_count = 0
+
+        try:
+            tcur.execute('SELECT MAX(updated_at) FROM teachers')
+            teachers_max_updated_at = _scalar_or_none(tcur)
+        except Exception:
+            teachers_max_updated_at = None
+        try:
+            tcur.execute('SELECT MAX(updated_at) FROM students')
+            students_max_updated_at = _scalar_or_none(tcur)
+        except Exception:
+            students_max_updated_at = None
+
+    finally:
+        tconn.close()
+
+    cconn = _db()
+    try:
+        ccur = cconn.cursor()
+        events_count = 0
+        events_last_created_at = None
+        try:
+            ccur.execute('SELECT COUNT(*) FROM sync_events WHERE tenant_id = ?', (tenant_id,))
+            events_count = _safe_int(_scalar_or_none(ccur), 0)
+        except Exception:
+            events_count = 0
+        try:
+            ccur.execute('SELECT MAX(created_at) FROM sync_events WHERE tenant_id = ?', (tenant_id,))
+            events_last_created_at = _scalar_or_none(ccur)
+        except Exception:
+            events_last_created_at = None
+    finally:
+        cconn.close()
+
+    return {
+        'ok': True,
+        'tenant_id': tenant_id,
+        'teachers_count': teachers_count,
+        'students_count': students_count,
+        'teachers_max_updated_at': teachers_max_updated_at,
+        'students_max_updated_at': students_max_updated_at,
+        'events_count': events_count,
+        'events_last_created_at': events_last_created_at,
+    }
+
+
 @app.get("/admin/setup", response_class=HTMLResponse)
 def admin_setup_form(admin_key: str = '') -> str:
     expected = str(os.getenv('ADMIN_KEY') or '').strip()
