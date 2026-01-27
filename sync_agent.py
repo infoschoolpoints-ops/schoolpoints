@@ -230,6 +230,17 @@ def run_once(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str =
         if not changes:
             print('[SYNC] No changes to send')
             return True
+        try:
+            types = {}
+            for c in changes:
+                t = str(c.get('entity_type') or '').strip() or 'unknown'
+                types[t] = int(types.get(t, 0)) + 1
+            types_txt = ', '.join([f"{k}:{v}" for k, v in sorted(types.items(), key=lambda kv: (-kv[1], kv[0]))])
+            print(f"[SYNC] Pending summary: {types_txt}")
+            last = changes[-1] if changes else {}
+            print(f"[SYNC] Last change: id={last.get('id')} type={last.get('entity_type')} action={last.get('action_type')} entity_id={last.get('entity_id')}")
+        except Exception:
+            pass
         ok = push_changes(push_url, changes, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
         if ok:
             print(f"[SYNC] Sent {len(changes)} change(s) OK")
@@ -238,6 +249,36 @@ def run_once(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str =
         else:
             print(f"[SYNC] Failed to send {len(changes)} change(s)")
         return ok
+    finally:
+        conn.close()
+
+
+def _print_pending(db_path: str, *, limit: int = 20, include_synced: bool = False) -> None:
+    conn = _connect(db_path)
+    try:
+        cur = conn.cursor()
+        where = '' if include_synced else 'WHERE synced_at IS NULL'
+        cur.execute(
+            f"""
+            SELECT id, entity_type, entity_id, action_type, created_at, synced_at, payload_json
+              FROM change_log
+              {where}
+              ORDER BY id DESC
+              LIMIT ?
+            """,
+            (int(limit),)
+        )
+        rows = cur.fetchall() or []
+        if not rows:
+            print('[CHANGES] No rows')
+            return
+        print(f"[CHANGES] Showing {len(rows)} row(s) (db={db_path})")
+        for r in rows:
+            payload = (r['payload_json'] or '')
+            payload_snip = payload[:200].replace('\n', ' ') if payload else ''
+            print(
+                f"{r['id']} | {r['entity_type']} | {r['action_type']} | {r['entity_id'] or ''} | created={r['created_at']} | synced={r['synced_at'] or ''} | {payload_snip}"
+            )
     finally:
         conn.close()
 
@@ -260,6 +301,9 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description='SchoolPoints Sync Agent')
     p.add_argument('--once', action='store_true', help='Run one change-log push iteration and exit')
     p.add_argument('--snapshot', action='store_true', help='Send a full snapshot (teachers+students) and exit')
+    p.add_argument('--show-pending', action='store_true', help='Print pending changes in change_log and exit')
+    p.add_argument('--show-all-changes', action='store_true', help='Print recent changes (including synced) and exit')
+    p.add_argument('--limit', default=20, type=int, help='Limit for --show-pending/--show-all-changes (default: 20)')
     p.add_argument('--interval-sec', default=60, type=int, help='Sync loop interval in seconds (default: 60)')
     p.add_argument('--db-path', default=None, help='Override DB path')
     p.add_argument('--push-url', default=None, help='Override push URL (/sync/push)')
@@ -276,7 +320,11 @@ if __name__ == '__main__':
     tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
     station_id = str(cfg.get('sync_station_id') or '').strip()
 
-    if args.snapshot:
+    if args.show_pending:
+        _print_pending(db_path, limit=int(args.limit or 20), include_synced=False)
+    elif args.show_all_changes:
+        _print_pending(db_path, limit=int(args.limit or 20), include_synced=True)
+    elif args.snapshot:
         snapshot_url = args.snapshot_url or str(cfg.get('sync_snapshot_url') or '').strip()
         if not snapshot_url:
             base = str(cfg.get('sync_push_url') or '').strip()

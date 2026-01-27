@@ -15,6 +15,13 @@ import secrets
 import hashlib
 import hmac
 import shutil
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except Exception:
+    psycopg2 = None  # type: ignore[assignment]
+    psycopg2_extras = None  # type: ignore[assignment]
 from fastapi import FastAPI, Header, HTTPException, Form, Query, Request
 from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse
 from pydantic import BaseModel
@@ -26,8 +33,7 @@ app = FastAPI(title="SchoolPoints Sync")
 def root() -> Response:
     return RedirectResponse(url="/web/login", status_code=302)
 
-APP_BUILD_TAG = "2026-01-27-sync-status-api-key-header"
- 
+APP_BUILD_TAG = "2026-01-28-managed-postgres"
 
 
 @app.get("/health", include_in_schema=False)
@@ -41,6 +47,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
 DATA_DIR = str(os.getenv('CLOUD_DATA_DIR') or '').strip() or os.path.join(BASE_DIR, 'data')
 DB_PATH = os.path.join(DATA_DIR, 'cloud.db')
+DATABASE_URL = str(os.getenv('DATABASE_URL') or '').strip()
+USE_POSTGRES = bool(DATABASE_URL)
 
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
@@ -51,11 +59,44 @@ except Exception:
     Database = None
 
 
-def _db() -> sqlite3.Connection:
+def _db():
+    if USE_POSTGRES:
+        if psycopg2 is None:
+            raise RuntimeError('DATABASE_URL is set but psycopg2 is not installed')
+        return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _sql_placeholder(sql: str) -> str:
+    if not USE_POSTGRES:
+        return sql
+    return sql.replace('?', '%s')
+
+
+def _integrity_errors():
+    errs = [sqlite3.IntegrityError]
+    try:
+        if psycopg2 is not None:
+            errs.append(psycopg2.IntegrityError)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return tuple(errs)
+
+
+def _now_expr() -> str:
+    return 'CURRENT_TIMESTAMP'
+
+
+def _tenant_schema(tenant_id: str) -> str:
+    safe = ''.join([c for c in str(tenant_id or '').strip().lower() if (c.isalnum() or c == '_')])
+    if not safe:
+        safe = 'unknown'
+    if safe[0].isdigit():
+        safe = f"t_{safe}"
+    return f"tenant_{safe}"
 
 
 def _load_local_config() -> Dict[str, Any]:
@@ -94,12 +135,14 @@ def _sync_status_info() -> Dict[str, Any]:
     conn = _db()
     cur = conn.cursor()
     cur.execute('SELECT COUNT(*) AS total FROM changes')
-    changes_total = cur.fetchone()[0]
+    row = cur.fetchone() or {}
+    changes_total = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
     cur.execute('SELECT COUNT(*) AS total FROM institutions')
-    inst_total = cur.fetchone()[0]
+    row = cur.fetchone() or {}
+    inst_total = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
     cur.execute('SELECT MAX(received_at) AS last_received FROM changes')
-    row = cur.fetchone()
-    last_received = row['last_received'] if row else None
+    row = cur.fetchone() or {}
+    last_received = (row.get('last_received') if isinstance(row, dict) else row[0])
     conn.close()
     return {
         'changes_total': changes_total,
@@ -311,56 +354,102 @@ def _public_web_shell(title: str, body_html: str) -> str:
 def _init_db() -> None:
     conn = _db()
     cur = conn.cursor()
-    cur.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS institutions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tenant_id TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            api_key TEXT NOT NULL,
-            password_hash TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    if USE_POSTGRES:
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS institutions (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                password_hash TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
         )
-        '''
-    )
-    try:
-        cur.execute('ALTER TABLE institutions ADD COLUMN password_hash TEXT')
-    except Exception:
-        pass
-    cur.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS changes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tenant_id TEXT NOT NULL,
-            station_id TEXT,
-            entity_type TEXT NOT NULL,
-            entity_id TEXT,
-            action_type TEXT NOT NULL,
-            payload_json TEXT,
-            created_at TEXT,
-            received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS changes (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                station_id TEXT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                action_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT,
+                received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
         )
-        '''
-    )
-
-    cur.execute(
-        '''
-        CREATE TABLE IF NOT EXISTS sync_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tenant_id TEXT NOT NULL,
-            event_id TEXT NOT NULL,
-            station_id TEXT,
-            change_local_id INTEGER,
-            entity_type TEXT NOT NULL,
-            entity_id TEXT,
-            action_type TEXT NOT NULL,
-            payload_json TEXT,
-            created_at TEXT,
-            received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(tenant_id, event_id)
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS sync_events (
+                id BIGSERIAL PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                station_id TEXT,
+                change_local_id BIGINT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                action_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT,
+                received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, event_id)
+            )
+            '''
         )
-        '''
-    )
+    else:
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS institutions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                api_key TEXT NOT NULL,
+                password_hash TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        try:
+            cur.execute('ALTER TABLE institutions ADD COLUMN password_hash TEXT')
+        except Exception:
+            pass
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS changes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id TEXT NOT NULL,
+                station_id TEXT,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                action_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT,
+                received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS sync_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id TEXT NOT NULL,
+                event_id TEXT NOT NULL,
+                station_id TEXT,
+                change_local_id INTEGER,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                action_type TEXT NOT NULL,
+                payload_json TEXT,
+                created_at TEXT,
+                received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tenant_id, event_id)
+            )
+            '''
+        )
     conn.commit()
     conn.close()
 
@@ -400,6 +489,72 @@ def _tenant_school_db_path(tenant_id: str) -> str:
 
 
 def _ensure_tenant_db_exists(tenant_id: str) -> str:
+    if USE_POSTGRES:
+        schema = _tenant_schema(tenant_id)
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+        cur.execute(
+            f'''
+            CREATE TABLE IF NOT EXISTS "{schema}".teachers (
+                id BIGINT PRIMARY KEY,
+                name TEXT,
+                card_number TEXT,
+                card_number2 TEXT,
+                card_number3 TEXT,
+                is_admin INTEGER DEFAULT 0,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        cur.execute(
+            f'''
+            CREATE TABLE IF NOT EXISTS "{schema}".students (
+                id BIGINT PRIMARY KEY,
+                first_name TEXT,
+                last_name TEXT,
+                class_name TEXT,
+                points INTEGER DEFAULT 0,
+                card_number TEXT,
+                id_number TEXT,
+                serial_number BIGINT,
+                photo_number BIGINT,
+                private_message TEXT,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        cur.execute(
+            f'''
+            CREATE TABLE IF NOT EXISTS "{schema}".settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        cur.execute(
+            f'''
+            CREATE TABLE IF NOT EXISTS "{schema}".points_log (
+                id BIGSERIAL PRIMARY KEY,
+                student_id BIGINT,
+                old_points INTEGER,
+                new_points INTEGER,
+                delta INTEGER,
+                reason TEXT,
+                actor_name TEXT,
+                action_type TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        conn.commit()
+        conn.close()
+        return schema
+
     dst = _tenant_school_db_path(tenant_id)
     if os.path.isfile(dst):
         return dst
@@ -436,7 +591,10 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
             card_number TEXT,
             id_number TEXT,
             serial_number INTEGER,
-            photo_number INTEGER
+            photo_number INTEGER,
+            private_message TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         '''
     )
@@ -461,7 +619,13 @@ def _school_db() -> sqlite3.Connection:
     return conn
 
 
-def _tenant_school_db(tenant_id: str) -> sqlite3.Connection:
+def _tenant_school_db(tenant_id: str):
+    if USE_POSTGRES:
+        schema = _ensure_tenant_db_exists(tenant_id)
+        conn = _db()
+        cur = conn.cursor()
+        cur.execute(f'SET search_path TO "{schema}", public')
+        return conn
     db_path = _ensure_tenant_db_exists(tenant_id)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -530,7 +694,7 @@ def _get_api_key(request: Request, api_key: str) -> str:
         return ''
 
 
-def _apply_change_to_tenant_db(tconn: sqlite3.Connection, ch: ChangeItem) -> None:
+def _apply_change_to_tenant_db(tconn, ch: ChangeItem) -> None:
     et = str(ch.entity_type or '').strip()
     at = str(ch.action_type or '').strip()
     payload = {}
@@ -551,19 +715,30 @@ def _apply_change_to_tenant_db(tconn: sqlite3.Connection, ch: ChangeItem) -> Non
         reason = _safe_str(payload.get('reason') or '').strip()
 
         cur = tconn.cursor()
-        cur.execute('SELECT points FROM students WHERE id = ? LIMIT 1', (student_id,))
+        cur.execute(_sql_placeholder('SELECT points FROM students WHERE id = ? LIMIT 1'), (student_id,))
         row = cur.fetchone()
         if not row:
             return
-        cur_points = _safe_int(row[0] if not isinstance(row, sqlite3.Row) else row['points'], 0)
+        if isinstance(row, dict):
+            cur_points = _safe_int(row.get('points'), 0)
+        else:
+            try:
+                cur_points = _safe_int(row['points'], 0)
+            except Exception:
+                cur_points = _safe_int(row[0], 0)
         final_points = int(cur_points + delta)
-        cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (final_points, student_id))
+        cur.execute(
+            _sql_placeholder('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
+            (final_points, student_id)
+        )
         try:
             cur.execute(
-                '''
-                INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''',
+                _sql_placeholder(
+                    '''
+                    INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    '''
+                ),
                 (int(student_id), int(cur_points), int(final_points), int(delta), reason, 'sync', 'sync')
             )
         except Exception:
@@ -578,23 +753,59 @@ def _apply_change_to_tenant_db(tconn: sqlite3.Connection, ch: ChangeItem) -> Non
         cur = tconn.cursor()
         try:
             cur.execute(
-                '''
-                INSERT INTO settings (key, value) VALUES (?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                ''',
+                _sql_placeholder(
+                    '''
+                    INSERT INTO settings (key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value
+                    '''
+                ),
                 (key, value)
             )
         except Exception:
             try:
-                cur.execute('UPDATE settings SET value = ? WHERE key = ?', (value, key))
+                cur.execute(_sql_placeholder('UPDATE settings SET value = ? WHERE key = ?'), (value, key))
                 if cur.rowcount == 0:
-                    cur.execute('INSERT INTO settings (key, value) VALUES (?, ?)', (key, value))
+                    cur.execute(_sql_placeholder('INSERT INTO settings (key, value) VALUES (?, ?)'), (key, value))
             except Exception:
                 pass
         return
 
-    # other entities are recorded as raw changes only (no apply yet)
-    return
+
+def _replace_rows_postgres(conn, table: str, rows: List[Dict[str, Any]]) -> int:
+    if not rows:
+        cur = conn.cursor()
+        cur.execute(f'TRUNCATE TABLE {table}')
+        return 0
+
+    cols = list((rows[0] or {}).keys())
+    if not cols:
+        return 0
+    cols = [c for c in cols if c not in ('created_at', 'updated_at')]
+    if not cols:
+        return 0
+
+    cur = conn.cursor()
+    cur.execute(f'TRUNCATE TABLE {table}')
+
+    template = '(' + ','.join(['%s'] * len(cols)) + ')'
+    values = [[(r or {}).get(c) for c in cols] for r in rows]
+    psycopg2.extras.execute_values(
+        cur,
+        f'INSERT INTO {table} ({",".join(cols)}) VALUES %s',
+        values,
+        template=template,
+        page_size=500
+    )
+    return int(len(values))
+
+
+def _begin_tenant_write(conn) -> None:
+    if USE_POSTGRES:
+        return
+    try:
+        conn.execute('BEGIN IMMEDIATE')
+    except Exception:
+        pass
 
 
 @app.post("/sync/push")
@@ -608,7 +819,7 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+        _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
         (payload.tenant_id, api_key)
     )
     row = cur.fetchone()
@@ -617,16 +828,16 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
         if allow_auto:
             try:
                 cur.execute(
-                    'INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)',
+                    _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)'),
                     (payload.tenant_id, payload.tenant_id, api_key)
                 )
                 conn.commit()
                 cur.execute(
-                    'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+                    _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
                     (payload.tenant_id, api_key)
                 )
                 row = cur.fetchone()
-            except sqlite3.IntegrityError:
+            except _integrity_errors():
                 row = None
         if not row:
             conn.close()
@@ -638,15 +849,17 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
 
     tconn = _tenant_school_db(payload.tenant_id)
     try:
-        tconn.execute('BEGIN IMMEDIATE')
+        _begin_tenant_write(tconn)
 
         for ch in payload.changes:
             # always record raw change
             cur.execute(
-                '''
-                INSERT INTO changes (tenant_id, station_id, entity_type, entity_id, action_type, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''',
+                _sql_placeholder(
+                    '''
+                    INSERT INTO changes (tenant_id, station_id, entity_type, entity_id, action_type, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    '''
+                ),
                 (
                     payload.tenant_id,
                     payload.station_id,
@@ -661,10 +874,12 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
             event_id = _make_event_id(payload.station_id, ch.id, ch.created_at)
             try:
                 cur.execute(
-                    '''
-                    INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''',
+                    _sql_placeholder(
+                        '''
+                        INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        '''
+                    ),
                     (
                         payload.tenant_id,
                         event_id,
@@ -677,7 +892,7 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
                         ch.created_at,
                     )
                 )
-            except sqlite3.IntegrityError:
+            except _integrity_errors():
                 skipped += 1
                 continue
             except Exception:
@@ -734,6 +949,8 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
 
 
 def _replace_rows(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any]]) -> int:
+    if USE_POSTGRES:
+        return _replace_rows_postgres(conn, table, rows)
     cur = conn.cursor()
     cur.execute(f"DELETE FROM {table}")
     if not rows:
@@ -779,7 +996,7 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+        _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
         (payload.tenant_id, api_key)
     )
     row = cur.fetchone()
@@ -788,16 +1005,16 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
         if allow_auto:
             try:
                 cur.execute(
-                    'INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)',
+                    _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)'),
                     (payload.tenant_id, payload.tenant_id, api_key)
                 )
                 conn.commit()
                 cur.execute(
-                    'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+                    _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
                     (payload.tenant_id, api_key)
                 )
                 row = cur.fetchone()
-            except sqlite3.IntegrityError:
+            except _integrity_errors():
                 row = None
         if not row:
             conn.close()
@@ -806,7 +1023,7 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
 
     tconn = _tenant_school_db(payload.tenant_id)
     try:
-        tconn.execute('BEGIN IMMEDIATE')
+        _begin_tenant_write(tconn)
         teachers_n = 0
         students_n = 0
         try:
@@ -840,6 +1057,11 @@ def _scalar_or_none(cur: sqlite3.Cursor) -> Any:
     row = cur.fetchone()
     if not row:
         return None
+    if isinstance(row, dict):
+        try:
+            return list(row.values())[0]
+        except Exception:
+            return None
     try:
         return row[0]
     except Exception:
@@ -860,7 +1082,7 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+        _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
         (tenant_id, api_key)
     )
     row = cur.fetchone()
@@ -869,16 +1091,16 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
         if allow_auto:
             try:
                 cur.execute(
-                    'INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)',
+                    _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)'),
                     (tenant_id, tenant_id, api_key)
                 )
                 conn.commit()
                 cur.execute(
-                    'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+                    _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
                     (tenant_id, api_key)
                 )
                 row = cur.fetchone()
-            except sqlite3.IntegrityError:
+            except _integrity_errors():
                 row = None
         if not row:
             conn.close()
@@ -925,12 +1147,12 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
         events_count = 0
         events_last_created_at = None
         try:
-            ccur.execute('SELECT COUNT(*) FROM sync_events WHERE tenant_id = ?', (tenant_id,))
+            ccur.execute(_sql_placeholder('SELECT COUNT(*) FROM sync_events WHERE tenant_id = ?'), (tenant_id,))
             events_count = _safe_int(_scalar_or_none(ccur), 0)
         except Exception:
             events_count = 0
         try:
-            ccur.execute('SELECT MAX(created_at) FROM sync_events WHERE tenant_id = ?', (tenant_id,))
+            ccur.execute(_sql_placeholder('SELECT MAX(created_at) FROM sync_events WHERE tenant_id = ?'), (tenant_id,))
             events_last_created_at = _scalar_or_none(ccur)
         except Exception:
             events_last_created_at = None
@@ -1200,7 +1422,7 @@ def web_institution_login(
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        'SELECT tenant_id, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1',
+        _sql_placeholder('SELECT tenant_id, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
         (tenant_id.strip(),)
     )
     row = cur.fetchone()
@@ -1258,9 +1480,11 @@ def web_teacher_login_submit(request: Request, card_number: str = Form(...)) -> 
     conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute(
-        'SELECT id, name, is_admin FROM teachers '
-        'WHERE CAST(card_number AS TEXT) = ? OR CAST(card_number2 AS TEXT) = ? OR CAST(card_number3 AS TEXT) = ? '
-        'LIMIT 1',
+        _sql_placeholder(
+            'SELECT id, name, is_admin FROM teachers '
+            'WHERE CAST(card_number AS TEXT) = ? OR CAST(card_number2 AS TEXT) = ? OR CAST(card_number3 AS TEXT) = ? '
+            'LIMIT 1'
+        ),
         (card_number.strip(), card_number.strip(), card_number.strip())
     )
     row = cur.fetchone()
@@ -1511,10 +1735,12 @@ def web_student_new_submit(
     conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute(
-        '''
-        INSERT INTO students (first_name, last_name, class_name, id_number, points)
-        VALUES (?, ?, ?, ?, ?)
-        ''',
+        _sql_placeholder(
+            '''
+            INSERT INTO students (first_name, last_name, class_name, id_number, points)
+            VALUES (?, ?, ?, ?, ?)
+            '''
+        ),
         (first_name.strip(), last_name.strip(), class_name.strip(), id_number.strip(), int(points or 0))
     )
     conn.commit()
@@ -1564,7 +1790,7 @@ def web_student_edit_submit(
     conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute(
-        'UPDATE students SET points = ?, private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+        _sql_placeholder('UPDATE students SET points = ?, private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
         (int(points or 0), private_message.strip(), int(student_id))
     )
     conn.commit()
@@ -1604,7 +1830,7 @@ def web_student_delete_submit(request: Request, student_id: int = Form(...)):
     tenant_id = _web_tenant_from_cookie(request)
     conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
-    cur.execute('DELETE FROM students WHERE id = ?', (int(student_id),))
+    cur.execute(_sql_placeholder('DELETE FROM students WHERE id = ?'), (int(student_id),))
     conn.commit()
     conn.close()
     body = """
@@ -1875,11 +2101,14 @@ def admin_sync_status(request: Request, admin_key: str = '') -> str:
     conn = _db()
     cur = conn.cursor()
     cur.execute('SELECT COUNT(*) AS total FROM changes')
-    total = cur.fetchone()[0]
+    row = cur.fetchone() or {}
+    total = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
     cur.execute('SELECT COUNT(*) AS total FROM institutions')
-    inst_total = cur.fetchone()[0]
+    row = cur.fetchone() or {}
+    inst_total = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
     cur.execute('SELECT MAX(received_at) AS last_received FROM changes')
-    last_received = (cur.fetchone() or {}).get('last_received') if hasattr(cur.fetchone(), 'get') else None
+    row = cur.fetchone() or {}
+    last_received = (row.get('last_received') if isinstance(row, dict) else row[0])
     conn.close()
     return f"""
     <!doctype html>
@@ -2047,7 +2276,7 @@ def admin_institution_password_form(request: Request, tenant_id: str, admin_key:
         return guard  # type: ignore[return-value]
     conn = _db()
     cur = conn.cursor()
-    cur.execute('SELECT tenant_id, name FROM institutions WHERE tenant_id = ? LIMIT 1', (tenant_id.strip(),))
+    cur.execute(_sql_placeholder('SELECT tenant_id, name FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id.strip(),))
     row = cur.fetchone()
     conn.close()
     if not row:
@@ -2106,7 +2335,7 @@ def admin_institution_password_submit(
     conn = _db()
     cur = conn.cursor()
     pw_hash = _pbkdf2_hash(institution_password.strip())
-    cur.execute('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?', (pw_hash, tenant_id.strip()))
+    cur.execute(_sql_placeholder('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?'), (pw_hash, tenant_id.strip()))
     conn.commit()
     conn.close()
     return "<h3>סיסמת מוסד עודכנה.</h3><p><a href='/admin/institutions'>חזרה לרשימת מוסדות</a></p>"
@@ -2140,7 +2369,7 @@ def api_students(
     query += " ORDER BY (serial_number IS NULL OR serial_number = 0), serial_number, class_name, last_name, first_name"
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
-    cur.execute(query, params)
+    cur.execute(_sql_placeholder(query), params)
     rows = [dict(r) for r in cur.fetchall()]
     conn.close()
     return {
@@ -2305,13 +2534,13 @@ def admin_setup_submit(
     pw_hash = _pbkdf2_hash(institution_password.strip())
     try:
         cur.execute(
-            'INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)',
+            _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)'),
             (tenant_id.strip(), name.strip(), api_key, pw_hash)
         )
         conn.commit()
         _ensure_tenant_db_exists(tenant_id.strip())
         return f"<h3>Institution created.</h3><p>API Key: <b>{api_key}</b></p><p>עדכן ב־config.json: sync_api_key, sync_tenant_id</p>"
-    except sqlite3.IntegrityError:
+    except _integrity_errors():
         return "<h3>Tenant ID already exists.</h3>"
     finally:
         conn.close()
@@ -2322,7 +2551,7 @@ def view_changes(tenant_id: str, api_key: str) -> str:
     conn = _db()
     cur = conn.cursor()
     cur.execute(
-        'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+        _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
         (tenant_id, api_key)
     )
     row = cur.fetchone()
@@ -2330,13 +2559,15 @@ def view_changes(tenant_id: str, api_key: str) -> str:
         conn.close()
         return "<h3>Unauthorized</h3>"
     cur.execute(
-        '''
-        SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
-        FROM changes
-        WHERE tenant_id = ?
-        ORDER BY id DESC
-        LIMIT 200
-        ''',
+        _sql_placeholder(
+            '''
+            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
+            FROM changes
+            WHERE tenant_id = ?
+            ORDER BY id DESC
+            LIMIT 200
+            '''
+        ),
         (tenant_id,)
     )
     rows = cur.fetchall() or []
