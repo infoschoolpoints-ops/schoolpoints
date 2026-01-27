@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>נקודות בית ספר - אשראיכם | SchoolPoints</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 20px 50px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+
+        .header-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .logo-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .logo-placeholder {
+            width: 60px;
+            height: 60px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            color: white;
+            font-weight: bold;
+        }
+
+        .logo-text h1 {
+            font-size: 28px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 5px;
+        }
+
+        .logo-text p {
+            font-size: 14px;
+            color: #666;
+            font-weight: 300;
+        }
+
+        /* Hero Section */
+        .hero {
+            max-width: 1200px;
+            margin: 80px auto;
+            padding: 0 50px;
+            text-align: center;
+            color: white;
+        }
+
+        .hero h2 {
+            font-size: 64px;
+            margin-bottom: 20px;
+            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            animation: fadeInUp 0.8s ease;
+        }
+
+        .hero .subtitle {
+            font-size: 48px;
+            margin-bottom: 15px;
+            font-weight: 300;
+            opacity: 0.95;
+            animation: fadeInUp 1s ease;
+        }
+
+        .hero .english-title {
+            font-size: 32px;
+            letter-spacing: 2px;
+            margin-bottom: 30px;
+            opacity: 0.9;
+            animation: fadeInUp 1.2s ease;
+        }
+
+        .hero p {
+            font-size: 22px;
+            max-width: 700px;
+            margin: 0 auto 50px;
+            line-height: 1.8;
+            opacity: 0.95;
+            animation: fadeInUp 1.4s ease;
+        }
+
+        /* Features Cards */
+        .features {
+            max-width: 1200px;
+            margin: 80px auto;
+            padding: 0 50px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 30px;
+        }
+
+        .feature-card {
+            background: white;
+            padding: 40px 30px;
+            border-radius: 20px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            text-align: center;
+            animation: fadeInUp 1.6s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-10px);
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+        }
+
+        .feature-icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 36px;
+        }
+
+        .feature-card h3 {
+            font-size: 24px;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .feature-card p {
+            color: #666;
+            line-height: 1.6;
+            font-size: 16px;
+        }
+
+        /* CTA Section */
+        .cta {
+            max-width: 1200px;
+            margin: 80px auto;
+            padding: 60px 50px;
+            text-align: center;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 30px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            animation: fadeInUp 1.8s ease;
+        }
+
+        .cta h3 {
+            font-size: 42px;
+            color: white;
+            margin-bottom: 30px;
+            text-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .cta-button {
+            display: inline-block;
+            padding: 20px 60px;
+            background: white;
+            color: #667eea;
+            font-size: 22px;
+            font-weight: bold;
+            border-radius: 50px;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+        }
+
+        .cta-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Footer */
+        footer {
+            background: rgba(0, 0, 0, 0.3);
+            color: white;
+            text-align: center;
+            padding: 30px;
+            margin-top: 80px;
+        }
+
+        /* Animations */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+             header {
+                padding: 15px 20px;
+            }
+
+            .hero {
+                padding: 0 20px;
+                margin: 50px auto;
+            }
+
+            .hero h2 {
+                font-size: 36px;
+            }
+
+            .hero .subtitle {
+                font-size: 28px;
+            }
+
+            .hero .english-title {
+                font-size: 20px;
+            }
+
+            .hero p {
+                font-size: 18px;
+            }
+
+            .features {
+                padding: 0 20px;
+                grid-template-columns: 1fr;
+            }
+
+            .cta {
+                padding: 40px 20px;
+                margin: 50px 20px;
+            }
+
+            .cta h3 {
+                font-size: 28px;
+            }
+
+            .cta-button {
+                padding: 15px 40px;
+                font-size: 18px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header>
+        <div class="header-content">
+            <div class="logo-container">
+                <div class="logo-placeholder">
+                    <!-- הכנס כאן את הלוגו שלך -->
+                    🎓
+                </div>
+                <div class="logo-text">
+                    <h1>נקודות בית ספר</h1>
+                    <p>SchoolPoints</p>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <h2>נקודות בית ספר</h2>
+        <div class="subtitle">אשראיכם</div>
+        <div class="english-title">SCHOOLPOINTS</div>
+        <p>
+            מערכת ניהול נקודות מתקדמת לבתי ספר - 
+            פשוט, חדשני ויעיל
+        </p>
+    </section>
+
+    <!-- Features Section -->
+    <section class="features">
+        <div class="feature-card">
+            <div class="feature-icon">👨‍💼</div>
+            <h3>מנהל</h3>
+            <p>ניהול מלא של המערכת עם ממשק אינטואיטיבי וקל לתפעול</p>
+        </div>
+        
+        <div class="feature-card">
+            <div class="feature-icon">💳</div>
+            <h3>קופאי</h3>
+            <p>עיבוד נקודות מהיר ויעיל בממשק ידידותי למשתמש</p>
+        </div>
+        
+        <div class="feature-card">
+            <div class="feature-icon">👥</div>
+            <h3>ציבורי</h3>
+            <p>גישה ציבורית לצפייה במידע ומעקב אחר נקודות</p>
+        </div>
+        
+        <div class="feature-card">
+            <div class="feature-icon">⚙️</div>
+            <h3>מתקין</h3>
+            <p>התקנה פשוטה ומהירה עם תמיכה טכנית מלאה</p>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta">
+        <h3>מוכנים להתחיל?</h3>
+        <a href="#" class="cta-button">צור קשר עכשיו</a>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <p>&copy; 2026 נקודות בית ספר - SchoolPoints | כל הזכויות שמורות</p>
+    </footer>
+</body>
+</html>

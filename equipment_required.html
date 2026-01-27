@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>רשימת ציוד נדרש</title>
+  <style>
+
+    :root {
+      --bg1: #0f172a;
+      --bg2: #1e293b;
+      --card: rgba(255, 255, 255, 0.06);
+      --card2: rgba(255, 255, 255, 0.08);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #e2e8f0;
+      --muted: #a3b2c7;
+      --accent: #38bdf8;
+      --accent2: #22c55e;
+      --warn: #f59e0b;
+      --danger: #fb7185;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 20% 10%, #1d4ed8 0%, rgba(29, 78, 216, 0) 55%),
+                  radial-gradient(900px 500px at 80% 20%, #7c3aed 0%, rgba(124, 58, 237, 0) 55%),
+                  linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+      color: var(--text);
+      direction: rtl;
+      scroll-behavior: smooth;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: 1150px; margin: 0 auto; padding: 24px 18px 60px; }
+
+    .top {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .title { display:flex; flex-direction:column; gap:8px; }
+    h1 { margin: 0; font-size: 28px; letter-spacing: 0.2px; }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      text-align: center;
+      font-size: 34px;
+      font-weight: 900;
+      letter-spacing: 0.2px;
+    }
+
+    .section-icon {
+      width: 44px;
+      height: auto;
+      display: inline-block;
+      vertical-align: middle;
+      filter: drop-shadow(0 2px 8px rgba(0,0,0,0.35));
+    }
+
+    .sub { color: var(--muted); line-height: 1.7; font-size: 14px; max-width: 70ch; }
+
+    .badges { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-start; }
+
+    .badge {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .shot {
+      display: block;
+      width: auto;
+      max-width: 100%;
+      height: auto;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.18);
+      box-shadow: 0 18px 60px rgba(0,0,0,0.35);
+      margin-top: 10px;
+    }
+
+    .shot.float {
+      float: right;
+      margin: 10px 0 10px 14px;
+    }
+
+    .shot.float + .shot-caption {
+      float: right;
+      margin: 8px 0 10px 14px;
+      max-width: 100%;
+    }
+
+    .shot.small.float + .shot-caption { max-width: 680px; }
+    .shot.xsmall.float + .shot-caption { max-width: 420px; }
+
+    .shot.full {
+      float: none;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    .shot.full + .shot-caption {
+      text-align: center;
+    }
+
+    .clear { clear: both; }
+
+    .shot.small {
+      max-width: 680px;
+    }
+
+    .shot.xsmall {
+      max-width: 420px;
+    }
+
+    @media (max-width: 760px) {
+      .shot.float {
+        float: none;
+        margin: 10px 0;
+      }
+
+      .shot.float + .shot-caption {
+        float: none;
+        margin: 8px 0 10px;
+      }
+    }
+
+    .shot-caption {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .card h3 {
+      margin-top: 22px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(255,255,255,0.10);
+    }
+
+    .card h3:first-of-type {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .shot-sep {
+      height: 1px;
+      background: rgba(255,255,255,0.10);
+      border-radius: 1px;
+      margin: 18px 0;
+    }
+
+    .icon-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    @media (min-width: 980px) {
+      .icon-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+
+    .icon-card {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      border-radius: 14px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      text-align: center;
+    }
+
+    .icon-img {
+      width: 56px;
+      height: auto;
+      display: block;
+    }
+
+    .icon-title { font-weight: 800; font-size: 13px; color: var(--text); }
+    .icon-sub { font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; margin-top: 14px; }
+
+    .card {
+      grid-column: span 12;
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 20px 80px rgba(0,0,0,0.35);
+    }
+
+    @media (min-width: 980px) {
+      .card.span4 { grid-column: span 4; }
+      .card.span5 { grid-column: span 5; }
+      .card.span6 { grid-column: span 6; }
+      .card.span7 { grid-column: span 7; }
+      .card.span8 { grid-column: span 8; }
+    }
+
+    .card h2 { margin: 0 0 8px; font-size: 16px; }
+    .card h3 { margin: 18px 0 8px; font-size: 15px; }
+
+    .card p { margin: 0 0 10px; color: var(--muted); line-height: 1.7; font-size: 14px; }
+
+    .toc { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+    .toc a {
+      display: block;
+      padding: 9px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .toc a small { display:block; font-weight: 500; color: var(--muted); margin-top:4px; font-size: 12px; }
+
+    .note {
+      border-right: 4px solid rgba(56,189,248,0.7);
+      background: rgba(56,189,248,0.08);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 14px;
+      margin-top: 10px;
+    }
+
+    .warn { border-right: 4px solid rgba(245,158,11,0.7); background: rgba(245,158,11,0.10); }
+    .danger { border-right: 4px solid rgba(251,113,133,0.75); background: rgba(251,113,133,0.10); }
+
+    .checklist { margin: 0; padding-right: 18px; color: var(--text); line-height: 1.85; font-size: 14px; }
+    .checklist li { margin: 6px 0; }
+
+    .kv {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+    }
+
+    .kv th, .kv td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
+      text-align: right;
+      font-size: 13px;
+      vertical-align: top;
+    }
+
+    .kv th { width: 28%; color: var(--text); background: rgba(255,255,255,0.05); font-weight: 800; }
+    .kv td { color: var(--muted); }
+
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255,255,255,0.14);
+      padding: 2px 6px;
+      border-radius: 8px;
+      color: #e2e8f0;
+      white-space: nowrap;
+    }
+
+    .footer { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+
+    @media print {
+      * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      p, li {
+        orphans: 3;
+        widows: 3;
+      }
+
+      @page {
+        margin: 10mm;
+      }
+
+      body {
+        background: var(--bg1) !important;
+        color: var(--text) !important;
+      }
+
+      .wrap { max-width: none; padding: 0; }
+
+      .grid {
+        display: block !important;
+      }
+
+      .toc {
+        position: static !important;
+        display: none !important;
+      }
+
+      .card {
+        background: var(--card) !important;
+        border: 1px solid var(--border) !important;
+        box-shadow: none !important;
+        break-inside: auto;
+        page-break-inside: auto;
+        margin: 0 0 12px 0;
+      }
+
+      .card {
+        padding: 12px !important;
+      }
+
+      .keep-together {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+
+      .card p {
+        margin-bottom: 8px !important;
+      }
+
+      .checklist li {
+        margin: 4px 0 !important;
+      }
+
+      h2, h3 {
+        break-after: avoid;
+        page-break-after: avoid;
+      }
+
+      .note, .kv, .shot {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+
+      .shot {
+        box-shadow: none !important;
+        border: 1px solid var(--border) !important;
+        background: transparent !important;
+        max-width: 100% !important;
+        height: auto !important;
+        max-height: 240mm !important;
+        object-fit: contain;
+        break-inside: avoid;
+        page-break-inside: avoid;
+        break-after: avoid;
+        page-break-after: avoid;
+        margin-left: auto !important;
+        margin-right: auto !important;
+      }
+
+      .shot.small {
+        max-width: 680px !important;
+      }
+
+      .shot.xsmall {
+        max-width: 420px !important;
+      }
+
+      img[src$="/33.png"],
+      img[src$="\\33.png"],
+      img[src$="33.png"] {
+        max-height: 165mm !important;
+      }
+
+      .shot-caption {
+        break-before: avoid;
+        page-break-before: avoid;
+      }
+
+      .shot.float {
+        float: none;
+        margin: 10px 0;
+      }
+
+      .clear { clear: both; }
+
+      .page-break {
+        break-before: auto;
+        page-break-before: auto;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        display: none !important;
+      }
+
+      .shot-sep {
+        display: none !important;
+      }
+
+      h2.section-title {
+        break-before: page;
+        page-break-before: always;
+      }
+    }
+  
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>רשימת ציוד נדרש</h1>
+      </div>
+    </div>
+    <div class="card span12">
+      <p>שימו לב שהקישורים שלהלן, הם להמלצה בלבד, ויתכן שתמצאו זול יותר, או שהקישורים כבר לא פעילים.</p>
+      <p>רשימת ציוד והכנה למבצע:</p>
+      <ul class="checklist">
+        <li>עמדה ציבורית – החלק הכי חשוב! - המחשב יכול להיות בסיסי, כדאי מסך גדול שיהיה במקום ציבורי ובולט, חשוב שיהיה עם רמקולים טובים, או פנימיים ואם לא – חיצוניים, יש בתוכנה גם צלילים שמוסיפים לחוויה.</li>
+        <li>עמדות ניהול – מן הסתם יש כבר מחשב/ים למזכירות ו/או לאנשי הצוות, רק צריך מקום שיהיה אפשר להתקין את התוכנה ולעדכן משם את הנתונים ולצפות בתיקופים וכו&#x27;.</li>
+        <li>קוראי כרטיסים! (RFID) בלי זה – זה לא עובד! בעמדה הציבורית חובה! בכל השאר רשות ועדיפות, זה לא יקר. ניתן לרכוש לדוגמה <a href="https://www.aliexpress.com/item/32849296123.html?spm=a2g0o.order_list.order_list_main.10.3e5f586aJkhsG2" target="_blank" rel="noopener">כאן</a>. צריך שיהיו בתדר 125GHZ.</li>
+      </ul>
+      <img class="shot xsmall float" src="equipment_required_files/media/image1.jpeg" alt="" />
+      <ul class="checklist">
+        <li>אמצעי זיהוי לילדים! להלן כמה אפשרויות, הכי חשוב, לשים לב שמדובר בתדר הנ&quot;ל 125GHZ (בד&quot;כ נקרא TK4100)</li>
+        <li>אם רוצים מבצע ממש משודרג, שהילדים מתחברים לזה במיוחד, אפשר להזמין כרטיסים אישיים עם הדפסה אישית לכל תלמיד עם שמו ותמונתו (אפשר להוסיף תאריך יום הולדת, מס&#x27; טלפון ועוד פרטים שמחברים את הילד לכרטיס). תשקיעו בגרפיקה יפה, עם לוגו של בית הספר, פתגמים חשובים שהתלמידים יראו אותם יום יום וכו&#x27;. &emsp;</li>
+      </ul>
+
+      <div class="clear"></div>
+
+      <img class="shot xsmall float" src="equipment_required_files/media/image2.jpeg" alt="" />
+      <p>ניתן להזמין כרטיסים מודפסים לדוגמה <a href="https://cguard.co.il/product/printed-plastic-cards/" target="_blank" rel="noopener">כאן</a>, אפשר לעשות אצלם רק את השבלונה ולרכוש מדפסת כרטיסים ולהדפיס לבד את הפרטים המשתנים, אפשר להזמין את הכרטיסים עם הדפסה של כל הפרטים כולל המשתנים, תחשבו את העלויות ואת הנוחות לפי שיקוליכם.&emsp;</p>
+      <p>אם אתם מתוכננים מראש ויודעים לבצע הזמנות, ניתן להזמין בalibaba במחיר נמוך משמעותית.</p>
+      <p>אם העלות גבוהה מידי עבורכם, ניתן לקנות כרטיסים חלקים (לדוגמה <a href="https://he.aliexpress.com/item/1005009657206477.html?spm=a2g0o.productlist.main.24.4dd92377XY1IJD&amp;algo_pvid=20e40766-0783-4a67-b075-0ba15756e393&amp;algo_exp_id=20e40766-0783-4a67-b075-0ba15756e393-4&amp;pdp_ext_f=%7B%22order%22%3A%2285%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&amp;pdp_npi=6%40dis%21ILS%2120.36%219.66%21%21%2143.78%2120.76%21%4021010d9017672110534486751e9f3a%2112000049787176578%21sea%21IL%21736334660%21X%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895%3BpisId%3A5000000197173572&amp;curPageLogUid=roKuKqRXcUSk&amp;utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005009657206477%7C_p_origin_prod%3A" target="_blank" rel="noopener">כאן</a>) ולהדביק עליהם מדבקות כטעמכם.</p>
+            <div class="clear"></div>
+
+      <p><img class="shot" src="equipment_required_files/media/image3.jpeg" alt="" /></p>
+      <ul class="checklist">
+        <li><a href="https://he.aliexpress.com/item/1005001491354932.html?spm=a2g0o.productlist.main.3.4dd92377XY1IJD&amp;algo_pvid=20e40766-0783-4a67-b075-0ba15756e393&amp;algo_exp_id=20e40766-0783-4a67-b075-0ba15756e393-57&amp;pdp_ext_f=%7B%22order%22%3A%221%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&amp;pdp_npi=6%40dis%21ILS%214.32%214.32%21%21%211.33%211.33%21%4021010d9017672110534486751e9f3a%2112000016330708126%21sea%21IL%21736334660%21X%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895&amp;curPageLogUid=ilyCqPaN2who&amp;utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005001491354932%7C_p_origin_prod%3A" target="_blank" rel="noopener">צמידים</a> או <a href="https://he.aliexpress.com/item/1005005963768236.html?spm=a2g0o.productlist.main.8.4dd92377XY1IJD&amp;algo_pvid=20e40766-0783-4a67-b075-0ba15756e393&amp;algo_exp_id=20e40766-0783-4a67-b075-0ba15756e393-51&amp;pdp_ext_f=%7B%22order%22%3A%2223%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&amp;pdp_npi=6%40dis%21ILS%2111.01%214.97%21%21%213.39%211.53%21%4021010d9017672110534486751e9f3a%2112000035073958268%21sea%21IL%21736334660%21X%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895&amp;curPageLogUid=DnYRB2EG4a7A&amp;utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005005963768236%7C_p_origin_prod%3A" target="_blank" rel="noopener">זה</a> ו<a href="https://he.aliexpress.com/item/1005008494050384.html?spm=a2g0o.productlist.main.58.4dd92377XY1IJD&amp;algo_pvid=20e40766-0783-4a67-b075-0ba15756e393&amp;algo_exp_id=20e40766-0783-4a67-b075-0ba15756e393-49&amp;pdp_ext_f=%7B%22order%22%3A%228%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&amp;pdp_npi=6%40dis%21ILS%21132.53%2186.14%21%21%2140.80%2126.52%21%4021010d9017672110534486751e9f3a%2112000045395088105%21sea%21IL%21736334660%21X%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895&amp;curPageLogUid=9yCXApGYHeC4&amp;utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005008494050384%7C_p_origin_prod%3A" target="_blank" rel="noopener">זה</a></li>
+      </ul>
+      <p><img class="shot" src="equipment_required_files/media/image4.jpg" alt="" /></p>
+      <ul class="checklist">
+        <li><a href="https://he.aliexpress.com/item/1005009546093264.html?spm=a2g0o.productlist.main.14.4dd92377XY1IJD&amp;algo_pvid=20e40766-0783-4a67-b075-0ba15756e393&amp;algo_exp_id=20e40766-0783-4a67-b075-0ba15756e393-15&amp;pdp_ext_f=%7B%22order%22%3A%2217%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&amp;pdp_npi=6%40dis%21ILS%2112.73%215.98%21%21%2127.37%2112.86%21%4021010d9017672110534486751e9f3a%2112000049437454321%21sea%21IL%21736334660%21X%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895%3BpisId%3A5000000198273513&amp;curPageLogUid=EJJoKCK7QeKb&amp;utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005009546093264%7C_p_origin_prod%3A" target="_blank" rel="noopener">מדבקות</a> (זול יותר ליח&#x27; בקניה מרובה)</li>
+      </ul>
+      <p><img class="shot" src="equipment_required_files/media/image5.jpeg" alt="" /></p>
+      <ul class="checklist">
+        <li><a href="https://he.aliexpress.com/item/1005009338767961.html?spm=a2g0o.productlist.main.15.4dd92377XY1IJD&amp;algo_pvid=20e40766-0783-4a67-b075-0ba15756e393&amp;algo_exp_id=20e40766-0783-4a67-b075-0ba15756e393-47&amp;pdp_ext_f=%7B%22order%22%3A%225%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&amp;pdp_npi=6%40dis%21ILS%216.04%216.04%21%21%211.86%211.86%21%4021010d9017672110534486751e9f3a%2112000048802699222%21sea%21IL%21736334660%21X%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895&amp;curPageLogUid=yVkEcBpcSxkT&amp;utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005009338767961%7C_p_origin_prod%3A" target="_blank" rel="noopener">צ&#x27;יפים</a> או <a href="https://he.aliexpress.com/item/1005001939961984.html?spm=a2g0o.productlist.main.19.4dd92377XY1IJD&amp;algo_pvid=20e40766-0783-4a67-b075-0ba15756e393&amp;algo_exp_id=20e40766-0783-4a67-b075-0ba15756e393-32&amp;pdp_ext_f=%7B%22order%22%3A%222%22%2C%22eval%22%3A%221%22%2C%22fromPage%22%3A%22search%22%7D&amp;pdp_npi=6%40dis%21ILS%217.41%216.66%21%21%212.28%212.05%21%4021010d9017672110534486751e9f3a%2112000018171551155%21sea%21IL%21736334660%21X%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895&amp;curPageLogUid=Y6fXFS4BYlQc&amp;utparam-url=scene%3Asearch%7Cquery_from%3A%7Cx_object_id%3A1005001939961984%7C_p_origin_prod%3A" target="_blank" rel="noopener">זה</a> ו<a href="https://he.aliexpress.com/item/607762370.html?spm=a2g0o.detail.pcDetailTopMoreOtherSeller.3.88ccUxhyUxhyJA&amp;gps-id=pcDetailTopMoreOtherSeller&amp;scm=1007.40050.354490.0&amp;scm_id=1007.40050.354490.0&amp;scm-url=1007.40050.354490.0&amp;pvid=c7929fa4-7f15-45af-a8a8-283c95c8900d&amp;_t=gps-id:pcDetailTopMoreOtherSeller,scm-url:1007.40050.354490.0,pvid:c7929fa4-7f15-45af-a8a8-283c95c8900d,tpp_buckets:668%232846%238110%231995&amp;pdp_ext_f=%7B%22order%22%3A%22208%22%2C%22eval%22%3A%221%22%2C%22sceneId%22%3A%2230050%22%2C%22fromPage%22%3A%22recommend%22%7D&amp;pdp_npi=6%40dis%21ILS%2147.88%2147.88%21%21%2114.74%2114.74%21%402101364d17672112985995345eb547%2112000043335157172%21rec%21IL%21736334660%21XZ%211%210%21n_tag%3A-29919%3Bd%3Ab4ea4d15%3Bm03_new_user%3A-29895&amp;utparam-url=scene%3ApcDetailTopMoreOtherSeller%7Cquery_from%3A%7Cx_object_id%3A607762370%7C_p_origin_prod%3A" target="_blank" rel="noopener">זה</a></li>
+      </ul>
+      <p><img class="shot" src="equipment_required_files/media/image6.jpg" alt="" /></p>
+      <ul class="checklist">
+        <li>כהמלצה, במידה ובחרתם בכרטיסים, ניתן להפחית את כמות האבדות ע&quot;י רכישה של מחזיקי תג &#x27;יו יו&#x27;.</li>
+      </ul>
+      <img class="shot xsmall float" src="equipment_required_files/media/image7.jpeg" alt="" />
+      <div class="clear"></div>
+      <p>עמדת קופה – שדרוג מיוחד! עבור רכישת מוצרים ליריד, עם מדפסת קבלות תרמית פנימית או חיצונית.</p>
+      <div class="clear"></div>
+      <p><img class="shot small" src="equipment_required_files/media/cashier.jpg" alt="" /></p>
+      <div class="clear"></div>
+    </div>
+  </div>
+</body>
+</html>
