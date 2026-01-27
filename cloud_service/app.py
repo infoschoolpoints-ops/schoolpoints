@@ -39,7 +39,7 @@ def health() -> Dict[str, Any]:
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(BASE_DIR)
-DATA_DIR = os.path.join(BASE_DIR, 'data')
+DATA_DIR = str(os.getenv('CLOUD_DATA_DIR') or '').strip() or os.path.join(BASE_DIR, 'data')
 DB_PATH = os.path.join(DATA_DIR, 'cloud.db')
 
 if ROOT_DIR not in sys.path:
