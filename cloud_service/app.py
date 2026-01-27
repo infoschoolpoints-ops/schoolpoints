@@ -708,9 +708,26 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
         (payload.tenant_id, api_key)
     )
     row = cur.fetchone()
-    conn.close()
     if not row:
-        raise HTTPException(status_code=401, detail="invalid api_key")
+        allow_auto = str(os.getenv('AUTO_CREATE_TENANT') or '').strip() == '1'
+        if allow_auto:
+            try:
+                cur.execute(
+                    'INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)',
+                    (payload.tenant_id, payload.tenant_id, api_key)
+                )
+                conn.commit()
+                cur.execute(
+                    'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+                    (payload.tenant_id, api_key)
+                )
+                row = cur.fetchone()
+            except sqlite3.IntegrityError:
+                row = None
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=401, detail="invalid api_key")
+    conn.close()
 
     tconn = _tenant_school_db(payload.tenant_id)
     try:
@@ -772,9 +789,26 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
         (tenant_id, api_key)
     )
     row = cur.fetchone()
-    conn.close()
     if not row:
-        raise HTTPException(status_code=401, detail='invalid api_key')
+        allow_auto = str(os.getenv('AUTO_CREATE_TENANT') or '').strip() == '1'
+        if allow_auto:
+            try:
+                cur.execute(
+                    'INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)',
+                    (tenant_id, tenant_id, api_key)
+                )
+                conn.commit()
+                cur.execute(
+                    'SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1',
+                    (tenant_id, api_key)
+                )
+                row = cur.fetchone()
+            except sqlite3.IntegrityError:
+                row = None
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=401, detail='invalid api_key')
+    conn.close()
 
     tconn = _tenant_school_db(tenant_id)
     try:
