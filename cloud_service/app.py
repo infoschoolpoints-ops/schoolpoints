@@ -1685,9 +1685,32 @@ def web_teacher_login_submit(request: Request, card_number: str = Form(...)) -> 
         (card_number.strip(), card_number.strip(), card_number.strip())
     )
     row = cur.fetchone()
+    diag = None
+    if not row:
+        try:
+            cur.execute('SELECT COUNT(*) AS total FROM teachers')
+            r = cur.fetchone() or {}
+            teachers_total = int((r.get('total') if isinstance(r, dict) else r[0]) or 0)
+        except Exception:
+            teachers_total = -1
+        try:
+            cur.execute('SELECT id, name, card_number, card_number2, card_number3 FROM teachers ORDER BY id ASC LIMIT 3')
+            sample_rows = cur.fetchall() or []
+            sample_txt = "\n".join(
+                [
+                    f"{(x.get('id') if isinstance(x, dict) else x[0])} | {(x.get('name') if isinstance(x, dict) else x[1])} | {(x.get('card_number') if isinstance(x, dict) else x[2])} | {(x.get('card_number2') if isinstance(x, dict) else x[3])} | {(x.get('card_number3') if isinstance(x, dict) else x[4])}"
+                    for x in sample_rows
+                ]
+            )
+        except Exception:
+            sample_txt = ''
+        diag = f"tenant={tenant_id} | teachers={teachers_total}\n{sample_txt}".strip()
     conn.close()
     if not row:
-        body = "<h2>שגיאת התחברות</h2><p>קוד/כרטיס מורה לא תקין.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/teacher-login\">נסה שוב</a></div>"
+        body = "<h2>שגיאת התחברות</h2><p>קוד/כרטיס מורה לא תקין.</p>"
+        if diag:
+            body += "<pre style=\"white-space:pre-wrap;direction:ltr\">" + _safe_str(diag) + "</pre>"
+        body += "<div class=\"actionbar\"><a class=\"green\" href=\"/web/teacher-login\">נסה שוב</a></div>"
         return HTMLResponse(_public_web_shell("כניסה", body))
     response = RedirectResponse(url="/web/admin", status_code=302)
     response.set_cookie("web_user", "1", httponly=True)
@@ -2555,7 +2578,8 @@ def api_students(
     conn = _tenant_school_db(active_tenant)
     cur = conn.cursor()
     query = """
-        SELECT id, first_name, last_name, class_name, points, card_number, id_number, serial_number, photo_number
+        SELECT id, serial_number, last_name, first_name, class_name, points, private_message,
+               card_number, id_number, photo_number
         FROM students
     """
     params: List[Any] = []
@@ -2597,10 +2621,12 @@ def web_admin(request: Request):
           const data = await resp.json();
           rowsEl.innerHTML = data.items.map(r => `
             <tr>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.points ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.first_name ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.serial_number ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.last_name ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.first_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.class_name ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.points ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.private_message ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.id_number ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.card_number ?? ''}</td>
             </tr>`).join('');
@@ -2681,10 +2707,12 @@ def web_admin(request: Request):
             <table>
               <thead>
                 <tr>
-                  <th>נקודות</th>
-                  <th>שם פרטי</th>
-                  <th>שם משפחה</th>
+                  <th>מס'</th>
+                  <th>משפחה</th>
+                  <th>פרטי</th>
                   <th>כיתה</th>
+                  <th>נקודות</th>
+                  <th>הודעה פרטית</th>
                   <th>ת.ז</th>
                   <th>כרטיס</th>
                 </tr>
