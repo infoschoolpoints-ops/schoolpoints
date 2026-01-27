@@ -1241,7 +1241,7 @@ def web_teacher_login(request: Request) -> Response:
     </style>
     <div class="panel">
       <form method="post" action="/web/teacher-login">
-        <label>סיסמת מורה / מנהל</label>
+        <label>קוד / כרטיס מורה (או מנהל)</label>
         <input name="card_number" type="password" required />
         <button type="submit">כניסה</button>
       </form>
@@ -1259,13 +1259,15 @@ def web_teacher_login_submit(request: Request, card_number: str = Form(...)) -> 
     conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
     cur.execute(
-        'SELECT id, name, is_admin FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1',
+        'SELECT id, name, is_admin FROM teachers '
+        'WHERE CAST(card_number AS TEXT) = ? OR CAST(card_number2 AS TEXT) = ? OR CAST(card_number3 AS TEXT) = ? '
+        'LIMIT 1',
         (card_number.strip(), card_number.strip(), card_number.strip())
     )
     row = cur.fetchone()
     conn.close()
     if not row:
-        body = "<h2>שגיאת התחברות</h2><p>סיסמת מורה/מנהל לא תקינה.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/teacher-login\">נסה שוב</a></div>"
+        body = "<h2>שגיאת התחברות</h2><p>קוד/כרטיס מורה לא תקין.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/teacher-login\">נסה שוב</a></div>"
         return HTMLResponse(_public_web_shell("כניסה", body))
     response = RedirectResponse(url="/web/admin", status_code=302)
     response.set_cookie("web_user", "1", httponly=True)
