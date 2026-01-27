@@ -118,6 +118,82 @@ def _admin_status_bar() -> str:
     )
 
 
+def _admin_expected_key() -> str:
+    return str(os.getenv('ADMIN_KEY') or '').strip()
+
+
+def _admin_key_from_request(request: Request, admin_key: str) -> str:
+    if admin_key:
+        return str(admin_key)
+    try:
+        return str(request.cookies.get('admin_key') or '')
+    except Exception:
+        return ''
+
+
+def _admin_require(request: Request, admin_key: str) -> Response | None:
+    expected = _admin_expected_key()
+    if not expected:
+        return None
+    provided = _admin_key_from_request(request, admin_key).strip()
+    if provided != expected:
+        return RedirectResponse(url="/admin/login", status_code=302)
+    return None
+
+
+@app.get('/admin/login', response_class=HTMLResponse)
+def admin_login_form() -> str:
+    return """
+    <!doctype html>
+    <html lang="he">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>Admin Login</title>
+      <style>
+        body { margin:0; font-family: Arial, sans-serif; background:#f2f5f6; color:#1f2d3a; direction: rtl; }
+        .wrap { max-width: 520px; margin: 30px auto; padding: 0 16px; }
+        .card { background:#fff; border-radius:14px; padding:20px; border:1px solid #e1e8ee; }
+        label { display:block; margin:10px 0 6px; font-weight:600; }
+        input { width:100%; padding:10px; border:1px solid #d9e2ec; border-radius:8px; }
+        button { margin-top:14px; padding:10px 16px; border:none; border-radius:8px; background:#1abc9c; color:#fff; font-weight:600; cursor:pointer; }
+        .hint { margin-top:10px; font-size:12px; color:#637381; }
+      </style>
+    </head>
+    <body>
+      <div class="wrap">
+        <div class="card">
+          <h2>כניסת מנהל</h2>
+          <form method="post" action="/admin/login">
+            <label>Admin Key</label>
+            <input name="admin_key" type="password" required />
+            <button type="submit">כניסה</button>
+          </form>
+          <div class="hint">build: """ + APP_BUILD_TAG + """</div>
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+
+
+@app.post('/admin/login')
+def admin_login_submit(admin_key: str = Form(...)) -> Response:
+    expected = _admin_expected_key()
+    if expected and str(admin_key or '').strip() != expected:
+        return HTMLResponse("<h3>Invalid admin key</h3>")
+    resp = RedirectResponse(url="/admin/institutions", status_code=302)
+    resp.set_cookie('admin_key', str(admin_key or '').strip(), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    return resp
+
+
+@app.get('/admin/logout')
+def admin_logout() -> Response:
+    resp = RedirectResponse(url="/admin/login", status_code=302)
+    resp.delete_cookie('admin_key')
+    return resp
+
+
 def _web_auth_enabled() -> bool:
     return True
 
@@ -875,10 +951,10 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
 
 
 @app.get("/admin/setup", response_class=HTMLResponse)
-def admin_setup_form(admin_key: str = '') -> str:
-    expected = str(os.getenv('ADMIN_KEY') or '').strip()
-    if expected and admin_key != expected:
-        return "<h3>Invalid admin key</h3>"
+def admin_setup_form(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
     return """
     <!doctype html>
     <html lang="he">
@@ -914,8 +990,10 @@ def admin_setup_form(admin_key: str = '') -> str:
             <button type="submit">צור מוסד</button>
           </form>
           <div class="links">
-            <a href="/admin/institutions">רשימת מוסדות</a>
-            <a href="/web/admin">עמדת ניהול ווב</a>
+            <a href="/admin/setup">רישום מוסד חדש</a>
+            <a href="/admin/sync-status">סטטוס סינכרון</a>
+            <a href="/admin/changes">שינויים אחרונים</a>
+            <a href="/admin/logout">יציאה</a>
           </div>
         </div>
       </div>
@@ -1789,10 +1867,10 @@ def web_settings(request: Request):
 
 
 @app.get("/admin/sync-status", response_class=HTMLResponse)
-def admin_sync_status(admin_key: str = '') -> str:
-    expected = str(os.getenv('ADMIN_KEY') or '').strip()
-    if expected and admin_key != expected:
-        return "<h3>Invalid admin key</h3>"
+def admin_sync_status(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
     conn = _db()
     cur = conn.cursor()
     cur.execute('SELECT COUNT(*) AS total FROM changes')
@@ -1829,6 +1907,7 @@ def admin_sync_status(admin_key: str = '') -> str:
           <div class="links">
             <a href="/admin/changes">שינויים אחרונים</a>
             <a href="/admin/institutions">מוסדות</a>
+            <a href="/admin/logout">יציאה</a>
             <a href="/web/admin">עמדת ניהול ווב</a>
           </div>
         </div>
@@ -1839,10 +1918,10 @@ def admin_sync_status(admin_key: str = '') -> str:
 
 
 @app.get("/admin/changes", response_class=HTMLResponse)
-def admin_changes(admin_key: str = '') -> str:
-    expected = str(os.getenv('ADMIN_KEY') or '').strip()
-    if expected and admin_key != expected:
-        return "<h3>Invalid admin key</h3>"
+def admin_changes(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
     status_bar = _admin_status_bar()
     conn = _db()
     cur = conn.cursor()
@@ -1894,6 +1973,7 @@ def admin_changes(admin_key: str = '') -> str:
           <div class="links">
             <a href="/admin/sync-status">סטטוס סינכרון</a>
             <a href="/admin/institutions">מוסדות</a>
+            <a href="/admin/logout">יציאה</a>
             <a href="/web/admin">עמדת ניהול ווב</a>
           </div>
         </div>
@@ -1904,10 +1984,10 @@ def admin_changes(admin_key: str = '') -> str:
 
 
 @app.get("/admin/institutions", response_class=HTMLResponse)
-def admin_institutions(admin_key: str = '') -> str:
-    expected = str(os.getenv('ADMIN_KEY') or '').strip()
-    if expected and admin_key != expected:
-        return "<h3>Invalid admin key</h3>"
+def admin_institutions(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
     status_bar = _admin_status_bar()
     conn = _db()
     cur = conn.cursor()
@@ -1915,7 +1995,7 @@ def admin_institutions(admin_key: str = '') -> str:
     rows = cur.fetchall() or []
     conn.close()
     items = "".join(
-        f"<tr><td>{r['tenant_id']}</td><td>{r['name']}</td><td>{r['api_key']}</td><td>{'כן' if (r['password_hash'] or '').strip() else 'לא'}</td><td><a href='/admin/institutions/password?tenant_id={r['tenant_id']}&admin_key={admin_key}'>עדכן סיסמה</a></td><td>{r['created_at']}</td></tr>"
+        f"<tr><td>{r['tenant_id']}</td><td>{r['name']}</td><td>{r['api_key']}</td><td>{'כן' if (r['password_hash'] or '').strip() else 'לא'}</td><td><a href='/admin/institutions/password?tenant_id={r['tenant_id']}'>עדכן סיסמה</a></td><td>{r['created_at']}</td></tr>"
         for r in rows
     )
     return f"""
@@ -1960,10 +2040,10 @@ def admin_institutions(admin_key: str = '') -> str:
 
 
 @app.get("/admin/institutions/password", response_class=HTMLResponse)
-def admin_institution_password_form(tenant_id: str, admin_key: str = '') -> str:
-    expected = str(os.getenv('ADMIN_KEY') or '').strip()
-    if expected and admin_key != expected:
-        return "<h3>Invalid admin key</h3>"
+def admin_institution_password_form(request: Request, tenant_id: str, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
     conn = _db()
     cur = conn.cursor()
     cur.execute('SELECT tenant_id, name FROM institutions WHERE tenant_id = ? LIMIT 1', (tenant_id.strip(),))
@@ -2002,7 +2082,8 @@ def admin_institution_password_form(tenant_id: str, admin_key: str = '') -> str:
             <button type="submit">שמירה</button>
           </form>
           <div class="links">
-            <a href="/admin/institutions?admin_key={admin_key}">חזרה לרשימת מוסדות</a>
+            <a href="/admin/institutions">חזרה לרשימת מוסדות</a>
+            <a href="/admin/logout">יציאה</a>
           </div>
         </div>
       </div>
@@ -2013,20 +2094,21 @@ def admin_institution_password_form(tenant_id: str, admin_key: str = '') -> str:
 
 @app.post("/admin/institutions/password", response_class=HTMLResponse)
 def admin_institution_password_submit(
+    request: Request,
     tenant_id: str = Form(...),
     institution_password: str = Form(...),
     admin_key: str = ''
 ) -> str:
-    expected = str(os.getenv('ADMIN_KEY') or '').strip()
-    if expected and admin_key != expected:
-        return "<h3>Invalid admin key</h3>"
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
     conn = _db()
     cur = conn.cursor()
     pw_hash = _pbkdf2_hash(institution_password.strip())
     cur.execute('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?', (pw_hash, tenant_id.strip()))
     conn.commit()
     conn.close()
-    return f"<h3>סיסמת מוסד עודכנה.</h3><p><a href='/admin/institutions?admin_key={admin_key}'>חזרה לרשימת מוסדות</a></p>"
+    return "<h3>סיסמת מוסד עודכנה.</h3><p><a href='/admin/institutions'>חזרה לרשימת מוסדות</a></p>"
 
 
 @app.get("/api/students")
@@ -2206,15 +2288,16 @@ def web_admin(request: Request):
 
 @app.post("/admin/setup", response_class=HTMLResponse)
 def admin_setup_submit(
+    request: Request,
     name: str = Form(...),
     tenant_id: str = Form(...),
     institution_password: str = Form(...),
     api_key: str = Form(default=''),
     admin_key: str = ''
 ) -> str:
-    expected = str(os.getenv('ADMIN_KEY') or '').strip()
-    if expected and admin_key != expected:
-        return "<h3>Invalid admin key</h3>"
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
     conn = _db()
     cur = conn.cursor()
     api_key = api_key.strip() or secrets.token_urlsafe(16)
