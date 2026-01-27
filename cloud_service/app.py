@@ -1337,6 +1337,16 @@ def web_equipment_required() -> str:
     if not html:
         body = "<h2>רשימת ציוד נדרש</h2><p>העמוד עדיין לא זמין.</p>"
         return _public_web_shell("רשימת ציוד נדרש", body)
+    return web_equipment_required_content()
+
+
+@app.get("/web/equipment-required/content", response_class=HTMLResponse)
+def web_equipment_required_content() -> str:
+    path = os.path.join(ROOT_DIR, 'equipment_required.html')
+    html = _read_text_file(path)
+    if not html:
+        body = "<h2>רשימת ציוד נדרש</h2><p>העמוד עדיין לא זמין.</p>"
+        return _public_web_shell("רשימת ציוד נדרש", body)
     html = str(html)
     html = html.replace('src="equipment_required_files/', 'src="/web/assets/equipment_required_files/')
     html = html.replace("src='equipment_required_files/", "src='/web/assets/equipment_required_files/")
@@ -1361,6 +1371,36 @@ def web_download() -> str:
     </div>
     """
     return _public_web_shell("הורדה", body)
+
+
+@app.get("/web/pricing", response_class=HTMLResponse)
+def web_pricing() -> str:
+    body = f"""
+    <div style=\"text-align:center;\">
+      <div style=\"font-size:22px;font-weight:900;\">תמחור</div>
+      <div style=\"margin-top:8px; color:#637381; line-height:1.8;\">דף תמחור יושלם כאן. בינתיים ניתן ליצור קשר לקבלת הצעה.</div>
+    </div>
+    <div style=\"margin-top:16px; display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:12px;\">
+      <div style=\"border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff;\">
+        <div style=\"font-weight:900;\">בסיסי</div>
+        <div style=\"margin-top:6px; color:#637381;\">עד 2 תחנות</div>
+      </div>
+      <div style=\"border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff;\">
+        <div style=\"font-weight:900;\">מורחב</div>
+        <div style=\"margin-top:6px; color:#637381;\">עד 5 תחנות</div>
+      </div>
+      <div style=\"border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff;\">
+        <div style=\"font-weight:900;\">ללא הגבלה</div>
+        <div style=\"margin-top:6px; color:#637381;\">מספר תחנות גבוה</div>
+      </div>
+    </div>
+    <div class=\"actionbar\" style=\"justify-content:center;\">
+      <a class=\"green\" href=\"/web/contact\">צור קשר</a>
+      <a class=\"blue\" href=\"/web/signin\">כניסה</a>
+    </div>
+    <div class=\"small\">build: {APP_BUILD_TAG}</div>
+    """
+    return _public_web_shell("תמחור", body)
 
 
 @app.get("/web/contact", response_class=HTMLResponse)
@@ -1466,6 +1506,20 @@ def web_guide() -> str:
     if not html:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין בקובץ זה.</p>"
         return _public_web_shell("מדריך", body)
+    body = """
+    <div style=\"height:78vh;\">
+      <iframe src=\"/web/guide-content\" style=\"width:100%;height:100%;border:0;border-radius:10px; background:#fff;\"></iframe>
+    </div>
+    """
+    return _public_web_shell("מדריך", body)
+
+
+@app.get("/web/guide-content", response_class=HTMLResponse)
+def web_guide_content() -> str:
+    guide_path = os.path.join(ROOT_DIR, 'guide_user_embedded.html')
+    html = _read_text_file(guide_path)
+    if not html:
+        return "<h2>מדריך</h2><p>המדריך עדיין לא זמין בקובץ זה.</p>"
     html = str(html)
     html = html.replace('file:///C:/ProgramData/SchoolPoints/equipment_required.html', '/web/equipment-required')
     html = html.replace('file:///C:/ProgramData/SchoolPoints/guide_user_embedded.html', '/web/guide')
