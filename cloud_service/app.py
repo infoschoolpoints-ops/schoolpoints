@@ -781,20 +781,23 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
 
 
 def _replace_rows_postgres(conn, table: str, rows: List[Dict[str, Any]]) -> int:
-    if not rows:
-        cur = conn.cursor()
-        cur.execute(f'TRUNCATE TABLE {table}')
-        return 0
-
-    cols = list((rows[0] or {}).keys())
-    if not cols:
-        return 0
-    cols = [c for c in cols if c not in ('created_at', 'updated_at')]
-    if not cols:
-        return 0
-
     cur = conn.cursor()
     cur.execute(f'TRUNCATE TABLE {table}')
+    if not rows:
+        return 0
+
+    existing_cols = _table_columns_postgres(conn, table)
+    if not existing_cols:
+        return 0
+    allowed = set(existing_cols)
+    allowed.discard('created_at')
+    allowed.discard('updated_at')
+
+    cols = [c for c in list((rows[0] or {}).keys()) if c in allowed]
+    if not cols:
+        cols = [c for c in existing_cols if c in allowed]
+    if not cols:
+        return 0
 
     template = '(' + ','.join(['%s'] * len(cols)) + ')'
     values = [[(r or {}).get(c) for c in cols] for r in rows]
@@ -955,6 +958,33 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
             except Exception:
                 pass
     return cols
+
+
+def _table_columns_postgres(conn, table: str) -> List[str]:
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                '''
+                SELECT column_name
+                  FROM information_schema.columns
+                 WHERE table_schema = current_schema()
+                   AND table_name = ?
+                 ORDER BY ordinal_position
+                '''
+            ),
+            (str(table),)
+        )
+        rows = cur.fetchall() or []
+        cols: List[str] = []
+        for r in rows:
+            if isinstance(r, dict):
+                cols.append(str(r.get('column_name') or ''))
+            else:
+                cols.append(str(r[0]))
+        return [c for c in cols if c]
+    except Exception:
+        return []
 
 
 def _replace_rows(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any]]) -> int:
