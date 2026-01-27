@@ -315,6 +315,18 @@ def _read_text_file(path: str) -> str:
 
 
 def _public_web_shell(title: str, body_html: str) -> str:
+    footer = f"""
+      <div style=\"margin-top:18px; padding-top:14px; border-top:1px solid var(--line); display:flex; gap:12px; flex-wrap:wrap; justify-content:space-between; align-items:center;\">
+        <div style=\"font-size:13px; color:#637381;\">
+          <div style=\"font-weight:800; color:#1f2d3a;\">אזור אישי</div>
+          <div><a href=\"/web/signin\" style=\"color:#1f2d3a; text-decoration:none; font-weight:700;\">התחברות</a></div>
+        </div>
+        <div class=\"actionbar\" style=\"justify-content:flex-end; margin-top:0;\">
+          <a class=\"blue\" href=\"/web/login\">דף הבית</a>
+          <a class=\"gray\" href=\"javascript:history.back()\">אחורה</a>
+        </div>
+      </div>
+    """
     return f"""
     <!doctype html>
     <html lang="he">
@@ -344,6 +356,7 @@ def _public_web_shell(title: str, body_html: str) -> str:
         <div class="card">
           <div class="titlebar"><h2>{title}</h2></div>
           {body_html}
+          {footer}
         </div>
       </div>
     </body>
@@ -400,6 +413,18 @@ def _init_db() -> None:
             )
             '''
         )
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS contact_messages (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT,
+                email TEXT,
+                subject TEXT,
+                message TEXT,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
     else:
         cur.execute(
             '''
@@ -450,8 +475,36 @@ def _init_db() -> None:
             )
             '''
         )
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS contact_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                email TEXT,
+                subject TEXT,
+                message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
     conn.commit()
     conn.close()
+
+
+def _save_contact_message(name: str, email: str, subject: str, message: str) -> None:
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('INSERT INTO contact_messages (name, email, subject, message) VALUES (?, ?, ?, ?)'),
+            (name, email, subject, message)
+        )
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _pbkdf2_hash(password: str, salt: bytes | None = None) -> str:
@@ -1312,15 +1365,50 @@ def web_download() -> str:
 
 @app.get("/web/contact", response_class=HTMLResponse)
 def web_contact() -> str:
-    email = "info.schoolpoints@gmail.com"
     body = f"""
+    <style>
+      form {{ display:grid; grid-template-columns: 1fr; gap:10px; max-width: 560px; margin: 0 auto; }}
+      label {{ font-weight:800; font-size:13px; }}
+      input, textarea {{ width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }}
+      textarea {{ min-height: 140px; resize: vertical; }}
+      button {{ padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:900; cursor:pointer; font-size:15px; }}
+      .hint {{ text-align:center; font-size:12px; color:#637381; margin-top:10px; }}
+    </style>
     <div style=\"text-align:center;\">
       <div style=\"font-size:22px;font-weight:900;\">צור קשר</div>
-      <div style=\"margin-top:10px;line-height:1.8;\">ליצירת קשר: <a href=\"mailto:{email}\">{email}</a></div>
+      <div style=\"margin-top:8px; color:#637381;\">נשמח לעזור. ניתן להשאיר פרטים ונחזור אליך.</div>
+    </div>
+    <form method=\"post\" action=\"/web/contact\" style=\"margin-top:14px;\">
+      <label>שם</label>
+      <input name=\"name\" required />
+      <label>דוא\"ל</label>
+      <input name=\"email\" type=\"email\" required />
+      <label>נושא</label>
+      <input name=\"subject\" required />
+      <label>הודעה</label>
+      <textarea name=\"message\" required></textarea>
+      <button type=\"submit\">שליחה</button>
+    </form>
+    <div class=\"hint\">build: {APP_BUILD_TAG}</div>
+    """
+    return _public_web_shell("צור קשר", body)
+
+
+@app.post("/web/contact", response_class=HTMLResponse)
+def web_contact_submit(
+    name: str = Form(...),
+    email: str = Form(...),
+    subject: str = Form(...),
+    message: str = Form(...),
+) -> str:
+    _save_contact_message(name.strip(), email.strip(), subject.strip(), message.strip())
+    body = f"""
+    <div style=\"text-align:center;\">
+      <div style=\"font-size:22px;font-weight:900;\">הודעה נשלחה</div>
+      <div style=\"margin-top:10px;line-height:1.8; color:#637381;\">קיבלנו את ההודעה ונחזור אליך בהקדם.</div>
       <div class=\"actionbar\" style=\"justify-content:center;\">
-        <a class=\"green\" href=\"mailto:{email}\">שליחת מייל</a>
-        <a class=\"blue\" href=\"/web/guide\">מדריך</a>
-        <a class=\"gray\" href=\"/web/login\">חזרה</a>
+        <a class=\"green\" href=\"/web/login\">חזרה לדף הבית</a>
+        <a class=\"blue\" href=\"/web/contact\">שליחת הודעה נוספת</a>
       </div>
       <div class=\"small\">build: {APP_BUILD_TAG}</div>
     </div>
