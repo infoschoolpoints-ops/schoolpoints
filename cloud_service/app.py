@@ -723,6 +723,12 @@ class SnapshotPayload(BaseModel):
     students: List[Dict[str, Any]] = []
 
 
+class StudentUpdatePayload(BaseModel):
+    student_id: int
+    points: int | None = None
+    private_message: str | None = None
+
+
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
         return int(v)
@@ -2601,6 +2607,47 @@ def api_students(
     }
 
 
+@app.post("/api/students/update")
+def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='missing tenant')
+    sid = int(payload.student_id or 0)
+    if sid <= 0:
+        raise HTTPException(status_code=400, detail='invalid student_id')
+
+    points = payload.points
+    private_message = payload.private_message
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        sets = []
+        params: List[Any] = []
+        if points is not None:
+            sets.append('points = ?')
+            params.append(int(points))
+        if private_message is not None:
+            sets.append('private_message = ?')
+            params.append(str(private_message))
+        if not sets:
+            return {'ok': True, 'updated': False}
+        sets.append('updated_at = CURRENT_TIMESTAMP')
+        sql = 'UPDATE students SET ' + ', '.join(sets) + ' WHERE id = ?'
+        params.append(int(sid))
+        cur.execute(_sql_placeholder(sql), params)
+        conn.commit()
+        return {'ok': True, 'updated': True}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.get("/web/admin", response_class=HTMLResponse)
 def web_admin(request: Request):
     guard = _web_require_teacher(request)
@@ -2613,14 +2660,47 @@ def web_admin(request: Request):
         const rowsEl = document.getElementById('rows');
         const statusEl = document.getElementById('status');
         const searchEl = document.getElementById('search');
+        const selectedEl = document.getElementById('selected');
+        const btnEditPoints = document.getElementById('btnEditPoints');
+        const btnEditMsg = document.getElementById('btnEditMsg');
+        let selectedId = null;
         let timer = null;
+
+        function setSelected(id) {
+          selectedId = id;
+          const on = (selectedId !== null);
+          btnEditPoints.style.opacity = on ? '1' : '.55';
+          btnEditMsg.style.opacity = on ? '1' : '.55';
+          btnEditPoints.style.pointerEvents = on ? 'auto' : 'none';
+          btnEditMsg.style.pointerEvents = on ? 'auto' : 'none';
+          selectedEl.textContent = on ? `נבחר תלמיד ID ${selectedId}` : 'לא נבחר תלמיד';
+          document.querySelectorAll('tr[data-id]').forEach(tr => {
+            tr.style.outline = (String(tr.getAttribute('data-id')) === String(selectedId)) ? '2px solid #1abc9c' : 'none';
+          });
+        }
+
+        async function updateStudent(patch) {
+          if (!selectedId) return;
+          const resp = await fetch('/api/students/update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id: selectedId, ...patch })
+          });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            alert('שגיאה בעדכון: ' + txt);
+            return;
+          }
+          await load();
+        }
+
         async function load() {
           statusEl.textContent = 'טוען...';
           const q = encodeURIComponent(searchEl.value || '');
           const resp = await fetch(`/api/students?q=${q}`);
           const data = await resp.json();
           rowsEl.innerHTML = data.items.map(r => `
-            <tr>
+            <tr data-id="${r.id}">
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.serial_number ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.last_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.first_name ?? ''}</td>
@@ -2631,11 +2711,35 @@ def web_admin(request: Request):
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.card_number ?? ''}</td>
             </tr>`).join('');
           statusEl.textContent = `נטענו ${data.items.length} תלמידים`;
+
+          document.querySelectorAll('tr[data-id]').forEach(tr => {
+            tr.addEventListener('click', () => setSelected(tr.getAttribute('data-id')));
+          });
+          if (selectedId) {
+            setSelected(selectedId);
+          }
         }
         searchEl.addEventListener('input', () => {
           clearTimeout(timer);
           timer = setTimeout(load, 300);
         });
+
+        btnEditPoints.addEventListener('click', async () => {
+          if (!selectedId) return;
+          const val = prompt('נקודות חדשות:');
+          if (val === null) return;
+          const n = parseInt(val, 10);
+          if (Number.isNaN(n)) { alert('ערך לא תקין'); return; }
+          await updateStudent({ points: n });
+        });
+
+        btnEditMsg.addEventListener('click', async () => {
+          if (!selectedId) return;
+          const val = prompt('הודעה פרטית (ריק למחיקה):');
+          if (val === null) return;
+          await updateStudent({ private_message: String(val) });
+        });
+
         load();
       </script>
     """
@@ -2701,6 +2805,11 @@ def web_admin(request: Request):
           <input value="" id="tenant" disabled style="min-width:160px;" />
           <input id="search" placeholder="חיפוש" />
           <span id="status" style="color:#637381;">טוען...</span>
+        </div>
+        <div class="actions" style="display:flex;gap:10px;flex-wrap:wrap;margin:0 0 10px;align-items:center;">
+          <a class="btn-blue" id="btnEditPoints" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך נקודות</a>
+          <a class="btn-blue" id="btnEditMsg" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך הודעה</a>
+          <span id="selected" style="color:#637381;">לא נבחר תלמיד</span>
         </div>
         <div class="card">
           <div style="overflow:auto;">
