@@ -1032,6 +1032,11 @@ def _make_event_id(station_id: str | None, local_id: int | None, created_at: str
     sid = _safe_str(station_id).strip() or 'unknown'
     lid = _safe_int(local_id, 0)
     ca = _safe_str(created_at).strip()
+    try:
+        if ca.lower() in ('none', 'null'):
+            ca = ''
+    except Exception:
+        pass
     if lid:
         return f"{sid}:{lid}"
     if ca:
@@ -3793,12 +3798,12 @@ def web_admin(request: Request):
           });
         }
 
-        async function updateStudent(patch) {
-          if (!selectedId) return;
+        async function updateStudentFor(studentId, patch) {
+          if (!studentId) return;
           const resp = await fetch('/api/students/update', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_id: selectedId, ...patch })
+            body: JSON.stringify({ student_id: parseInt(String(studentId), 10), ...patch })
           });
           if (!resp.ok) {
             const txt = await resp.text();
@@ -3806,6 +3811,11 @@ def web_admin(request: Request):
             return;
           }
           await load();
+        }
+
+        async function updateStudent(patch) {
+          if (!selectedId) return;
+          await updateStudentFor(selectedId, patch);
         }
 
         async function load() {
@@ -3819,8 +3829,8 @@ def web_admin(request: Request):
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.last_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.first_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.class_name ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.points ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.private_message ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="points" contenteditable="true">${r.points ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="private_message" contenteditable="true">${r.private_message ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.card_number ?? ''}</td>
             </tr>`).join('');
           statusEl.textContent = `נטענו ${data.items.length} תלמידים`;
@@ -3828,6 +3838,38 @@ def web_admin(request: Request):
           document.querySelectorAll('tr[data-id]').forEach(tr => {
             tr.addEventListener('click', () => setSelected(tr.getAttribute('data-id')));
           });
+
+          document.querySelectorAll('td[contenteditable][data-field]').forEach(td => {
+            td.addEventListener('click', (ev) => {
+              try { ev.stopPropagation(); } catch (e) {}
+              const tr = td.closest('tr[data-id]');
+              if (tr) setSelected(tr.getAttribute('data-id'));
+            });
+
+            td.addEventListener('keydown', (ev) => {
+              if (ev.key === 'Enter') {
+                ev.preventDefault();
+                try { td.blur(); } catch (e) {}
+              }
+            });
+
+            td.addEventListener('blur', async () => {
+              const tr = td.closest('tr[data-id]');
+              const sid = tr ? tr.getAttribute('data-id') : null;
+              if (!sid) return;
+              const field = td.getAttribute('data-field');
+              const raw = (td.textContent ?? '').trim();
+
+              if (field === 'points') {
+                const n = parseInt(raw || '0', 10);
+                if (Number.isNaN(n)) { alert('ערך לא תקין'); await load(); return; }
+                await updateStudentFor(sid, { points: n });
+              } else if (field === 'private_message') {
+                await updateStudentFor(sid, { private_message: String(raw) });
+              }
+            });
+          });
+
           if (selectedId) {
             setSelected(selectedId);
           }
