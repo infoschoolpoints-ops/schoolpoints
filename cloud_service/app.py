@@ -858,6 +858,40 @@ def _tenant_school_db(tenant_id: str):
     return conn
 
 
+def _tenant_db_ready(tenant_id: str) -> bool:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        return False
+    if USE_POSTGRES:
+        schema = _tenant_schema(tenant_id)
+        conn = _db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                _sql_placeholder(
+                    """
+                    SELECT 1
+                      FROM information_schema.tables
+                     WHERE table_schema = ? AND table_name = 'students'
+                     LIMIT 1
+                    """
+                ),
+                (schema,)
+            )
+            return bool(cur.fetchone())
+        except Exception:
+            return False
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    try:
+        return os.path.isfile(_tenant_school_db_path(tenant_id))
+    except Exception:
+        return False
+
+
 @app.on_event("startup")
 def _startup() -> None:
     _init_db()
@@ -2072,7 +2106,9 @@ def web_institution_login(
         return HTMLResponse(_public_web_shell("כניסה למערכת", body))
 
     try:
-        _ensure_tenant_db_exists(tenant_id.strip())
+        tid = tenant_id.strip()
+        if not _tenant_db_ready(tid):
+            _ensure_tenant_db_exists(tid)
     except Exception as e:
         try:
             print(f"[WEB] open tenant db failed tenant={tenant_id.strip()}: {e}", file=sys.stderr)
