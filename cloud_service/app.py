@@ -315,17 +315,40 @@ def _read_text_file(path: str) -> str:
 
 
 def _public_web_shell(title: str, body_html: str) -> str:
-    footer = f"""
-      <div style=\"margin-top:18px; padding-top:14px; border-top:1px solid var(--line); display:flex; gap:12px; flex-wrap:wrap; justify-content:space-between; align-items:center;\">
-        <div style=\"font-size:13px; color:#637381;\">
-          <div style=\"font-weight:800; color:#1f2d3a;\">אזור אישי</div>
-          <div><a href=\"/web/signin\" style=\"color:#1f2d3a; text-decoration:none; font-weight:700;\">התחברות</a></div>
+    footer = """
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line); display:flex; gap:12px; flex-wrap:wrap; justify-content:space-between; align-items:center;">
+        <div style="font-size:13px; color:#637381;">
+          <div style="font-weight:800; color:#1f2d3a;">אזור אישי</div>
+          <div id="whoami" style="margin-top:4px;">
+            <a href="/web/signin" style="color:#1f2d3a; text-decoration:none; font-weight:700;">התחברות</a>
+          </div>
         </div>
-        <div class=\"actionbar\" style=\"justify-content:flex-end; margin-top:0;\">
-          <a class=\"blue\" href=\"/web/login\">דף הבית</a>
-          <a class=\"gray\" href=\"javascript:history.back()\">אחורה</a>
+        <div class="actionbar" style="justify-content:flex-end; margin-top:0;">
+          <a class="blue" href="/web/login">דף הבית</a>
+          <a class="gray" href="javascript:history.back()">אחורה</a>
         </div>
       </div>
+      <script>
+        (async function() {
+          const el = document.getElementById('whoami');
+          if (!el) return;
+          try {
+            const resp = await fetch('/web/whoami', { credentials: 'same-origin' });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data || !data.tenant_id) return;
+            const name = (data.institution_name || data.tenant_id || '').toString();
+            el.innerHTML = `
+              <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                <span style="font-weight:800; color:#1f2d3a;">${name}</span>
+                <a href="/web/account" style="color:#1f2d3a; text-decoration:none; font-weight:700;">תפריט מוסד</a>
+                <a href="/web/logout" style="color:#1f2d3a; text-decoration:none; font-weight:700;">יציאה</a>
+              </div>
+            `;
+          } catch (e) {
+          }
+        })();
+      </script>
     """
     return f"""
     <!doctype html>
@@ -489,6 +512,30 @@ def _init_db() -> None:
         )
     conn.commit()
     conn.close()
+
+
+@app.get('/web/whoami')
+def web_whoami(request: Request) -> Dict[str, Any]:
+    tenant_id = _web_tenant_from_cookie(request)
+    teacher_id = _web_teacher_from_cookie(request)
+    inst_name = ''
+    if tenant_id:
+        try:
+            conn = _db()
+            cur = conn.cursor()
+            cur.execute(_sql_placeholder('SELECT name FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id,))
+            row = cur.fetchone() or {}
+            conn.close()
+            inst_name = (row.get('name') if isinstance(row, dict) else row[0]) or ''
+        except Exception:
+            inst_name = ''
+    return {
+        'tenant_id': tenant_id or '',
+        'institution_name': str(inst_name or '').strip(),
+        'teacher_id': teacher_id or '',
+        'is_logged_in': bool(tenant_id),
+        'is_teacher': bool(teacher_id),
+    }
 
 
 def _save_contact_message(name: str, email: str, subject: str, message: str) -> None:
@@ -1377,6 +1424,66 @@ def web_download() -> str:
     </div>
     """
     return _public_web_shell("הורדה", body)
+
+
+@app.get("/web/account", response_class=HTMLResponse)
+def web_account(request: Request) -> str:
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return _public_web_shell("אזור אישי", "<h2>אזור אישי</h2><p>יש להתחבר כדי לצפות בפרטי המוסד.</p>")
+    body = f"""
+    <h2>תפריט מוסד</h2>
+    <div style=\"color:#637381; margin-top:-6px;\">מוסד: <b>{tenant_id}</b></div>
+    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+      <a class=\"blue\" href=\"/web/account/password\">החלפת סיסמה</a>
+      <a class=\"blue\" href=\"/web/account/forgot\">שכחתי סיסמה</a>
+      <a class=\"blue\" href=\"/web/account/payments\">תשלומים</a>
+      <a class=\"gray\" href=\"/web/admin\">ניהול</a>
+    </div>
+    """
+    return _public_web_shell("אזור אישי", body)
+
+
+@app.get("/web/account/password", response_class=HTMLResponse)
+def web_account_password(request: Request) -> str:
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return _public_web_shell("החלפת סיסמה", "<h2>החלפת סיסמה</h2><p>יש להתחבר כדי להחליף סיסמה.</p>")
+    body = """
+    <h2>החלפת סיסמה</h2>
+    <p>מסך החלפת סיסמה יושלם כאן.</p>
+    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+      <a class=\"gray\" href=\"/web/account\">חזרה</a>
+    </div>
+    """
+    return _public_web_shell("החלפת סיסמה", body)
+
+
+@app.get("/web/account/forgot", response_class=HTMLResponse)
+def web_account_forgot(request: Request) -> str:
+    body = """
+    <h2>שכחתי סיסמה</h2>
+    <p>מסך שחזור סיסמה יושלם כאן.</p>
+    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+      <a class=\"gray\" href=\"/web/account\">חזרה</a>
+    </div>
+    """
+    return _public_web_shell("שכחתי סיסמה", body)
+
+
+@app.get("/web/account/payments", response_class=HTMLResponse)
+def web_account_payments(request: Request) -> str:
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return _public_web_shell("תשלומים", "<h2>תשלומים</h2><p>יש להתחבר כדי לצפות בתשלומים.</p>")
+    body = """
+    <h2>תשלומים</h2>
+    <p>מסך תשלומים/רישום יושלם כאן.</p>
+    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+      <a class=\"gray\" href=\"/web/account\">חזרה</a>
+    </div>
+    """
+    return _public_web_shell("תשלומים", body)
 
 
 @app.get("/web/pricing", response_class=HTMLResponse)
