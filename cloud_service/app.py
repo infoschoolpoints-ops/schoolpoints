@@ -619,14 +619,22 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
                     points INTEGER DEFAULT 0,
                     card_number TEXT,
                     id_number TEXT,
-                    serial_number BIGINT,
-                    photo_number BIGINT,
+                    serial_number TEXT,
+                    photo_number TEXT,
                     private_message TEXT,
                     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                 )
                 '''
             )
+            try:
+                cur.execute(f'ALTER TABLE "{schema}".students ALTER COLUMN serial_number TYPE TEXT')
+            except Exception:
+                pass
+            try:
+                cur.execute(f'ALTER TABLE "{schema}".students ALTER COLUMN photo_number TYPE TEXT')
+            except Exception:
+                pass
             cur.execute(
                 f'''
                 CREATE TABLE IF NOT EXISTS "{schema}".settings (
