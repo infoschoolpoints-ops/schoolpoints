@@ -2464,15 +2464,24 @@ def web_student_new_submit(
 
 
 @app.get("/web/students/edit", response_class=HTMLResponse)
-def web_student_edit(request: Request):
+def web_student_edit(request: Request, student_id: int | None = Query(default=None)):
     guard = _web_require_teacher(request)
     if guard:
         return guard
+    sid_val = ''
+    sid_ro = ''
+    try:
+        if student_id is not None and int(student_id) > 0:
+            sid_val = str(int(student_id))
+            sid_ro = 'readonly'
+    except Exception:
+        sid_val = ''
+        sid_ro = ''
     body = """
     <h2>עריכת תלמיד</h2>
     <form method="post">
       <label>מזהה תלמיד (ID)</label>
-      <input name="student_id" placeholder="ID" required />
+      <input name="student_id" placeholder="ID" required value=""" + sid_val + """" """ + sid_ro + """ />
       <label>נקודות</label>
       <input name="points" type="number" placeholder="0" />
       <label>הודעה פרטית</label>
@@ -3765,6 +3774,7 @@ def web_admin(request: Request):
         const selectedEl = document.getElementById('selected');
         const btnEditPoints = document.getElementById('btnEditPoints');
         const btnEditMsg = document.getElementById('btnEditMsg');
+        const btnEditStudent = document.getElementById('btnEditStudent');
         let selectedId = null;
         let timer = null;
 
@@ -3773,8 +3783,10 @@ def web_admin(request: Request):
           const on = (selectedId !== null);
           btnEditPoints.style.opacity = on ? '1' : '.55';
           btnEditMsg.style.opacity = on ? '1' : '.55';
+          btnEditStudent.style.opacity = on ? '1' : '.55';
           btnEditPoints.style.pointerEvents = on ? 'auto' : 'none';
           btnEditMsg.style.pointerEvents = on ? 'auto' : 'none';
+          btnEditStudent.style.pointerEvents = on ? 'auto' : 'none';
           selectedEl.textContent = on ? `נבחר תלמיד ID ${selectedId}` : 'לא נבחר תלמיד';
           document.querySelectorAll('tr[data-id]').forEach(tr => {
             tr.style.outline = (String(tr.getAttribute('data-id')) === String(selectedId)) ? '2px solid #1abc9c' : 'none';
@@ -3839,6 +3851,11 @@ def web_admin(request: Request):
           const val = prompt('הודעה פרטית (ריק למחיקה):');
           if (val === null) return;
           await updateStudent({ private_message: String(val) });
+        });
+
+        btnEditStudent.addEventListener('click', async () => {
+          if (!selectedId) return;
+          window.location.href = `/web/students/edit?student_id=${encodeURIComponent(String(selectedId))}`;
         });
 
         load();
@@ -3910,6 +3927,7 @@ def web_admin(request: Request):
         <div class="actions" style="display:flex;gap:10px;flex-wrap:wrap;margin:0 0 10px;align-items:center;">
           <a class="btn-blue" id="btnEditPoints" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך נקודות</a>
           <a class="btn-blue" id="btnEditMsg" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך הודעה</a>
+          <a class="btn-blue" id="btnEditStudent" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך תלמיד</a>
           <span id="selected" style="color:#637381;">לא נבחר תלמיד</span>
         </div>
         <div class="card">
@@ -3932,7 +3950,7 @@ def web_admin(request: Request):
         </div>
         <div class="footerbar">
           <a class="btn-green" href="/web/students/new">➕ הוסף תלמיד</a>
-          <a class="btn-blue" href="/web/students/edit">✏️ ערוך</a>
+          <a class="btn-blue" href="/web/students/edit">✏️ ערוך תלמיד</a>
           <a class="btn-orange" href="/web/students/delete">🗑️ מחיקה</a>
           <a class="btn-purple" href="/web/import">⬆️ ייבוא</a>
           <a class="btn-gray" href="/web/export">⬇️ ייצוא</a>
