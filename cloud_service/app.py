@@ -784,6 +784,19 @@ class StudentUpdatePayload(BaseModel):
     private_message: str | None = None
 
 
+class TeacherSavePayload(BaseModel):
+    teacher_id: int | None = None
+    name: str | None = None
+    card_number: str | None = None
+    card_number2: str | None = None
+    card_number3: str | None = None
+    is_admin: int | None = None
+
+
+class TeacherDeletePayload(BaseModel):
+    teacher_id: int
+
+
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
         return int(v)
@@ -2358,17 +2371,277 @@ def web_teachers(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
+    js = """
+      <script>
+        const rowsEl = document.getElementById('t_rows');
+        const statusEl = document.getElementById('t_status');
+        const searchEl = document.getElementById('t_search');
+        const selectedEl = document.getElementById('t_selected');
+        const btnNew = document.getElementById('t_new');
+        const btnEdit = document.getElementById('t_edit');
+        const btnDelete = document.getElementById('t_delete');
+        let selectedId = null;
+        let timer = null;
+
+        function setSelected(id) {
+          selectedId = id;
+          const on = (selectedId !== null);
+          btnEdit.style.opacity = on ? '1' : '.55';
+          btnDelete.style.opacity = on ? '1' : '.55';
+          btnEdit.style.pointerEvents = on ? 'auto' : 'none';
+          btnDelete.style.pointerEvents = on ? 'auto' : 'none';
+          selectedEl.textContent = on ? `נבחר מורה ID ${selectedId}` : 'לא נבחר מורה';
+          document.querySelectorAll('tr[data-id]').forEach(tr => {
+            tr.style.outline = (String(tr.getAttribute('data-id')) === String(selectedId)) ? '2px solid #1abc9c' : 'none';
+          });
+        }
+
+        async function load() {
+          statusEl.textContent = 'טוען...';
+          const q = encodeURIComponent(searchEl.value || '');
+          const resp = await fetch(`/api/teachers?q=${q}`);
+          const data = await resp.json();
+          rowsEl.innerHTML = data.items.map(r => `
+            <tr data-id="${r.id}">
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.id ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.name ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;direction:ltr;">${r.card_number ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;direction:ltr;">${r.card_number2 ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;direction:ltr;">${r.card_number3 ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${(r.is_admin ? 'כן' : '')}</td>
+            </tr>`).join('');
+          statusEl.textContent = `נטענו ${data.items.length} מורים`;
+          document.querySelectorAll('tr[data-id]').forEach(tr => {
+            tr.addEventListener('click', () => setSelected(tr.getAttribute('data-id')));
+          });
+          if (selectedId) {
+            setSelected(selectedId);
+          }
+        }
+
+        async function save(payload) {
+          const resp = await fetch('/api/teachers/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            alert('שגיאה: ' + txt);
+            return;
+          }
+          await load();
+        }
+
+        async function del(teacher_id) {
+          const resp = await fetch('/api/teachers/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ teacher_id: teacher_id })
+          });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            alert('שגיאה: ' + txt);
+            return;
+          }
+          selectedId = null;
+          await load();
+        }
+
+        btnNew.addEventListener('click', async () => {
+          const name = prompt('שם מורה:');
+          if (name === null) return;
+          const code = prompt('כרטיס/קוד מורה (ראשי):');
+          if (code === null) return;
+          const isAdmin = confirm('להגדיר כמנהל?') ? 1 : 0;
+          await save({ name: String(name), card_number: String(code), is_admin: isAdmin });
+        });
+
+        btnEdit.addEventListener('click', async () => {
+          if (!selectedId) return;
+          const name = prompt('שם מורה (השאר ריק כדי לא לשנות):');
+          if (name === null) return;
+          const code1 = prompt('כרטיס/קוד 1 (השאר ריק כדי לא לשנות):');
+          if (code1 === null) return;
+          const code2 = prompt('כרטיס/קוד 2 (ריק כדי לא לשנות):');
+          if (code2 === null) return;
+          const code3 = prompt('כרטיס/קוד 3 (ריק כדי לא לשנות):');
+          if (code3 === null) return;
+          const isAdmin = confirm('להגדיר כמנהל?') ? 1 : 0;
+          await save({ teacher_id: parseInt(selectedId, 10), name: String(name), card_number: String(code1), card_number2: String(code2), card_number3: String(code3), is_admin: isAdmin });
+        });
+
+        btnDelete.addEventListener('click', async () => {
+          if (!selectedId) return;
+          if (!confirm('למחוק מורה?')) return;
+          await del(parseInt(selectedId, 10));
+        });
+
+        searchEl.addEventListener('input', () => {
+          clearTimeout(timer);
+          timer = setTimeout(load, 300);
+        });
+
+        load();
+      </script>
+    """
+
     body = """
-    <h2>ניהול מורים</h2>
-    <p>מסך ניהול מורים והרשאות יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/teachers">➕ הוסף מורה</a>
-      <a class="blue" href="/web/teachers">🏷️ ניהול כיתות למורה</a>
-      <a class="orange" href="/web/teachers">🔐 הרשאות מנהל</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    <style>
+      table { width:100%; border-collapse:collapse; font-size:13px; }
+      th, td { padding:8px; border-bottom:1px solid #e3e9ee; text-align:right; }
+      th { background:#f6f8f9; }
+      tbody tr:nth-child(even) { background:#f3f6f8; }
+      .bar { margin:10px 0; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+      .bar input { padding:6px 8px; border:1px solid var(--line); border-radius:6px; }
+      .btn { padding:8px 12px; border-radius:6px; color:#fff; text-decoration:none; border:none; font-weight:600; cursor:pointer; }
+      .btn-green { background:#2ecc71; }
+      .btn-blue { background:#3498db; }
+      .btn-red { background:#e74c3c; }
+    </style>
+    <div class="bar">
+      <input id="t_search" placeholder="חיפוש" />
+      <span id="t_status" style="color:#637381;">טוען...</span>
+    </div>
+    <div class="bar">
+      <button class="btn btn-green" id="t_new" type="button">➕ הוסף מורה</button>
+      <button class="btn btn-blue" id="t_edit" type="button" style="opacity:.55;pointer-events:none;">✏️ עריכה</button>
+      <button class="btn btn-red" id="t_delete" type="button" style="opacity:.55;pointer-events:none;">🗑️ מחיקה</button>
+      <span id="t_selected" style="color:#637381;">לא נבחר מורה</span>
+    </div>
+    <div style="overflow:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>שם</th>
+            <th>כרטיס 1</th>
+            <th>כרטיס 2</th>
+            <th>כרטיס 3</th>
+            <th>מנהל</th>
+          </tr>
+        </thead>
+        <tbody id="t_rows"></tbody>
+      </table>
     </div>
     """
-    return _basic_web_shell("ניהול מורים", body)
+    return HTMLResponse(_basic_web_shell("ניהול מורים", body + js))
+
+
+@app.get("/api/teachers")
+def api_teachers(
+    request: Request,
+    q: str = Query(default='', description="search"),
+    limit: int = Query(default=500, ge=1, le=2000),
+    offset: int = Query(default=0, ge=0)
+) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        return {"items": [], "limit": limit, "offset": offset, "query": q}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    cur = conn.cursor()
+    query = """
+        SELECT id, name, card_number, card_number2, card_number3, is_admin
+        FROM teachers
+    """
+    params: List[Any] = []
+    if q:
+        like = f"%{q.strip()}%"
+        query += " WHERE name LIKE ? OR card_number LIKE ? OR card_number2 LIKE ? OR card_number3 LIKE ?"
+        params.extend([like, like, like, like])
+    query += " ORDER BY id ASC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    cur.execute(_sql_placeholder(query), params)
+    rows = [dict(r) for r in cur.fetchall()]
+    conn.close()
+    return {"items": rows, "limit": limit, "offset": offset, "query": q}
+
+
+@app.post("/api/teachers/save")
+def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='missing tenant')
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        tid = payload.teacher_id
+        if tid is None or int(tid or 0) <= 0:
+            cur.execute('SELECT COALESCE(MAX(id), 0) AS m FROM teachers')
+            r = cur.fetchone() or {}
+            max_id = int((r.get('m') if isinstance(r, dict) else r[0]) or 0)
+            tid = max_id + 1
+            cur.execute(
+                _sql_placeholder(
+                    'INSERT INTO teachers (id, name, card_number, card_number2, card_number3, is_admin) VALUES (?, ?, ?, ?, ?, ?)'
+                ),
+                (
+                    int(tid),
+                    str(payload.name or '').strip(),
+                    str(payload.card_number or '').strip(),
+                    str(payload.card_number2 or '').strip(),
+                    str(payload.card_number3 or '').strip(),
+                    int(payload.is_admin or 0),
+                )
+            )
+            conn.commit()
+            return {'ok': True, 'created': True, 'teacher_id': int(tid)}
+
+        sets = []
+        params: List[Any] = []
+        if payload.name is not None:
+            sets.append('name = ?')
+            params.append(str(payload.name).strip())
+        if payload.card_number is not None:
+            sets.append('card_number = ?')
+            params.append(str(payload.card_number).strip())
+        if payload.card_number2 is not None:
+            sets.append('card_number2 = ?')
+            params.append(str(payload.card_number2).strip())
+        if payload.card_number3 is not None:
+            sets.append('card_number3 = ?')
+            params.append(str(payload.card_number3).strip())
+        if payload.is_admin is not None:
+            sets.append('is_admin = ?')
+            params.append(int(payload.is_admin))
+        if not sets:
+            return {'ok': True, 'updated': False, 'teacher_id': int(tid)}
+        sets.append('updated_at = CURRENT_TIMESTAMP')
+        sql = 'UPDATE teachers SET ' + ', '.join(sets) + ' WHERE id = ?'
+        params.append(int(tid))
+        cur.execute(_sql_placeholder(sql), params)
+        conn.commit()
+        return {'ok': True, 'updated': True, 'teacher_id': int(tid)}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.post("/api/teachers/delete")
+def api_teachers_delete(request: Request, payload: TeacherDeletePayload) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='missing tenant')
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM teachers WHERE id = ?'), (int(payload.teacher_id),))
+        conn.commit()
+        return {'ok': True}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.get("/web/system-settings", response_class=HTMLResponse)
