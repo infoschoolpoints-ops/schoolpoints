@@ -2460,13 +2460,65 @@ def web_student_edit_submit(
         return guard
     tenant_id = _web_tenant_from_cookie(request)
     conn = _tenant_school_db(tenant_id)
-    cur = conn.cursor()
-    cur.execute(
-        _sql_placeholder('UPDATE students SET points = ?, private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
-        (int(points or 0), private_message.strip(), int(student_id))
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cur = conn.cursor()
+        old_points = 0
+        try:
+            cur.execute(_sql_placeholder('SELECT points FROM students WHERE id = ? LIMIT 1'), (int(student_id),))
+            row = cur.fetchone()
+            if row:
+                old_points = _safe_int((row.get('points') if isinstance(row, dict) else row['points']), 0)
+        except Exception:
+            old_points = 0
+
+        new_points = int(points or 0)
+        cur.execute(
+            _sql_placeholder('UPDATE students SET points = ?, private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
+            (int(new_points), private_message.strip(), int(student_id))
+        )
+
+        # points log (best effort)
+        try:
+            teacher = _web_current_teacher(request) or {}
+            teacher_name = _safe_str(teacher.get('name') or '').strip() or 'web'
+            delta = int(new_points - int(old_points))
+            cur.execute(
+                _sql_placeholder(
+                    '''
+                    INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    '''
+                ),
+                (int(student_id), int(old_points), int(new_points), int(delta), 'ווב', str(teacher_name), 'עריכת תלמיד (ווב)')
+            )
+        except Exception:
+            teacher_name = 'web'
+
+        conn.commit()
+
+        # record for pull (points only)
+        try:
+            _record_sync_event(
+                tenant_id=str(tenant_id),
+                station_id='web',
+                entity_type='student_points',
+                entity_id=str(int(student_id)),
+                action_type='update',
+                payload={
+                    'old_points': int(old_points),
+                    'new_points': int(new_points),
+                    'reason': 'ווב',
+                    'added_by': str(teacher_name),
+                },
+                created_at=None,
+            )
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     body = """
     <h2>תלמיד עודכן</h2>
     <p>העדכון נשמר.</p>
