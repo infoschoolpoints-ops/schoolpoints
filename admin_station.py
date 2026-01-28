@@ -9807,6 +9807,30 @@ class AdminStation:
             tk.Entry(row1di, textvariable=tenant_id_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right').grid(row=0, column=1, sticky='e', padx=5)
             tk.Label(row1di, text=fix_rtl_text("(אותיות/מספרים)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
 
+            # שורה - כתובת סנכרון (Push URL)
+            try:
+                push_url_var = tk.StringVar(value=str(config.get('sync_push_url') or '').strip())
+            except Exception:
+                push_url_var = tk.StringVar(value='')
+            row1ei = tk.Frame(frame2, bg='#ecf0f1')
+            row1ei.pack(fill=tk.X, pady=3)
+            row1ei.columnconfigure(1, weight=1)
+            tk.Label(row1ei, text=fix_rtl_text("כתובת סנכרון (Push URL):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
+            tk.Entry(row1ei, textvariable=push_url_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right').grid(row=0, column=1, sticky='e', padx=5)
+            tk.Label(row1ei, text=fix_rtl_text("(/sync/push)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
+
+            # שורה - מפתח API
+            try:
+                api_key_var = tk.StringVar(value=str(config.get('sync_api_key') or config.get('api_key') or config.get('sync_key') or '').strip())
+            except Exception:
+                api_key_var = tk.StringVar(value='')
+            row1fi = tk.Frame(frame2, bg='#ecf0f1')
+            row1fi.pack(fill=tk.X, pady=3)
+            row1fi.columnconfigure(1, weight=1)
+            tk.Label(row1fi, text=fix_rtl_text("מפתח API (לסנכרון):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
+            tk.Entry(row1fi, textvariable=api_key_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right', show='*').grid(row=0, column=1, sticky='e', padx=5)
+            tk.Label(row1fi, text=fix_rtl_text("(סודי)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
+
             # שורה - לוגו לעמדה הציבורית
             row2i = tk.Frame(frame2, bg='#ecf0f1')
             row2i.pack(fill=tk.X, pady=3)
@@ -9946,6 +9970,61 @@ class AdminStation:
                     push0 = ''
                 return bool(tid0 and (key0 or push0))
 
+            def _verify_cloud_connection(tenant_id: str, api_key: str, push_url: str) -> tuple[bool, str]:
+                try:
+                    import urllib.request
+                    import urllib.parse
+                    import urllib.error
+                except Exception:
+                    return False, 'חסרה תמיכה ברשת (urllib)'
+
+                tid = str(tenant_id or '').strip()
+                key = str(api_key or '').strip()
+                purl = str(push_url or '').strip()
+                if not tid:
+                    return False, 'חסר Tenant ID'
+                if not key:
+                    return False, 'חסר API Key'
+                if not purl:
+                    return False, 'חסרה כתובת Push URL'
+
+                base = purl
+                if base.endswith('/sync/push'):
+                    base = base[:-len('/sync/push')]
+                status_url = base.rstrip('/') + '/sync/status'
+                q = 'tenant_id=' + urllib.parse.quote(tid)
+                url = status_url + ('&' if '?' in status_url else '?') + q
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        'Accept': 'application/json',
+                        'api-key': key,
+                    }
+                )
+                try:
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        raw = resp.read().decode('utf-8', errors='ignore')
+                    # success is any 2xx with JSON containing ok
+                    try:
+                        import json
+                        data = json.loads(raw or '{}')
+                    except Exception:
+                        data = {}
+                    if isinstance(data, dict) and bool(data.get('ok')):
+                        return True, '✓ אושר מול השרת'
+                    return False, 'השרת לא אישר התחברות'
+                except urllib.error.HTTPError as e:
+                    try:
+                        body = e.read().decode('utf-8', errors='ignore')
+                    except Exception:
+                        body = ''
+                    msg = f"HTTP {getattr(e, 'code', '')}".strip()
+                    if body:
+                        msg = msg + f"\n{body}" if msg else body
+                    return False, msg or 'שגיאת התחברות'
+                except Exception as e:
+                    return False, str(e)
+
             connect_row = tk.Frame(frame2, bg='#ecf0f1')
             connect_row.pack(fill=tk.X, pady=(6, 0))
             connect_row.columnconfigure(1, weight=1)
@@ -10002,6 +10081,15 @@ class AdminStation:
                     pass
                 try:
                     _refresh_cloud_ui()
+                except Exception:
+                    pass
+
+                try:
+                    api_key_var.set('')
+                except Exception:
+                    pass
+                try:
+                    push_url_var.set('')
                 except Exception:
                     pass
 
@@ -10093,6 +10181,77 @@ class AdminStation:
                     except Exception:
                         pass
 
+            def _connect_verified():
+                # Open browser for signup/login, then verify credentials against server.
+                # Important: do NOT call _open_cloud_connect here because it may be wrapped later.
+                try:
+                    _orig_open_cloud()
+                except Exception:
+                    pass
+
+                tid = str(tenant_id_var.get() or '').strip()
+                key = str(api_key_var.get() or '').strip()
+                purl = str(push_url_var.get() or '').strip()
+
+                def _set_busy(on: bool):
+                    try:
+                        if on:
+                            connect_btn.configure(state='disabled')
+                            disconnect_btn.configure(state='disabled')
+                        else:
+                            pass
+                    except Exception:
+                        pass
+
+                try:
+                    cloud_state_lbl.configure(text=fix_rtl_text('בודק מול השרת...'))
+                except Exception:
+                    pass
+                _set_busy(True)
+
+                def _worker():
+                    ok, msg = _verify_cloud_connection(tid, key, purl)
+
+                    def _on_done():
+                        try:
+                            if ok:
+                                cfg2 = self.load_app_config() or {}
+                                cfg2['sync_tenant_id'] = tid
+                                cfg2['sync_api_key'] = key
+                                cfg2['sync_push_url'] = purl
+                                try:
+                                    self.save_app_config(cfg2)
+                                except Exception:
+                                    pass
+                                try:
+                                    cloud_state_lbl.configure(text=fix_rtl_text('מחובר לענן'))
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    cloud_state_lbl.configure(text=fix_rtl_text('לא מחובר'))
+                                except Exception:
+                                    pass
+                                try:
+                                    messagebox.showerror('התחברות לענן', str(msg or 'שגיאת התחברות'), parent=dialog2)
+                                except Exception:
+                                    pass
+                        finally:
+                            try:
+                                _refresh_cloud_ui()
+                            except Exception:
+                                pass
+                    try:
+                        dialog2.after(0, _on_done)
+                    except Exception:
+                        _on_done()
+
+                try:
+                    import threading
+                    threading.Thread(target=_worker, daemon=True).start()
+                except Exception:
+                    _worker()
+
             try:
                 _refresh_cloud_ui()
             except Exception:
@@ -10109,16 +10268,7 @@ class AdminStation:
                 pass
 
             try:
-                _orig_open_cloud = _open_cloud_connect
-                def _open_cloud_connect():
-                    try:
-                        _orig_open_cloud()
-                    finally:
-                        try:
-                            dialog2.after(1200, _refresh_cloud_ui)
-                        except Exception:
-                            pass
-                connect_btn.configure(command=_open_cloud_connect)
+                connect_btn.configure(command=_connect_verified)
             except Exception:
                 pass
 
