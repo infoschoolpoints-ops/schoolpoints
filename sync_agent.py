@@ -184,7 +184,8 @@ def push_changes(push_url: str, changes: List[Dict[str, Any]], *, api_key: str =
         data=payload,
         headers={
             'Content-Type': 'application/json',
-            'api_key': str(api_key or '')
+            'api-key': str(api_key or ''),
+            'x-api-key': str(api_key or ''),
         }
     )
     try:
@@ -260,7 +261,8 @@ def push_snapshot(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str =
         data=payload,
         headers={
             'Content-Type': 'application/json',
-            'api_key': str(api_key or '')
+            'api-key': str(api_key or ''),
+            'x-api-key': str(api_key or ''),
         }
     )
     try:
@@ -303,7 +305,8 @@ def pull_changes(pull_url: str, *, api_key: str = '', tenant_id: str = '', since
         url,
         headers={
             'Content-Type': 'application/json',
-            'api_key': str(api_key or '')
+            'api-key': str(api_key or ''),
+            'x-api-key': str(api_key or ''),
         }
     )
     try:
@@ -474,6 +477,12 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
     station_id = str(cfg.get('sync_station_id') or '').strip()
     pull_url = _pull_url_from_push(push_url, cfg)
 
+    try:
+        pull_enabled = bool(pull_url and api_key and tenant_id)
+        print(f"[CFG] tenant_id={tenant_id or '-'} station_id={station_id or '-'} push_url={'set' if bool(push_url) else '-'} pull_url={'set' if bool(pull_url) else '-'} pull_enabled={1 if pull_enabled else 0}")
+    except Exception:
+        pass
+
     backoff = 0
 
     while True:
@@ -502,12 +511,24 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                         next_since_i = int(next_since or since_id)
                     except Exception:
                         next_since_i = since_id
+                    items_count = (len(items) if isinstance(items, list) else 0)
                     if next_since_i != since_id:
                         _set_sync_state(conn, 'pull_since_id', str(next_since_i))
-                    if applied:
-                        print(f"[PULL] Applied {applied} event(s)")
+                        print(f"[PULL] OK items={items_count} applied={applied} since_id={since_id} -> {next_since_i}")
+                    else:
+                        print(f"[PULL] OK items={items_count} applied={applied} since_id={since_id}")
                 else:
                     pull_ok = False
+            else:
+                try:
+                    if not pull_url:
+                        print('[PULL] Skipped (missing pull_url)')
+                    elif not tenant_id:
+                        print('[PULL] Skipped (missing tenant_id)')
+                    elif not api_key:
+                        print('[PULL] Skipped (missing api_key)')
+                except Exception:
+                    pass
 
             # 2) push local changes
             push_ok = True
