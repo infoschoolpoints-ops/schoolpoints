@@ -10,6 +10,7 @@ import time
 import sqlite3
 import urllib.request
 import urllib.error
+import urllib.parse
 import argparse
 from typing import List, Dict, Any, Optional
 
@@ -21,6 +22,7 @@ except Exception:
 
 DEFAULT_PUSH_URL = ""
 DEFAULT_BATCH_SIZE = 200
+DEFAULT_PULL_LIMIT = 500
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
@@ -49,7 +51,61 @@ def _default_db_path(base_dir: str, cfg: Dict[str, Any]) -> str:
             return os.path.join(shared, 'school_points.db')
     except Exception:
         pass
+
     return os.path.join(base_dir, 'school_points.db')
+
+
+def _ensure_sync_state(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS sync_state (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _get_sync_state(conn: sqlite3.Connection, key: str, default: str = '') -> str:
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT value FROM sync_state WHERE key = ? LIMIT 1', (str(key),))
+        row = cur.fetchone()
+        if not row:
+            return default
+        try:
+            return str(row['value'] if isinstance(row, sqlite3.Row) else row[0] or '')
+        except Exception:
+            return str(row[0] or '')
+    except Exception:
+        _ensure_sync_state(conn)
+        return default
+
+
+def _set_sync_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+    try:
+        cur = conn.cursor()
+        cur.execute('INSERT INTO sync_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP', (str(key), str(value)))
+        conn.commit()
+    except sqlite3.OperationalError:
+        _ensure_sync_state(conn)
+        try:
+            cur = conn.cursor()
+            cur.execute('UPDATE sync_state SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?', (str(value), str(key)))
+            if cur.rowcount == 0:
+                cur.execute('INSERT INTO sync_state (key, value) VALUES (?, ?)', (str(key), str(value)))
+            conn.commit()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
 
 
 def _resolve_db_path(base_dir: str, cfg: Dict[str, Any]) -> str:
@@ -209,7 +265,13 @@ def push_snapshot(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str =
     )
     try:
         with urllib.request.urlopen(req, timeout=25) as resp:
-            _ = resp.read()
+            body_bytes = resp.read() or b''
+        try:
+            body_text = body_bytes.decode('utf-8', errors='ignore')
+        except Exception:
+            body_text = ''
+        if body_text.strip():
+            print(f"[SNAPSHOT] Server response: {body_text.strip()}")
         return True
     except urllib.error.HTTPError as exc:
         try:
@@ -221,6 +283,125 @@ def push_snapshot(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str =
     except Exception as exc:
         print(f"[SNAPSHOT] Request error: {exc}")
         return False
+
+
+def _pull_url_from_push(push_url: str, cfg: Dict[str, Any]) -> str:
+    url = str(cfg.get('sync_pull_url') or '').strip()
+    if url:
+        return url
+    if push_url.endswith('/sync/push'):
+        return push_url[:-len('/sync/push')] + '/sync/pull'
+    return ''
+
+
+def pull_changes(pull_url: str, *, api_key: str = '', tenant_id: str = '', since_id: int = 0, limit: int = DEFAULT_PULL_LIMIT) -> Dict[str, Any] | None:
+    if not pull_url:
+        return None
+    q = f"tenant_id={urllib.parse.quote(str(tenant_id or ''))}&since_id={int(since_id or 0)}&limit={int(limit or 0)}"
+    url = pull_url + ('&' if '?' in pull_url else '?') + q
+    req = urllib.request.Request(
+        url,
+        headers={
+            'Content-Type': 'application/json',
+            'api_key': str(api_key or '')
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read() or b''
+        try:
+            data = json.loads(body.decode('utf-8', errors='ignore') or '{}')
+        except Exception:
+            data = None
+        if not isinstance(data, dict):
+            return None
+        return data
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode('utf-8', errors='ignore')
+        except Exception:
+            body = ''
+        print(f"[PULL] HTTP {exc.code}: {body}")
+        return None
+    except Exception as exc:
+        print(f"[PULL] Request error: {exc}")
+        return None
+
+
+def _ensure_applied_events(conn: sqlite3.Connection) -> None:
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS applied_events (
+                event_id TEXT PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            '''
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _is_event_applied(conn: sqlite3.Connection, event_id: str) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT 1 FROM applied_events WHERE event_id = ? LIMIT 1', (str(event_id or ''),))
+        return bool(cur.fetchone())
+    except Exception:
+        _ensure_applied_events(conn)
+        return False
+
+
+def _mark_event_applied(conn: sqlite3.Connection, event_id: str) -> None:
+    try:
+        cur = conn.cursor()
+        cur.execute('INSERT OR IGNORE INTO applied_events (event_id) VALUES (?)', (str(event_id or ''),))
+        conn.commit()
+    except Exception:
+        _ensure_applied_events(conn)
+        try:
+            cur = conn.cursor()
+            cur.execute('INSERT OR IGNORE INTO applied_events (event_id) VALUES (?)', (str(event_id or ''),))
+            conn.commit()
+        except Exception:
+            pass
+
+
+def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> int:
+    if not items:
+        return 0
+    _ensure_applied_events(conn)
+    applied = 0
+    cur = conn.cursor()
+    for ev in items:
+        try:
+            event_id = str(ev.get('event_id') or '').strip()
+            if event_id and _is_event_applied(conn, event_id):
+                continue
+            entity_type = str(ev.get('entity_type') or '').strip()
+            action_type = str(ev.get('action_type') or '').strip()
+            entity_id = str(ev.get('entity_id') or '').strip()
+            payload_json = str(ev.get('payload_json') or '').strip()
+            payload = {}
+            try:
+                payload = json.loads(payload_json) if payload_json else {}
+            except Exception:
+                payload = {}
+
+            if entity_type == 'student_points' and action_type == 'update':
+                sid = int(entity_id or '0')
+                new_points = int(payload.get('new_points') or 0)
+                cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (int(new_points), int(sid)))
+                applied += 1
+
+            if event_id:
+                _mark_event_applied(conn, event_id)
+        except Exception:
+            pass
+    conn.commit()
+    return applied
 
 
 def run_once(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str = '', station_id: str = '', limit: int = DEFAULT_BATCH_SIZE) -> bool:
@@ -291,10 +472,59 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
     api_key = str(cfg.get('sync_api_key') or '').strip()
     tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
     station_id = str(cfg.get('sync_station_id') or '').strip()
+    pull_url = _pull_url_from_push(push_url, cfg)
+
+    backoff = 0
 
     while True:
-        run_once(db_path, push_url, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
-        time.sleep(max(5, int(interval_sec)))
+        conn = _connect(db_path)
+        try:
+            _ensure_change_log(conn)
+            _ensure_sync_state(conn)
+            since_id_s = _get_sync_state(conn, 'pull_since_id', '0')
+            try:
+                since_id = int(str(since_id_s or '0').strip() or '0')
+            except Exception:
+                since_id = 0
+
+            # 1) pull from cloud
+            pull_ok = True
+            if pull_url and api_key and tenant_id:
+                resp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=since_id)
+                if isinstance(resp, dict) and resp.get('ok'):
+                    items = resp.get('items') or []
+                    if isinstance(items, list):
+                        applied = apply_pull_events(conn, items)
+                    else:
+                        applied = 0
+                    next_since = resp.get('next_since_id')
+                    try:
+                        next_since_i = int(next_since or since_id)
+                    except Exception:
+                        next_since_i = since_id
+                    if next_since_i != since_id:
+                        _set_sync_state(conn, 'pull_since_id', str(next_since_i))
+                    if applied:
+                        print(f"[PULL] Applied {applied} event(s)")
+                else:
+                    pull_ok = False
+
+            # 2) push local changes
+            push_ok = True
+            if push_url and api_key and tenant_id:
+                push_ok = run_once(db_path, push_url, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+
+            if pull_ok and push_ok:
+                backoff = 0
+            else:
+                backoff = min(300, max(5, backoff * 2 if backoff else 5))
+        finally:
+            conn.close()
+
+        sleep_s = max(5, int(interval_sec))
+        if backoff:
+            sleep_s = max(sleep_s, int(backoff))
+        time.sleep(sleep_s)
 
 
 def _parse_args() -> argparse.Namespace:

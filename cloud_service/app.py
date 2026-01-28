@@ -519,23 +519,90 @@ def web_whoami(request: Request) -> Dict[str, Any]:
     tenant_id = _web_tenant_from_cookie(request)
     teacher_id = _web_teacher_from_cookie(request)
     inst_name = ''
+    teacher_name = ''
+    is_admin = False
     if tenant_id:
         try:
-            conn = _db()
-            cur = conn.cursor()
-            cur.execute(_sql_placeholder('SELECT name FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id,))
-            row = cur.fetchone() or {}
-            conn.close()
-            inst_name = (row.get('name') if isinstance(row, dict) else row[0]) or ''
+            inst = _get_institution(tenant_id)
+            if inst:
+                inst_name = str(inst.get('name') or '').strip()
         except Exception:
             inst_name = ''
+
+        if teacher_id:
+            try:
+                conn = _tenant_school_db(tenant_id)
+                cur = conn.cursor()
+                cur.execute(_sql_placeholder('SELECT name, is_admin FROM teachers WHERE id = ? LIMIT 1'), (int(str(teacher_id).strip() or '0'),))
+                row = cur.fetchone()
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                if row:
+                    teacher_name = str((row.get('name') if isinstance(row, dict) else row['name']) or '').strip()
+                    try:
+                        is_admin = bool(int((row.get('is_admin') if isinstance(row, dict) else row['is_admin']) or 0) == 1)
+                    except Exception:
+                        is_admin = False
+            except Exception:
+                teacher_name = ''
+                is_admin = False
     return {
         'tenant_id': tenant_id or '',
         'institution_name': str(inst_name or '').strip(),
         'teacher_id': teacher_id or '',
+        'teacher_name': teacher_name,
+        'is_admin': bool(is_admin),
         'is_logged_in': bool(tenant_id),
         'is_teacher': bool(teacher_id),
     }
+
+
+@app.get('/api/classes')
+def api_classes(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        return {'items': []}
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return {'items': []}
+    teacher = _web_current_teacher(request)
+    if not teacher:
+        return {'items': []}
+    teacher_id = _safe_int(teacher.get('id'), 0)
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+
+    if not is_admin:
+        classes = _web_teacher_allowed_classes(tenant_id, teacher_id)
+        classes = [str(c).strip() for c in (classes or []) if str(c).strip()]
+        classes.sort()
+        return {'items': classes}
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT DISTINCT class_name FROM students')
+        rows = cur.fetchall() or []
+        out: List[str] = []
+        for r in rows:
+            try:
+                cn = (r.get('class_name') if isinstance(r, dict) else r['class_name'])
+            except Exception:
+                try:
+                    cn = r[0]
+                except Exception:
+                    cn = ''
+            cn = str(cn or '').strip()
+            if cn:
+                out.append(cn)
+        out = sorted(set(out))
+        return {'items': out}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _save_contact_message(name: str, email: str, subject: str, message: str) -> None:
@@ -604,8 +671,27 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
                     card_number2 TEXT,
                     card_number3 TEXT,
                     is_admin INTEGER DEFAULT 0,
+                    can_edit_student_card INTEGER DEFAULT 1,
+                    can_edit_student_photo INTEGER DEFAULT 1,
+                    bonus_max_points_per_student INTEGER,
+                    bonus_max_total_runs INTEGER,
+                    bonus_runs_used INTEGER DEFAULT 0,
+                    bonus_runs_reset_date DATE,
+                    bonus_points_used INTEGER DEFAULT 0,
+                    bonus_points_reset_date DATE,
                     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".teacher_classes (
+                    id BIGSERIAL PRIMARY KEY,
+                    teacher_id BIGINT NOT NULL,
+                    class_name TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(teacher_id, class_name)
                 )
                 '''
             )
@@ -695,7 +781,28 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
             card_number TEXT,
             card_number2 TEXT,
             card_number3 TEXT,
-            is_admin INTEGER DEFAULT 0
+            is_admin INTEGER DEFAULT 0,
+            can_edit_student_card INTEGER DEFAULT 1,
+            can_edit_student_photo INTEGER DEFAULT 1,
+            bonus_max_points_per_student INTEGER,
+            bonus_max_total_runs INTEGER,
+            bonus_runs_used INTEGER DEFAULT 0,
+            bonus_runs_reset_date TEXT,
+            bonus_points_used INTEGER DEFAULT 0,
+            bonus_points_reset_date TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS teacher_classes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id INTEGER NOT NULL,
+            class_name TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(teacher_id, class_name)
         )
         '''
     )
@@ -709,8 +816,8 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
             points INTEGER DEFAULT 0,
             card_number TEXT,
             id_number TEXT,
-            serial_number INTEGER,
-            photo_number INTEGER,
+            serial_number TEXT,
+            photo_number TEXT,
             private_message TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -782,6 +889,24 @@ class StudentUpdatePayload(BaseModel):
     student_id: int
     points: int | None = None
     private_message: str | None = None
+    card_number: str | None = None
+    first_name: str | None = None
+    last_name: str | None = None
+    class_name: str | None = None
+    id_number: str | None = None
+    serial_number: str | None = None
+    photo_number: str | None = None
+
+
+class StudentQuickUpdatePayload(BaseModel):
+    operation: str
+    points: int
+    mode: str
+    card_number: str | None = None
+    serial_from: int | None = None
+    serial_to: int | None = None
+    class_names: List[str] | None = None
+    student_ids: List[int] | None = None
 
 
 class TeacherSavePayload(BaseModel):
@@ -811,6 +936,61 @@ def _safe_str(v: Any) -> str:
         return ''
 
 
+def _web_current_teacher(request: Request) -> Dict[str, Any] | None:
+    tenant_id = _web_tenant_from_cookie(request)
+    teacher_id = _web_teacher_from_cookie(request)
+    if not tenant_id or not teacher_id:
+        return None
+    try:
+        tid = int(str(teacher_id).strip() or '0')
+    except Exception:
+        tid = 0
+    if tid <= 0:
+        return None
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT id, name, is_admin FROM teachers WHERE id = ? LIMIT 1'), (int(tid),))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(row)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _web_teacher_allowed_classes(tenant_id: str, teacher_id: int) -> List[str]:
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT class_name FROM teacher_classes WHERE teacher_id = ? ORDER BY class_name ASC'),
+            (int(teacher_id),)
+        )
+        rows = cur.fetchall() or []
+        out: List[str] = []
+        for r in rows:
+            try:
+                cn = (r.get('class_name') if isinstance(r, dict) else r['class_name'])
+            except Exception:
+                try:
+                    cn = r[0]
+                except Exception:
+                    cn = ''
+            cn = str(cn or '').strip()
+            if cn:
+                out.append(cn)
+        return out
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _make_event_id(station_id: str | None, local_id: int | None, created_at: str | None) -> str:
     sid = _safe_str(station_id).strip() or 'unknown'
     lid = _safe_int(local_id, 0)
@@ -820,6 +1000,77 @@ def _make_event_id(station_id: str | None, local_id: int | None, created_at: str
     if ca:
         return f"{sid}:{ca}"
     return f"{sid}:{secrets.token_hex(8)}"
+
+
+def _record_sync_event(
+    *,
+    tenant_id: str,
+    station_id: str,
+    entity_type: str,
+    entity_id: str | None,
+    action_type: str,
+    payload: Dict[str, Any] | None,
+    created_at: str | None = None,
+) -> str:
+    ev_id = _make_event_id(station_id, None, created_at)
+    payload_json = None
+    try:
+        payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    except Exception:
+        payload_json = '{}'
+
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        # raw change log (admin visibility)
+        try:
+            cur.execute(
+                _sql_placeholder(
+                    '''
+                    INSERT INTO changes (tenant_id, station_id, entity_type, entity_id, action_type, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    '''
+                ),
+                (
+                    str(tenant_id or '').strip(),
+                    str(station_id or '').strip(),
+                    str(entity_type or '').strip(),
+                    (str(entity_id).strip() if entity_id is not None else None),
+                    str(action_type or '').strip(),
+                    payload_json,
+                    (str(created_at).strip() if created_at else None),
+                )
+            )
+        except Exception:
+            pass
+
+        # sync stream
+        cur.execute(
+            _sql_placeholder(
+                '''
+                INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+            ),
+            (
+                str(tenant_id or '').strip(),
+                str(ev_id),
+                str(station_id or '').strip(),
+                None,
+                str(entity_type or '').strip(),
+                (str(entity_id).strip() if entity_id is not None else None),
+                str(action_type or '').strip(),
+                payload_json,
+                (str(created_at).strip() if created_at else None),
+            )
+        )
+        conn.commit()
+        return str(ev_id)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _get_api_key(request: Request, api_key: str) -> str:
@@ -1073,6 +1324,66 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
         "tenant_id": payload.tenant_id,
         "station_id": payload.station_id,
     }
+
+
+@app.get('/sync/pull')
+def sync_pull(
+    request: Request,
+    tenant_id: str = Query(default=''),
+    since_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=2000),
+    api_key: str = Header(default=''),
+) -> Dict[str, Any]:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = _get_api_key(request, api_key).strip()
+    if not api_key:
+        raise HTTPException(status_code=401, detail='missing api_key')
+
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
+            (tenant_id, api_key)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail='invalid api_key')
+
+        cur.execute(
+            _sql_placeholder(
+                '''
+                SELECT id, event_id, station_id, entity_type, entity_id, action_type, payload_json, created_at, received_at
+                  FROM sync_events
+                 WHERE tenant_id = ? AND id > ?
+                 ORDER BY id ASC
+                 LIMIT ?
+                '''
+            ),
+            (tenant_id, int(since_id or 0), int(limit or 0))
+        )
+        rows = cur.fetchall() or []
+        items = [dict(r) for r in rows]
+        max_id = int(since_id or 0)
+        for r in items:
+            try:
+                max_id = max(max_id, int(r.get('id') or 0))
+            except Exception:
+                pass
+        return {
+            'ok': True,
+            'tenant_id': tenant_id,
+            'since_id': int(since_id or 0),
+            'next_since_id': int(max_id),
+            'items': items,
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
@@ -3024,10 +3335,26 @@ def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[
 
     points = payload.points
     private_message = payload.private_message
+    card_number = payload.card_number
+    first_name = payload.first_name
+    last_name = payload.last_name
+    class_name = payload.class_name
+    id_number = payload.id_number
+    serial_number = payload.serial_number
+    photo_number = payload.photo_number
 
     conn = _tenant_school_db(tenant_id)
     try:
         cur = conn.cursor()
+        old_points: int | None = None
+        if points is not None:
+            try:
+                cur.execute(_sql_placeholder('SELECT points FROM students WHERE id = ? LIMIT 1'), (int(sid),))
+                row = cur.fetchone()
+                if row:
+                    old_points = _safe_int((row.get('points') if isinstance(row, dict) else row['points']), 0)
+            except Exception:
+                old_points = None
         sets = []
         params: List[Any] = []
         if points is not None:
@@ -3036,6 +3363,27 @@ def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[
         if private_message is not None:
             sets.append('private_message = ?')
             params.append(str(private_message))
+        if card_number is not None:
+            sets.append('card_number = ?')
+            params.append(str(card_number).strip())
+        if first_name is not None:
+            sets.append('first_name = ?')
+            params.append(str(first_name).strip())
+        if last_name is not None:
+            sets.append('last_name = ?')
+            params.append(str(last_name).strip())
+        if class_name is not None:
+            sets.append('class_name = ?')
+            params.append(str(class_name).strip())
+        if id_number is not None:
+            sets.append('id_number = ?')
+            params.append(str(id_number).strip())
+        if serial_number is not None:
+            sets.append('serial_number = ?')
+            params.append(str(serial_number).strip())
+        if photo_number is not None:
+            sets.append('photo_number = ?')
+            params.append(str(photo_number).strip())
         if not sets:
             return {'ok': True, 'updated': False}
         sets.append('updated_at = CURRENT_TIMESTAMP')
@@ -3043,7 +3391,267 @@ def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[
         params.append(int(sid))
         cur.execute(_sql_placeholder(sql), params)
         conn.commit()
+
+        # record event for pull (points only for now)
+        if points is not None:
+            try:
+                teacher = _web_current_teacher(request) or {}
+                teacher_name = _safe_str(teacher.get('name') or '').strip() or 'web'
+                old_p = int(old_points or 0)
+                new_p = int(points)
+                _record_sync_event(
+                    tenant_id=str(tenant_id),
+                    station_id='web',
+                    entity_type='student_points',
+                    entity_id=str(int(sid)),
+                    action_type='update',
+                    payload={
+                        'old_points': int(old_p),
+                        'new_points': int(new_p),
+                        'reason': 'ווב',
+                        'added_by': str(teacher_name),
+                    },
+                    created_at=None,
+                )
+            except Exception:
+                pass
         return {'ok': True, 'updated': True}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.post('/api/students/quick-update')
+def api_students_quick_update(request: Request, payload: StudentQuickUpdatePayload) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='missing tenant')
+
+    teacher = _web_current_teacher(request)
+    if not teacher:
+        raise HTTPException(status_code=401, detail='missing teacher')
+    teacher_id = _safe_int(teacher.get('id'), 0)
+    teacher_name = _safe_str(teacher.get('name') or '').strip() or 'מורה'
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+
+    operation = str(payload.operation or '').strip().lower()
+    if operation not in ('add', 'subtract', 'set'):
+        operation = 'add'
+    try:
+        points = int(payload.points)
+    except Exception:
+        points = 0
+    if operation in ('add', 'subtract') and points <= 0:
+        raise HTTPException(status_code=400, detail='invalid points')
+    if operation == 'set' and points < 0:
+        raise HTTPException(status_code=400, detail='invalid points')
+
+    mode = str(payload.mode or '').strip().lower()
+    if mode not in ('card', 'serial_range', 'class', 'students', 'all_school'):
+        raise HTTPException(status_code=400, detail='invalid mode')
+    if mode == 'all_school' and not is_admin:
+        raise HTTPException(status_code=403, detail='admin only')
+
+    allowed_classes: List[str] | None = None
+    if not is_admin:
+        allowed_classes = _web_teacher_allowed_classes(tenant_id, teacher_id)
+        allowed_classes = [str(c).strip() for c in (allowed_classes or []) if str(c).strip()]
+
+    def _compute_new_points(old_points: int) -> int:
+        if operation == 'add':
+            return int(old_points + int(points))
+        if operation == 'subtract':
+            return int(max(0, int(old_points) - abs(int(points))))
+        return int(max(0, int(points)))
+
+    def _reason_label() -> str:
+        try:
+            if operation == 'add':
+                return f"עדכון מהיר +{int(points)}"
+            if operation == 'subtract':
+                return f"עדכון מהיר -{abs(int(points))}"
+            return f"עדכון מהיר = {max(0, int(points))}"
+        except Exception:
+            return 'עדכון מהיר'
+
+    reason = _reason_label()
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+
+        student_ids: List[int] = []
+        if mode == 'card':
+            cn = str(payload.card_number or '').strip()
+            if not cn:
+                raise HTTPException(status_code=400, detail='missing card_number')
+            cur.execute(_sql_placeholder('SELECT id, class_name FROM students WHERE TRIM(COALESCE(card_number, \'\')) = ? LIMIT 1'), (cn,))
+            row = cur.fetchone()
+            if not row:
+                return {'ok': True, 'updated': 0, 'not_found': True}
+            sid = _safe_int((row.get('id') if isinstance(row, dict) else row['id']), 0)
+            scls = _safe_str((row.get('class_name') if isinstance(row, dict) else row['class_name']) or '').strip()
+            if sid <= 0:
+                return {'ok': True, 'updated': 0, 'not_found': True}
+            if allowed_classes is not None:
+                if not allowed_classes or (scls not in set(allowed_classes)):
+                    raise HTTPException(status_code=403, detail='not allowed')
+            student_ids = [int(sid)]
+
+        elif mode == 'serial_range':
+            x = _safe_int(payload.serial_from, 0)
+            y = _safe_int(payload.serial_to, 0)
+            if x <= 0 or y <= 0 or x > y:
+                raise HTTPException(status_code=400, detail='invalid serial range')
+            if allowed_classes is not None:
+                if not allowed_classes:
+                    student_ids = []
+                else:
+                    placeholders = ','.join(['?'] * len(allowed_classes))
+                    cur.execute(
+                        _sql_placeholder(f'SELECT id, serial_number FROM students WHERE class_name IN ({placeholders})'),
+                        tuple(allowed_classes)
+                    )
+                    rows = cur.fetchall() or []
+            else:
+                cur.execute(_sql_placeholder('SELECT id, serial_number FROM students'))
+                rows = cur.fetchall() or []
+            for r in rows:
+                try:
+                    sid = _safe_int((r.get('id') if isinstance(r, dict) else r['id']), 0)
+                    sn = (r.get('serial_number') if isinstance(r, dict) else r['serial_number'])
+                except Exception:
+                    sid = 0
+                    sn = None
+                if sid <= 0:
+                    continue
+                try:
+                    sn_i = int(str(sn or '').strip())
+                except Exception:
+                    continue
+                if sn_i >= x and sn_i <= y:
+                    student_ids.append(int(sid))
+
+        elif mode == 'class':
+            raw = payload.class_names
+            cls_list = [str(c).strip() for c in (raw or []) if str(c).strip()]
+            if not cls_list:
+                raise HTTPException(status_code=400, detail='missing class_names')
+            if allowed_classes is not None:
+                allowed_set = set(allowed_classes or [])
+                bad = [c for c in cls_list if c not in allowed_set]
+                if bad:
+                    raise HTTPException(status_code=403, detail='not allowed')
+            placeholders = ','.join(['?'] * len(cls_list))
+            cur.execute(_sql_placeholder(f'SELECT id FROM students WHERE class_name IN ({placeholders})'), tuple(cls_list))
+            rows = cur.fetchall() or []
+            for r in rows:
+                try:
+                    sid = _safe_int((r.get('id') if isinstance(r, dict) else r['id']), 0)
+                except Exception:
+                    sid = 0
+                if sid > 0:
+                    student_ids.append(int(sid))
+
+        elif mode == 'students':
+            raw_ids = payload.student_ids
+            if not isinstance(raw_ids, list) or not raw_ids:
+                raise HTTPException(status_code=400, detail='missing student_ids')
+            try:
+                sid_list = [int(x) for x in raw_ids if int(x) > 0]
+            except Exception:
+                sid_list = []
+            if not sid_list:
+                raise HTTPException(status_code=400, detail='missing student_ids')
+
+            placeholders = ','.join(['?'] * len(sid_list))
+            cur.execute(_sql_placeholder(f'SELECT id, class_name FROM students WHERE id IN ({placeholders})'), tuple(sid_list))
+            rows = cur.fetchall() or []
+            found_ids: List[int] = []
+            for r in rows:
+                try:
+                    sid = _safe_int((r.get('id') if isinstance(r, dict) else r['id']), 0)
+                    scls = _safe_str((r.get('class_name') if isinstance(r, dict) else r['class_name']) or '').strip()
+                except Exception:
+                    sid = 0
+                    scls = ''
+                if sid <= 0:
+                    continue
+                if allowed_classes is not None:
+                    if not allowed_classes or (scls not in set(allowed_classes)):
+                        raise HTTPException(status_code=403, detail='not allowed')
+                found_ids.append(int(sid))
+            if len(set(found_ids)) != len(set(sid_list)):
+                raise HTTPException(status_code=400, detail='student not found')
+            student_ids = found_ids
+
+        elif mode == 'all_school':
+            cur.execute(_sql_placeholder('SELECT id FROM students'))
+            rows = cur.fetchall() or []
+            for r in rows:
+                try:
+                    sid = _safe_int((r.get('id') if isinstance(r, dict) else r['id']), 0)
+                except Exception:
+                    sid = 0
+                if sid > 0:
+                    student_ids.append(int(sid))
+
+        updated = 0
+        for sid in student_ids:
+            try:
+                cur.execute(_sql_placeholder('SELECT points FROM students WHERE id = ? LIMIT 1'), (int(sid),))
+                row = cur.fetchone()
+                if not row:
+                    continue
+                old_points = _safe_int((row.get('points') if isinstance(row, dict) else row['points']), 0)
+                new_points = _compute_new_points(old_points)
+                delta = int(new_points - int(old_points))
+                cur.execute(
+                    _sql_placeholder('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
+                    (int(new_points), int(sid))
+                )
+                try:
+                    cur.execute(
+                        _sql_placeholder(
+                            '''
+                            INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            '''
+                        ),
+                        (int(sid), int(old_points), int(new_points), int(delta), str(reason), str(teacher_name), 'עדכון מהיר')
+                    )
+                except Exception:
+                    pass
+                updated += 1
+
+                # record for pull
+                try:
+                    _record_sync_event(
+                        tenant_id=str(tenant_id),
+                        station_id='web',
+                        entity_type='student_points',
+                        entity_id=str(int(sid)),
+                        action_type='update',
+                        payload={
+                            'old_points': int(old_points),
+                            'new_points': int(new_points),
+                            'reason': str(reason),
+                            'added_by': str(teacher_name),
+                        },
+                        created_at=None,
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        conn.commit()
+        return {'ok': True, 'updated': int(updated)}
     finally:
         try:
             conn.close()
