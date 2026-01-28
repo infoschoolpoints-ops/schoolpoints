@@ -9927,6 +9927,25 @@ class AdminStation:
                     except Exception:
                         pass
 
+            def _is_cloud_connected() -> bool:
+                try:
+                    cfg0 = self.load_app_config() or {}
+                except Exception:
+                    cfg0 = {}
+                try:
+                    tid0 = str(cfg0.get('sync_tenant_id') or '').strip()
+                except Exception:
+                    tid0 = ''
+                try:
+                    key0 = str(cfg0.get('sync_api_key') or cfg0.get('api_key') or cfg0.get('sync_key') or '').strip()
+                except Exception:
+                    key0 = ''
+                try:
+                    push0 = str(cfg0.get('sync_push_url') or '').strip()
+                except Exception:
+                    push0 = ''
+                return bool(tid0 and (key0 or push0))
+
             connect_row = tk.Frame(frame2, bg='#ecf0f1')
             connect_row.pack(fill=tk.X, pady=(6, 0))
             connect_row.columnconfigure(1, weight=1)
@@ -9942,13 +9961,64 @@ class AdminStation:
                 pady=5
             )
             connect_btn.grid(row=0, column=1, sticky='e', padx=5)
-            tk.Label(connect_row, text=fix_rtl_text("(פותח דפדפן)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
+
+            disconnect_btn = tk.Button(
+                connect_row,
+                text='התנתק',
+                font=('Arial', 9, 'bold'),
+                bg='#95a5a6',
+                fg='white',
+                padx=14,
+                pady=5
+            )
+            disconnect_btn.grid(row=0, column=0, sticky='e', padx=6)
+
+            cloud_state_lbl = tk.Label(connect_row, text=fix_rtl_text(''), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d', anchor='e', justify='right')
+            cloud_state_lbl.grid(row=1, column=1, columnspan=2, sticky='e', padx=5, pady=(2, 0))
+
+            def _do_disconnect():
+                try:
+                    if not messagebox.askyesno('התנתקות', 'לנתק את החיבור לענן ולמחוק פרטי סנכרון מהמחשב?', parent=dialog2):
+                        return
+                except Exception:
+                    pass
+                try:
+                    cfg1 = self.load_app_config() or {}
+                except Exception:
+                    cfg1 = {}
+                try:
+                    cfg1.pop('sync_api_key', None)
+                    cfg1.pop('api_key', None)
+                    cfg1.pop('sync_key', None)
+                    cfg1.pop('sync_push_url', None)
+                    cfg1.pop('sync_pull_url', None)
+                    cfg1.pop('sync_snapshot_url', None)
+                    cfg1.pop('sync_station_id', None)
+                except Exception:
+                    pass
+                try:
+                    self.save_app_config(cfg1)
+                except Exception:
+                    pass
+                try:
+                    _refresh_cloud_ui()
+                except Exception:
+                    pass
+
+            try:
+                disconnect_btn.configure(command=_do_disconnect)
+            except Exception:
+                pass
 
             def _apply_mode_ui(*_args):
                 mode = str(mode_var.get() or 'local').strip().lower()
                 allow_cloud = mode in ('hybrid', 'cloud')
                 try:
-                    connect_btn.configure(state=('normal' if allow_cloud else 'disabled'))
+                    # When connected: always show disabled 'מחובר'
+                    if allow_cloud and _is_cloud_connected():
+                        connect_btn.configure(state='disabled')
+                    else:
+                        connect_btn.configure(state=('normal' if allow_cloud else 'disabled'))
                 except Exception:
                     pass
                 # במצב מקוון בלבד: אין תיקיית רשת משותפת
@@ -9965,6 +10035,92 @@ class AdminStation:
                     shared_folder_label_i.configure(fg=('#95a5a6' if disable_shared else '#2c3e50'))
                 except Exception:
                     pass
+
+                try:
+                    _refresh_cloud_ui()
+                except Exception:
+                    pass
+
+            def _refresh_cloud_ui():
+                try:
+                    connected = bool(_is_cloud_connected())
+                except Exception:
+                    connected = False
+                try:
+                    allow_cloud = str(mode_var.get() or 'local').strip().lower() in ('hybrid', 'cloud')
+                except Exception:
+                    allow_cloud = False
+
+                if (not allow_cloud):
+                    try:
+                        connect_btn.configure(text='🌐 התחבר')
+                    except Exception:
+                        pass
+                    try:
+                        disconnect_btn.configure(state='disabled')
+                    except Exception:
+                        pass
+                    try:
+                        cloud_state_lbl.configure(text=fix_rtl_text('מצב מקומי - חיבור ענן כבוי'))
+                    except Exception:
+                        pass
+                    return
+
+                if connected:
+                    try:
+                        connect_btn.configure(text=fix_rtl_text('מחובר'), state='disabled')
+                    except Exception:
+                        pass
+                    try:
+                        disconnect_btn.configure(state='normal')
+                    except Exception:
+                        pass
+                    try:
+                        cloud_state_lbl.configure(text=fix_rtl_text('מחובר לענן'))
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        connect_btn.configure(text='🌐 התחבר')
+                    except Exception:
+                        pass
+                    try:
+                        disconnect_btn.configure(state='disabled')
+                    except Exception:
+                        pass
+                    try:
+                        cloud_state_lbl.configure(text=fix_rtl_text('(פותח דפדפן)'))
+                    except Exception:
+                        pass
+
+            try:
+                _refresh_cloud_ui()
+            except Exception:
+                pass
+
+            try:
+                def _on_cloud_focus(_e=None):
+                    try:
+                        _refresh_cloud_ui()
+                    except Exception:
+                        pass
+                dialog2.bind('<FocusIn>', _on_cloud_focus)
+            except Exception:
+                pass
+
+            try:
+                _orig_open_cloud = _open_cloud_connect
+                def _open_cloud_connect():
+                    try:
+                        _orig_open_cloud()
+                    finally:
+                        try:
+                            dialog2.after(1200, _refresh_cloud_ui)
+                        except Exception:
+                            pass
+                connect_btn.configure(command=_open_cloud_connect)
+            except Exception:
+                pass
 
             try:
                 mode_var.trace_add('write', _apply_mode_ui)
