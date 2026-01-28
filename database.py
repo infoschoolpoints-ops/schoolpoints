@@ -5848,6 +5848,8 @@ class Database:
                 s = str(t or '').strip()
                 if not s:
                     return None
+                # Backward compatibility: some legacy data uses '.' as separator (e.g. '7.30')
+                s = s.replace('.', ':')
                 parts = s.split(':')
                 if len(parts) != 2:
                     return None
@@ -6024,7 +6026,7 @@ class Database:
                 WHERE g.student_id = ?
                   AND g.given_date = ?
                   AND COALESCE(s.group_name, s.name) = ?
-                ORDER BY s.start_time ASC, g.id ASC
+                ORDER BY g.given_at ASC, g.id ASC
                 LIMIT 1
             ''', (int(student_id or 0), str(given_date), str(group_name)))
             row = cursor.fetchone()
