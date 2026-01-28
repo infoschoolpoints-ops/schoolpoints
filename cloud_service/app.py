@@ -847,7 +847,10 @@ def _school_db() -> sqlite3.Connection:
 
 def _tenant_school_db(tenant_id: str):
     if USE_POSTGRES:
-        schema = _ensure_tenant_db_exists(tenant_id)
+        tid = str(tenant_id or '').strip()
+        if not _tenant_db_ready(tid):
+            _ensure_tenant_db_exists(tid)
+        schema = _tenant_schema(tid)
         conn = _db()
         cur = conn.cursor()
         cur.execute(f'SET search_path TO "{schema}", public')
