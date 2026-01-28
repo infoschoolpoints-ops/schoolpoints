@@ -899,9 +899,13 @@ def _replace_rows_postgres(conn, table: str, rows: List[Dict[str, Any]]) -> int:
     allowed.discard('created_at')
     allowed.discard('updated_at')
 
-    cols = [c for c in list((rows[0] or {}).keys()) if c in allowed]
-    if not cols:
-        cols = [c for c in existing_cols if c in allowed]
+    present_keys: set[str] = set()
+    for r in rows:
+        try:
+            present_keys.update((r or {}).keys())
+        except Exception:
+            pass
+    cols = [c for c in existing_cols if c in allowed and c in present_keys]
     if not cols:
         return 0
 
@@ -1180,12 +1184,12 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
         students_n = 0
         try:
             teachers_n = _replace_rows(tconn, 'teachers', payload.teachers or [])
-        except Exception:
-            teachers_n = 0
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"snapshot failed: teachers replace: {e}")
         try:
             students_n = _replace_rows(tconn, 'students', payload.students or [])
-        except Exception:
-            students_n = 0
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"snapshot failed: students replace: {e}")
         tconn.commit()
     except Exception as e:
         try:
@@ -1789,13 +1793,16 @@ def web_teacher_login_submit(request: Request, card_number: str = Form(...)) -> 
     tenant_id = _web_tenant_from_cookie(request)
     conn = _tenant_school_db(tenant_id)
     cur = conn.cursor()
+    code = (card_number or '').strip()
     cur.execute(
         _sql_placeholder(
             'SELECT id, name, is_admin FROM teachers '
-            'WHERE CAST(card_number AS TEXT) = ? OR CAST(card_number2 AS TEXT) = ? OR CAST(card_number3 AS TEXT) = ? '
+            'WHERE TRIM(COALESCE(card_number, \'\')) = ? '
+            'OR TRIM(COALESCE(card_number2, \'\')) = ? '
+            'OR TRIM(COALESCE(card_number3, \'\')) = ? '
             'LIMIT 1'
         ),
-        (card_number.strip(), card_number.strip(), card_number.strip())
+        (code, code, code)
     )
     row = cur.fetchone()
     diag = None
