@@ -2715,7 +2715,15 @@ def api_students(
         query += " WHERE first_name LIKE ? OR last_name LIKE ? OR class_name LIKE ? OR id_number LIKE ?"
         like = f"%{q.strip()}%"
         params.extend([like, like, like, like])
-    query += " ORDER BY (serial_number IS NULL OR serial_number = 0), serial_number, class_name, last_name, first_name"
+    if USE_POSTGRES:
+        query += (
+            " ORDER BY "
+            "(serial_number IS NULL OR BTRIM(serial_number) = '' OR serial_number = '0'), "
+            "(CASE WHEN serial_number ~ '^[0-9]+$' THEN serial_number::BIGINT ELSE 9223372036854775807 END), "
+            "class_name, last_name, first_name"
+        )
+    else:
+        query += " ORDER BY (serial_number IS NULL OR serial_number = 0), serial_number, class_name, last_name, first_name"
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     cur.execute(_sql_placeholder(query), params)
@@ -2829,7 +2837,6 @@ def web_admin(request: Request):
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.class_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.points ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.private_message ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.id_number ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.card_number ?? ''}</td>
             </tr>`).join('');
           statusEl.textContent = `נטענו ${data.items.length} תלמידים`;
@@ -2944,7 +2951,6 @@ def web_admin(request: Request):
                   <th>כיתה</th>
                   <th>נקודות</th>
                   <th>הודעה פרטית</th>
-                  <th>ת.ז</th>
                   <th>כרטיס</th>
                 </tr>
               </thead>
