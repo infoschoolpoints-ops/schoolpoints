@@ -580,6 +580,16 @@ def _web_require_teacher(request: Request) -> Response | None:
     return _web_redirect_with_next('/web/teacher-login', request=request)
 
 
+def _web_require_admin_teacher(request: Request) -> Response | None:
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    teacher = _web_current_teacher(request) or {}
+    if bool(_safe_int(teacher.get('is_admin'), 0) == 1):
+        return None
+    return HTMLResponse('<h3>אין הרשאה</h3><p>רק מנהל יכול לנהל מורים.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+
+
 @app.get("/web/build")
 def web_build() -> Dict[str, Any]:
     routes = []
@@ -1372,6 +1382,10 @@ class TeacherSavePayload(BaseModel):
     card_number2: str | None = None
     card_number3: str | None = None
     is_admin: int | None = None
+    can_edit_student_card: int | None = None
+    can_edit_student_photo: int | None = None
+    bonus_max_points_per_student: int | None = None
+    bonus_max_total_runs: int | None = None
 
 
 class TeacherDeletePayload(BaseModel):
@@ -3522,7 +3536,7 @@ def web_time_bonus(request: Request):
 
 @app.get("/web/teachers", response_class=HTMLResponse)
 def web_teachers(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     js = """
@@ -3689,7 +3703,7 @@ def api_teachers(
     limit: int = Query(default=500, ge=1, le=2000),
     offset: int = Query(default=0, ge=0)
 ) -> Dict[str, Any]:
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return {"items": [], "limit": limit, "offset": offset, "query": q}
     tenant_id = _web_tenant_from_cookie(request)
@@ -3714,7 +3728,7 @@ def api_teachers(
 
 @app.post("/api/teachers/save")
 def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str, Any]:
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         raise HTTPException(status_code=401, detail='not authorized')
     tenant_id = _web_tenant_from_cookie(request)
@@ -3779,7 +3793,7 @@ def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str
 
 @app.post("/api/teachers/delete")
 def api_teachers_delete(request: Request, payload: TeacherDeletePayload) -> Dict[str, Any]:
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         raise HTTPException(status_code=401, detail='not authorized')
     tenant_id = _web_tenant_from_cookie(request)
@@ -4300,6 +4314,63 @@ def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[
             pass
 
 
+class StudentPointsDeltaPayload(BaseModel):
+    student_id: int
+    delta: int
+    reason: str | None = None
+
+
+@app.post('/api/students/points-delta')
+def api_students_points_delta(request: Request, payload: StudentPointsDeltaPayload) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='missing tenant')
+    sid = int(payload.student_id or 0)
+    delta = int(payload.delta or 0)
+    if sid <= 0 or delta == 0:
+        raise HTTPException(status_code=400, detail='invalid payload')
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT points FROM students WHERE id = ? LIMIT 1'), (sid,))
+        row = cur.fetchone()
+        old_p = _safe_int((row.get('points') if isinstance(row, dict) else (row['points'] if row else 0)), 0) if row else 0
+        new_p = int(old_p) + int(delta)
+        cur.execute(_sql_placeholder('UPDATE students SET points = ? WHERE id = ?'), (int(new_p), int(sid)))
+        conn.commit()
+
+        try:
+            teacher = _web_current_teacher(request) or {}
+            teacher_name = _safe_str(teacher.get('name') or '').strip() or 'web'
+            _record_sync_event(
+                tenant_id=str(tenant_id),
+                station_id='web',
+                entity_type='student_points',
+                entity_id=str(int(sid)),
+                action_type='update',
+                payload={
+                    'old_points': int(old_p),
+                    'new_points': int(new_p),
+                    'reason': str(payload.reason or '').strip() or 'ווב',
+                    'added_by': str(teacher_name),
+                },
+                created_at=None,
+            )
+        except Exception:
+            pass
+
+        return {'ok': True, 'student_id': int(sid), 'old_points': int(old_p), 'new_points': int(new_p)}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.post('/api/students/quick-update')
 def api_students_quick_update(request: Request, payload: StudentQuickUpdatePayload) -> Dict[str, Any]:
     guard = _web_require_teacher(request)
@@ -4550,6 +4621,7 @@ def web_admin(request: Request):
         const searchEl = document.getElementById('search');
         const selectedEl = document.getElementById('selected');
         const btnEditPoints = document.getElementById('btnEditPoints');
+        const btnQuickDelta = document.getElementById('btnQuickDelta');
         const btnEditMsg = document.getElementById('btnEditMsg');
         const btnEditStudent = document.getElementById('btnEditStudent');
         let selectedId = null;
@@ -4559,9 +4631,11 @@ def web_admin(request: Request):
           selectedId = id;
           const on = (selectedId !== null);
           btnEditPoints.style.opacity = on ? '1' : '.55';
+          btnQuickDelta.style.opacity = on ? '1' : '.55';
           btnEditMsg.style.opacity = on ? '1' : '.55';
           btnEditStudent.style.opacity = on ? '1' : '.55';
           btnEditPoints.style.pointerEvents = on ? 'auto' : 'none';
+          btnQuickDelta.style.pointerEvents = on ? 'auto' : 'none';
           btnEditMsg.style.pointerEvents = on ? 'auto' : 'none';
           btnEditStudent.style.pointerEvents = on ? 'auto' : 'none';
           selectedEl.textContent = on ? `נבחר תלמיד ID ${selectedId}` : 'לא נבחר תלמיד';
@@ -4660,6 +4734,26 @@ def web_admin(request: Request):
           await updateStudent({ points: n });
         });
 
+        btnQuickDelta.addEventListener('click', async () => {
+          if (!selectedId) return;
+          const deltaS = prompt('כמה נקודות להוסיף/להוריד? (לדוגמה: 5 או -3)');
+          if (deltaS === null) return;
+          const delta = parseInt(deltaS, 10);
+          if (Number.isNaN(delta) || delta === 0) { alert('ערך לא תקין'); return; }
+          const reason = prompt('סיבה (אופציונלי):') ?? '';
+          const resp = await fetch('/api/students/points-delta', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ student_id: parseInt(String(selectedId), 10), delta: delta, reason: String(reason || '') })
+          });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            alert('שגיאה: ' + txt);
+            return;
+          }
+          await load();
+        });
+
         btnEditMsg.addEventListener('click', async () => {
           if (!selectedId) return;
           const val = prompt('הודעה פרטית (ריק למחיקה):');
@@ -4741,6 +4835,7 @@ def web_admin(request: Request):
         </div>
         <div class="actions" style="display:flex;gap:10px;flex-wrap:wrap;margin:0 0 10px;align-items:center;">
           <a class="btn-blue" id="btnEditPoints" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך נקודות</a>
+          <a class="btn-blue" id="btnQuickDelta" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">⚡ עדכון מהיר</a>
           <a class="btn-blue" id="btnEditMsg" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך הודעה</a>
           <a class="btn-blue" id="btnEditStudent" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך תלמיד</a>
           <span id="selected" style="color:#637381;">לא נבחר תלמיד</span>
