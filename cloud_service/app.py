@@ -15,6 +15,7 @@ import secrets
 import hashlib
 import hmac
 import shutil
+import urllib.parse
 
 try:
     import psycopg2
@@ -74,6 +75,26 @@ def _sql_placeholder(sql: str) -> str:
     if not USE_POSTGRES:
         return sql
     return sql.replace('?', '%s')
+
+
+def _public_base_url(request: Request) -> str:
+    try:
+        proto = str(request.headers.get('x-forwarded-proto') or '').strip() or str(getattr(request.url, 'scheme', '') or '').strip() or 'https'
+    except Exception:
+        proto = 'https'
+    try:
+        host = str(request.headers.get('x-forwarded-host') or '').strip() or str(request.headers.get('host') or '').strip()
+    except Exception:
+        host = ''
+    if not host:
+        try:
+            host = str(request.url.netloc or '').strip()
+        except Exception:
+            host = ''
+    host = host.strip()
+    if not host:
+        return str(request.base_url).rstrip('/')
+    return f"{proto}://{host}".rstrip('/')
 
 
 def _integrity_errors():
@@ -315,7 +336,7 @@ def api_device_pair_start(request: Request) -> Dict[str, Any]:
             except _integrity_errors():
                 code = _random_pair_code()
                 continue
-        verify_url = str(request.base_url).rstrip('/') + '/web/device/pair?code=' + code
+        verify_url = _public_base_url(request) + '/web/device/pair?code=' + code
         return {'ok': True, 'code': code, 'verify_url': verify_url}
     finally:
         try:
@@ -388,9 +409,13 @@ def web_device_pair(request: Request, code: str = Query(default='')) -> str:
         return _basic_web_shell('חיבור עמדה', body)
     body = f"""
     <h2>חיבור עמדה</h2>
-    <p>לאשר חיבור עמדה עם הקוד:</p>
-    <div style='font-size:28px;font-weight:900;letter-spacing:2px;margin:10px 0;'>{code}</div>
-    <form method='post' action='/web/device/pair'>
+    <p style='font-size:16px;font-weight:800;'>האם לאשר חיבור עמדה עם האתר?</p>
+    <div style='margin-top:10px; padding:12px; border:1px solid #d6dde3; border-radius:12px; background:#f8fafc;'>
+      <div style='font-weight:800; color:#2f3e4e;'>קוד התאמה:</div>
+      <div style='font-size:26px;font-weight:950;letter-spacing:2px;margin-top:6px;'>{code}</div>
+      <div style='margin-top:8px; font-size:13px; color:#637381; line-height:1.6;'>אשר/י רק אם התחלת עכשיו חיבור מתוך התוכנה בעמדת הניהול.</div>
+    </div>
+    <form method='post' action='/web/device/pair' style='margin-top:14px;'>
       <input type='hidden' name='code' value='{code}' />
       <button class='green' type='submit'>אישור חיבור</button>
     </form>
@@ -429,7 +454,7 @@ def web_device_pair_submit(request: Request, code: str = Form(...)) -> str:
             return _basic_web_shell('חיבור עמדה', "<h2>חיבור עמדה</h2><p>לא נמצא מוסד.</p>")
         api_key = (row.get('api_key') if isinstance(row, dict) else row[0])
         api_key = str(api_key or '').strip()
-        push_url = str(request.base_url).rstrip('/') + '/sync/push'
+        push_url = _public_base_url(request) + '/sync/push'
 
         try:
             cur.execute(
@@ -472,17 +497,48 @@ def _web_teacher_from_cookie(request: Request) -> str:
     return str(request.cookies.get('web_teacher') or '').strip()
 
 
+def _web_next_from_request(request: Request, default: str = '/web/admin') -> str:
+    try:
+        q = request.query_params
+        nxt = str(q.get('next') or '').strip()
+    except Exception:
+        nxt = ''
+    if not nxt:
+        return default
+    # basic safety
+    if not nxt.startswith('/'):
+        return default
+    return nxt
+
+
+def _web_redirect_with_next(target: str, *, request: Request) -> RedirectResponse:
+    try:
+        nxt = str(request.url.path)
+        if str(request.url.query or '').strip():
+            nxt = nxt + '?' + str(request.url.query)
+    except Exception:
+        nxt = '/web/admin'
+    try:
+        encoded = urllib.parse.quote(str(nxt), safe='')
+    except Exception:
+        encoded = ''
+    url = str(target)
+    if encoded:
+        url = url + ('&' if '?' in url else '?') + 'next=' + encoded
+    return RedirectResponse(url=url, status_code=302)
+
+
 def _web_require_login(request: Request) -> Response | None:
     if _web_auth_ok(request):
         return None
-    return RedirectResponse(url="/web/login", status_code=302)
+    return _web_redirect_with_next('/web/login', request=request)
 
 
 def _web_require_tenant(request: Request) -> Response | None:
     tenant_id = _web_tenant_from_cookie(request)
     if tenant_id:
         return None
-    return RedirectResponse(url="/web/signin", status_code=302)
+    return _web_redirect_with_next('/web/signin', request=request)
 
 
 def _web_require_teacher(request: Request) -> Response | None:
@@ -491,7 +547,7 @@ def _web_require_teacher(request: Request) -> Response | None:
         return tenant_guard
     if _web_teacher_from_cookie(request):
         return None
-    return RedirectResponse(url="/web/teacher-login", status_code=302)
+    return _web_redirect_with_next('/web/teacher-login', request=request)
 
 
 @app.get("/web/build")
@@ -568,6 +624,7 @@ def _public_web_shell(title: str, body_html: str) -> str:
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>{title}</title>
       <link rel="icon" href="/web/assets/icons/public.png" />
+      <link rel="shortcut icon" href="/web/assets/icons/public.png" />
       <style>
         :root {{ --navy:#2f3e4e; --mint:#1abc9c; --sky:#3498db; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
         body {{ margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction: rtl; }}
@@ -829,6 +886,96 @@ def _save_contact_message(name: str, email: str, subject: str, message: str) -> 
             conn.close()
         except Exception:
             pass
+
+
+def _ensure_web_settings_table(conn) -> None:
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                '''
+                CREATE TABLE IF NOT EXISTS web_settings (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+        )
+        try:
+            cur.execute(_sql_placeholder('CREATE INDEX IF NOT EXISTS idx_web_settings_updated_at ON web_settings(updated_at)'))
+        except Exception:
+            pass
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
+def _get_web_setting_json(conn, key: str, default_json: str = '{}') -> str:
+    try:
+        _ensure_web_settings_table(conn)
+    except Exception:
+        pass
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT value_json FROM web_settings WHERE key = ? LIMIT 1'), (str(key or '').strip(),))
+        row = cur.fetchone()
+        if not row:
+            return default_json
+        val = (row.get('value_json') if isinstance(row, dict) else row[0])
+        s = str(val or '').strip()
+        return s if s else default_json
+    except Exception:
+        return default_json
+
+
+def _set_web_setting_json(conn, key: str, value_json: str) -> None:
+    try:
+        _ensure_web_settings_table(conn)
+    except Exception:
+        pass
+    cur = conn.cursor()
+    k = str(key or '').strip()
+    v = str(value_json or '').strip()
+    cur.execute(
+        _sql_placeholder(
+            'INSERT INTO web_settings (key, value_json, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
+            'ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP'
+        ),
+        (k, v)
+    )
+    conn.commit()
+
+
+def _web_json_editor(title: str, key: str, value_json: str, hint: str, back_href: str = '/web/admin') -> str:
+    safe_key = str(key or '').strip()
+    safe_hint = str(hint or '').strip()
+    safe_val = str(value_json or '').strip() or '{}'
+    return f"""
+    <style>
+      textarea {{ width:100%; min-height: 240px; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:13px; font-family: Consolas, monospace; direction:ltr; }}
+      .hint {{ color:#637381; font-size:13px; line-height:1.8; margin: 8px 0 10px; }}
+      .row {{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }}
+      .row a {{ text-decoration:none; }}
+      .btn {{ padding:10px 14px; border-radius:10px; border:none; font-weight:900; cursor:pointer; color:#fff; }}
+      .btn-save {{ background:#2ecc71; }}
+      .btn-back {{ background:#95a5a6; }}
+    </style>
+    <h2>{title}</h2>
+    <div class="hint">{safe_hint}</div>
+    <form method="post" action="/web/settings/save">
+      <input type="hidden" name="setting_key" value="{safe_key}" />
+      <input type="hidden" name="redirect_to" value="{back_href}" />
+      <textarea name="value_json">{safe_val}</textarea>
+      <div class="actionbar" style="justify-content:flex-end;">
+        <button class="btn btn-save" type="submit">💾 שמירה</button>
+        <a class="gray" href="{back_href}">↩️ חזרה</a>
+      </div>
+    </form>
+    """
 
 
 def _pbkdf2_hash(password: str, salt: bytes | None = None) -> str:
@@ -1134,6 +1281,19 @@ class SnapshotPayload(BaseModel):
     station_id: str | None = None
     teachers: List[Dict[str, Any]] = []
     students: List[Dict[str, Any]] = []
+
+
+def _fetch_table_rows(conn: sqlite3.Connection, table: str) -> List[Dict[str, Any]]:
+    cols = _table_columns(conn, table)
+    if not cols:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT {','.join(cols)} FROM {table}")
+        rows = cur.fetchall() or []
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
 
 
 class StudentUpdatePayload(BaseModel):
@@ -1797,6 +1957,71 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
     }
 
 
+@app.get('/sync/snapshot')
+def sync_snapshot_get(
+    request: Request,
+    tenant_id: str = Query(default=''),
+    api_key: str = Header(default=''),
+) -> Dict[str, Any]:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = _get_api_key(request, api_key).strip()
+    if not api_key:
+        raise HTTPException(status_code=401, detail='missing api_key')
+
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT 1 FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
+            (tenant_id, api_key)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail='invalid api_key')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    tconn = _tenant_school_db(tenant_id)
+    try:
+        tables = [
+            'teachers',
+            'students',
+            'messages',
+            'settings',
+            'product_categories',
+            'products',
+            'product_variants',
+            'cashier_responsibles',
+            'time_bonus_schedules',
+            'public_closures',
+            'activities',
+            'activity_schedules',
+            'activity_claims',
+            'scheduled_services',
+            'scheduled_service_dates',
+            'scheduled_service_slots',
+            'scheduled_service_reservations',
+            'web_settings',
+        ]
+        data: Dict[str, Any] = {}
+        for t in tables:
+            try:
+                data[t] = _fetch_table_rows(tconn, t)
+            except Exception:
+                data[t] = []
+        return {'ok': True, 'tenant_id': tenant_id, 'snapshot': data}
+    finally:
+        try:
+            tconn.close()
+        except Exception:
+            pass
+
+
 def _scalar_or_none(cur: sqlite3.Cursor) -> Any:
     row = cur.fetchone()
     if not row:
@@ -2042,10 +2267,99 @@ def web_account_password(request: Request) -> str:
     if not tenant_id:
         return _public_web_shell("החלפת סיסמה", "<h2>החלפת סיסמה</h2><p>יש להתחבר כדי להחליף סיסמה.</p>")
     body = """
+    <style>
+      form { display:grid; grid-template-columns: 1fr; gap:10px; max-width: 520px; }
+      label { font-weight:800; font-size:13px; }
+      input { width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }
+      button { padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:900; cursor:pointer; font-size:15px; }
+      .hint { color:#637381; line-height:1.9; font-size:13px; }
+    </style>
     <h2>החלפת סיסמה</h2>
-    <p>מסך החלפת סיסמה יושלם כאן.</p>
-    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
-      <a class=\"gray\" href=\"/web/account\">חזרה</a>
+    <div class="hint">כדי לשנות סיסמת מוסד יש להזין את הסיסמה הנוכחית ואת הסיסמה החדשה.</div>
+    <form method="post" action="/web/account/password" style="margin-top:12px;">
+      <label>סיסמה נוכחית</label>
+      <input name="current_password" type="password" required />
+      <label>סיסמה חדשה</label>
+      <input name="new_password" type="password" required />
+      <label>אימות סיסמה חדשה</label>
+      <input name="new_password2" type="password" required />
+      <button type="submit">שמירה</button>
+    </form>
+    <div class="actionbar" style="justify-content:flex-start;">
+      <a class="gray" href="/web/account">חזרה</a>
+    </div>
+    """
+    return _public_web_shell("החלפת סיסמה", body)
+
+
+@app.post("/web/account/password", response_class=HTMLResponse)
+def web_account_password_submit(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    new_password2: str = Form(...),
+) -> str:
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return _public_web_shell("החלפת סיסמה", "<h2>החלפת סיסמה</h2><p>יש להתחבר כדי להחליף סיסמה.</p>")
+
+    if str(new_password or '') != str(new_password2 or ''):
+        body = """
+        <h2>שגיאה</h2>
+        <p>הסיסמה החדשה ואימות הסיסמה לא תואמים.</p>
+        <div class="actionbar" style="justify-content:flex-start;">
+          <a class="gray" href="/web/account/password">חזרה</a>
+        </div>
+        """
+        return _public_web_shell("החלפת סיסמה", body)
+
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
+            (str(tenant_id).strip(),)
+        )
+        row = cur.fetchone()
+        pw_hash = (row.get('password_hash') if isinstance(row, dict) else (row[0] if row else None))
+        if not row or not str(pw_hash or '').strip():
+            body = """
+            <h2>שגיאה</h2>
+            <p>לא נמצאה סיסמת מוסד. פנה למנהל המערכת.</p>
+            <div class="actionbar" style="justify-content:flex-start;">
+              <a class="gray" href="/web/account">חזרה</a>
+            </div>
+            """
+            return _public_web_shell("החלפת סיסמה", body)
+
+        if not _pbkdf2_verify(str(current_password or '').strip(), str(pw_hash)):
+            body = """
+            <h2>שגיאה</h2>
+            <p>הסיסמה הנוכחית אינה תקינה.</p>
+            <div class="actionbar" style="justify-content:flex-start;">
+              <a class="gray" href="/web/account/password">נסה שוב</a>
+            </div>
+            """
+            return _public_web_shell("החלפת סיסמה", body)
+
+        new_hash = _pbkdf2_hash(str(new_password or '').strip())
+        cur.execute(
+            _sql_placeholder('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?'),
+            (str(new_hash), str(tenant_id).strip())
+        )
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    body = """
+    <h2>סיסמה עודכנה</h2>
+    <p>הסיסמה נשמרה בהצלחה.</p>
+    <div class="actionbar" style="justify-content:flex-start;">
+      <a class="blue" href="/web/account">חזרה לאזור אישי</a>
+      <a class="gray" href="/web/admin">ניהול</a>
     </div>
     """
     return _public_web_shell("החלפת סיסמה", body)
@@ -2055,9 +2369,13 @@ def web_account_password(request: Request) -> str:
 def web_account_forgot(request: Request) -> str:
     body = """
     <h2>שכחתי סיסמה</h2>
-    <p>מסך שחזור סיסמה יושלם כאן.</p>
-    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
-      <a class=\"gray\" href=\"/web/account\">חזרה</a>
+    <p style="line-height:1.9; color:#637381;">
+      כרגע שחזור סיסמה אוטומטי אינו זמין דרך הווב.
+      כדי לאפס סיסמת מוסד יש לפנות למנהל המערכת / התמיכה.
+    </p>
+    <div class="actionbar" style="justify-content:flex-start;">
+      <a class="blue" href="/web/contact">פנייה לתמיכה</a>
+      <a class="gray" href="/web/account">חזרה</a>
     </div>
     """
     return _public_web_shell("שכחתי סיסמה", body)
@@ -2070,40 +2388,30 @@ def web_account_payments(request: Request) -> str:
         return _public_web_shell("תשלומים", "<h2>תשלומים</h2><p>יש להתחבר כדי לצפות בתשלומים.</p>")
     body = """
     <h2>תשלומים</h2>
-    <p>מסך תשלומים/רישום יושלם כאן.</p>
-    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
-      <a class=\"gray\" href=\"/web/account\">חזרה</a>
+    <p style="line-height:1.9; color:#637381;">
+      תשלומים/חידוש רישיון מנוהלים כרגע דרך התמיכה.
+      ניתן ליצור קשר ולקבל הצעה/קישור לתשלום.
+    </p>
+    <div class="actionbar" style="justify-content:flex-start;">
+      <a class="blue" href="/web/pricing">לתמחור</a>
+      <a class="blue" href="/web/contact">צור קשר</a>
+      <a class="gray" href="/web/account">חזרה</a>
     </div>
     """
     return _public_web_shell("תשלומים", body)
 
-
 @app.get("/web/pricing", response_class=HTMLResponse)
 def web_pricing() -> str:
     body = f"""
-    <div style=\"text-align:center;\">
-      <div style=\"font-size:22px;font-weight:900;\">תמחור</div>
-      <div style=\"margin-top:8px; color:#637381; line-height:1.8;\">דף תמחור יושלם כאן. בינתיים ניתן ליצור קשר לקבלת הצעה.</div>
+    <div style="text-align:center;">
+      <div style="font-size:26px;font-weight:950;">תמחור</div>
+      <div style="margin-top:8px; color:#637381; line-height:1.9;">רכישה חד-פעמית או השכרה חודשית. מתאים גם לעבודה עונתית: <b>2 חודשים + אפשרות הארכה</b>.</div>
     </div>
-    <div style=\"margin-top:16px; display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:12px;\">
-      <div style=\"border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff;\">
-        <div style=\"font-weight:900;\">בסיסי</div>
-        <div style=\"margin-top:6px; color:#637381;\">עד 2 תחנות</div>
-      </div>
-      <div style=\"border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff;\">
-        <div style=\"font-weight:900;\">מורחב</div>
-        <div style=\"margin-top:6px; color:#637381;\">עד 5 תחנות</div>
-      </div>
-      <div style=\"border:1px solid var(--line); border-radius:12px; padding:14px; background:#fff;\">
-        <div style=\"font-weight:900;\">ללא הגבלה</div>
-        <div style=\"margin-top:6px; color:#637381;\">מספר תחנות גבוה</div>
-      </div>
+    <div class="actionbar" style="justify-content:center;">
+      <a class="green" href="/web/contact">צור קשר להצעה</a>
+      <a class="blue" href="/web/signin">כניסה</a>
     </div>
-    <div class=\"actionbar\" style=\"justify-content:center;\">
-      <a class=\"green\" href=\"/web/contact\">צור קשר</a>
-      <a class=\"blue\" href=\"/web/signin\">כניסה</a>
-    </div>
-    <div class=\"small\">build: {APP_BUILD_TAG}</div>
+    <div class="small" style="text-align:center;">build: {APP_BUILD_TAG}</div>
     """
     return _public_web_shell("תמחור", body)
 
@@ -2111,32 +2419,64 @@ def web_pricing() -> str:
 @app.get("/web/contact", response_class=HTMLResponse)
 def web_contact() -> str:
     body = f"""
-    <style>
-      form {{ display:grid; grid-template-columns: 1fr; gap:10px; max-width: 560px; margin: 0 auto; }}
-      label {{ font-weight:800; font-size:13px; }}
-      input, textarea {{ width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }}
-      textarea {{ min-height: 140px; resize: vertical; }}
-      button {{ padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:900; cursor:pointer; font-size:15px; }}
-      .hint {{ text-align:center; font-size:12px; color:#637381; margin-top:10px; }}
-    </style>
-    <div style=\"text-align:center;\">
-      <div style=\"font-size:22px;font-weight:900;\">צור קשר</div>
-      <div style=\"margin-top:8px; color:#637381;\">נשמח לעזור. ניתן להשאיר פרטים ונחזור אליך.</div>
+    <div style="text-align:center;">
+      <div style="font-size:22px;font-weight:900;">צור קשר</div>
+      <div style="margin-top:8px; color:#637381;">נשמח לעזור. ניתן להשאיר פרטים ונחזור אליך.</div>
     </div>
-    <form method=\"post\" action=\"/web/contact\" style=\"margin-top:14px;\">
+    <form method="post" action="/web/contact" style="margin-top:14px;">
       <label>שם</label>
-      <input name=\"name\" required />
-      <label>דוא\"ל</label>
-      <input name=\"email\" type=\"email\" required />
+      <input name="name" required />
+      <label>דוא"ל</label>
+      <input name="email" type="email" required />
       <label>נושא</label>
-      <input name=\"subject\" required />
+      <input name="subject" required />
       <label>הודעה</label>
-      <textarea name=\"message\" required></textarea>
-      <button type=\"submit\">שליחה</button>
+      <textarea name="message" required></textarea>
+      <button type="submit">שליחה</button>
     </form>
-    <div class=\"hint\">build: {APP_BUILD_TAG}</div>
+    <div class="hint">build: {APP_BUILD_TAG}</div>
     """
     return _public_web_shell("צור קשר", body)
+
+
+@app.post("/web/settings/save")
+def web_settings_save(
+    request: Request,
+    setting_key: str = Form(...),
+    value_json: str = Form(...),
+    redirect_to: str = Form(default='/web/admin'),
+) -> Response:
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url="/web/login", status_code=302)
+
+    k = str(setting_key or '').strip()
+    v = str(value_json or '').strip()
+    if not k:
+        return RedirectResponse(url=str(redirect_to or '/web/admin'), status_code=302)
+    # validate json (best effort)
+    try:
+        json.loads(v or '{}')
+    except Exception:
+        body = f"""
+        <h2>שגיאה</h2>
+        <p>הערך אינו JSON תקין.</p>
+        <div class=\"actionbar\"><a class=\"gray\" href=\"{redirect_to or '/web/admin'}\">חזרה</a></div>
+        """
+        return HTMLResponse(_basic_web_shell("שגיאה", body))
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        _set_web_setting_json(conn, k, v)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return RedirectResponse(url=str(redirect_to or '/web/admin'), status_code=302)
 
 
 @app.post("/web/contact", response_class=HTMLResponse)
@@ -2264,25 +2604,18 @@ def web_login() -> str:
       </div>
       <div style="margin-top:12px; font-size:12px; color:#6b7280;">build: """ + APP_BUILD_TAG + """</div>
     </div>
-    """
-    return _public_web_shell("SchoolPoints", body)
-
-
-@app.get("/web/signin", response_class=HTMLResponse)
-def web_signin() -> str:
-    body = """
     <style>
-      .hero { display:flex; gap:18px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:14px; }
-      .brand { display:flex; gap:12px; align-items:center; }
-      .brand img { width:64px; height:64px; object-fit:contain; border-radius:12px; background:#fff; border:1px solid var(--line); box-shadow:0 6px 16px rgba(40,55,70,.08); }
-      .brand .t1 { font-size:22px; font-weight:900; letter-spacing:.5px; }
-      .brand .t2 { font-size:13px; color:#637381; margin-top:2px; }
-      .panel { display:grid; grid-template-columns: 1fr; gap:12px; }
-      form { display:grid; grid-template-columns: 1fr; gap:10px; max-width: 460px; margin: 6px auto 0; }
-      label { font-weight:700; font-size:13px; }
-      input { width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }
-      button { padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:800; cursor:pointer; font-size:15px; }
-      .hint { text-align:center; font-size:12px; color:#637381; margin-top:8px; }
+      .hero {{ display:flex; gap:18px; align-items:center; justify-content:space-between; flex-wrap:wrap; margin-bottom:14px; }}
+      .brand {{ display:flex; gap:12px; align-items:center; }}
+      .brand img {{ width:64px; height:64px; object-fit:contain; border-radius:12px; background:#fff; border:1px solid var(--line); box-shadow:0 6px 16px rgba(40,55,70,.08); }}
+      .brand .t1 {{ font-size:22px; font-weight:900; letter-spacing:.5px; }}
+      .brand .t2 {{ font-size:13px; color:#637381; margin-top:2px; }}
+      .panel {{ display:grid; grid-template-columns: 1fr; gap:12px; }}
+      form {{ display:grid; grid-template-columns: 1fr; gap:10px; max-width: 460px; margin: 6px auto 0; }}
+      label {{ font-weight:700; font-size:13px; }}
+      input {{ width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }}
+      button {{ padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:800; cursor:pointer; font-size:15px; }}
+      .hint {{ text-align:center; font-size:12px; color:#637381; margin-top:8px; }}
     </style>
     <div class="hero">
       <div class="brand">
@@ -2295,59 +2628,44 @@ def web_signin() -> str:
     </div>
     <div class="panel">
       <form method="post" action="/web/institution-login">
+        <input type="hidden" name="next" value="/web/admin" />
         <label>קוד מוסד</label>
         <input name="tenant_id" placeholder="" required />
         <label>סיסמת מוסד</label>
         <input name="institution_password" type="password" required />
         <button type="submit">התחברות</button>
       </form>
-      <div class="hint">build: """ + APP_BUILD_TAG + """</div>
+      <div class="hint">build: {APP_BUILD_TAG}</div>
     </div>
     """
     return _public_web_shell("כניסה למערכת", body)
 
 
-@app.post("/web/institution-login", response_class=HTMLResponse)
-def web_institution_login(
-    tenant_id: str = Form(...),
-    institution_password: str = Form(...)
-) -> Response:
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        _sql_placeholder('SELECT tenant_id, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
-        (tenant_id.strip(),)
-    )
-    row = cur.fetchone()
-    conn.close()
-    if not row or not (row['password_hash'] or '').strip():
-        body = "<h2>שגיאת התחברות</h2><p>קוד מוסד או סיסמת מוסד לא תקינים.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">נסה שוב</a></div>"
-        return HTMLResponse(_public_web_shell("כניסה למערכת", body))
-    if not _pbkdf2_verify(institution_password.strip(), str(row['password_hash'])):
-        body = "<h2>שגיאת התחברות</h2><p>קוד מוסד או סיסמת מוסד לא תקינים.</p><div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">נסה שוב</a></div>"
-        return HTMLResponse(_public_web_shell("כניסה למערכת", body))
-
-    try:
-        tid = tenant_id.strip()
-        if not _tenant_db_ready(tid):
-            _ensure_tenant_db_exists(tid)
-    except Exception as e:
-        try:
-            print(f"[WEB] open tenant db failed tenant={tenant_id.strip()}: {e}", file=sys.stderr)
-        except Exception:
-            pass
-        body = (
-            "<h2>שגיאת מערכת</h2>"
-            "<p>לא ניתן ליצור/לפתוח את מסד הנתונים של המוסד.</p>"
-            "<pre style=\"white-space:pre-wrap;direction:ltr\">" + _safe_str(e) + "</pre>"
-            "<div class=\"actionbar\"><a class=\"green\" href=\"/web/signin\">חזרה</a></div>"
-        )
-        return HTMLResponse(_public_web_shell("כניסה למערכת", body))
-
-    response = RedirectResponse(url="/web/teacher-login", status_code=302)
-    response.set_cookie("web_tenant", tenant_id.strip(), httponly=True)
-    response.delete_cookie("web_teacher")
-    return response
+@app.get("/web/signin", response_class=HTMLResponse)
+def web_signin(request: Request) -> str:
+    nxt = _web_next_from_request(request, '/web/admin')
+    body = f"""
+    <style>
+      .panel {{ display:grid; grid-template-columns: 1fr; gap:12px; }}
+      form {{ display:grid; grid-template-columns: 1fr; gap:10px; max-width: 460px; margin: 6px auto 0; }}
+      label {{ font-weight:700; font-size:13px; }}
+      input {{ width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }}
+      button {{ padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:800; cursor:pointer; font-size:15px; }}
+      .hint {{ text-align:center; font-size:12px; color:#637381; margin-top:8px; }}
+    </style>
+    <div class="panel">
+      <form method="post" action="/web/institution-login">
+        <input type="hidden" name="next" value="{_safe_str(nxt)}" />
+        <label>קוד מוסד</label>
+        <input name="tenant_id" required />
+        <label>סיסמת מוסד</label>
+        <input name="institution_password" type="password" required />
+        <button type="submit">התחברות</button>
+      </form>
+      <div class="hint">build: {APP_BUILD_TAG}</div>
+    </div>
+    """
+    return _public_web_shell("כניסה למערכת", body)
 
 
 @app.get("/web/teacher-login", response_class=HTMLResponse)
@@ -2355,17 +2673,19 @@ def web_teacher_login(request: Request) -> Response:
     guard = _web_require_tenant(request)
     if guard:
         return guard
-    body = """
+    nxt = _web_next_from_request(request, '/web/admin')
+    body = f"""
     <style>
-      .panel { display:grid; grid-template-columns: 1fr; gap:12px; }
-      form { display:grid; grid-template-columns: 1fr; gap:10px; max-width: 460px; margin: 6px auto 0; }
-      label { font-weight:700; font-size:13px; }
-      input { width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }
-      button { padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:800; cursor:pointer; font-size:15px; }
-      .hint { text-align:center; font-size:12px; color:#637381; margin-top:8px; }
+      .panel {{ display:grid; grid-template-columns: 1fr; gap:12px; }}
+      form {{ display:grid; grid-template-columns: 1fr; gap:10px; max-width: 460px; margin: 6px auto 0; }}
+      label {{ font-weight:700; font-size:13px; }}
+      input {{ width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }}
+      button {{ padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:800; cursor:pointer; font-size:15px; }}
+      .hint {{ text-align:center; font-size:12px; color:#637381; margin-top:8px; }}
     </style>
     <div class="panel">
       <form method="post" action="/web/teacher-login">
+        <input type="hidden" name="next" value="{_safe_str(nxt)}" />
         <label>קוד / כרטיס מורה (או מנהל)</label>
         <input name="card_number" type="password" required />
         <button type="submit">כניסה</button>
@@ -2376,7 +2696,7 @@ def web_teacher_login(request: Request) -> Response:
 
 
 @app.post("/web/teacher-login", response_class=HTMLResponse)
-def web_teacher_login_submit(request: Request, card_number: str = Form(...)) -> Response:
+def web_teacher_login_submit(request: Request, card_number: str = Form(...), next: str = Form(default='/web/admin')) -> Response:
     guard = _web_require_tenant(request)
     if guard:
         return guard
@@ -2422,7 +2742,13 @@ def web_teacher_login_submit(request: Request, card_number: str = Form(...)) -> 
             body += "<pre style=\"white-space:pre-wrap;direction:ltr\">" + _safe_str(diag) + "</pre>"
         body += "<div class=\"actionbar\"><a class=\"green\" href=\"/web/teacher-login\">נסה שוב</a></div>"
         return HTMLResponse(_public_web_shell("כניסה", body))
-    response = RedirectResponse(url="/web/admin", status_code=302)
+    try:
+        nxt = str(next or '').strip()
+    except Exception:
+        nxt = ''
+    if not nxt.startswith('/'):
+        nxt = '/web/admin'
+    response = RedirectResponse(url=nxt, status_code=302)
     response.set_cookie("web_user", "1", httponly=True)
     response.set_cookie("web_teacher", str(row['id']), httponly=True)
     return response
@@ -2463,15 +2789,31 @@ def _basic_web_shell(title: str, body_html: str) -> str:
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>{title}</title>
       <link rel="icon" href="/web/assets/icons/public.png" />
+      <link rel="shortcut icon" href="/web/assets/icons/public.png" />
       <style>
         :root {{ --navy:#2f3e4e; --mint:#1abc9c; --sky:#3498db; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
         body {{ margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction: rtl; }}
-        .wrap {{ max-width: 860px; margin: 24px auto; padding: 0 16px; }}
+        .wrap {{ max-width: 1180px; margin: 24px auto; padding: 0 16px; }}
+        .layout {{ display:flex; gap:14px; align-items:flex-start; }}
+        .sidebar {{ width: 260px; position: sticky; top: 16px; }}
+        .content {{ flex: 1; min-width: 0; }}
         .card {{ background:#fff; border-radius:10px; padding:20px; border:1px solid var(--line); box-shadow:0 6px 18px rgba(40,55,70,.08); }}
         .titlebar {{ background:var(--navy); color:#fff; padding:14px 18px; border-radius:10px 10px 0 0; margin:-20px -20px 16px; }}
         .titlebar h2 {{ margin:0; font-size:20px; }}
         .tabs {{ margin:6px 0 10px; display:flex; gap:6px; flex-wrap:wrap; }}
         .tab {{ background:var(--tab); padding:6px 10px; border-radius:4px; font-size:12px; text-decoration:none; color:#1f2d3a; border:1px solid var(--line); }}
+        .nav {{ display:flex; flex-direction:column; gap:10px; }}
+        .navgroup {{ background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px; box-shadow:0 6px 18px rgba(40,55,70,.06); }}
+        .navtitle {{ font-weight:900; color:#2f3e4e; margin:2px 0 10px; font-size:14px; }}
+        .navbtn {{ display:block; text-decoration:none; color:#fff; padding:12px 14px; border-radius:12px; font-weight:900; font-size:14px; box-shadow:0 10px 22px rgba(0,0,0,.10); }}
+        .navbtn:active {{ transform: translateY(1px); }}
+        .navbtn.green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
+        .navbtn.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
+        .navbtn.purple {{ background: linear-gradient(135deg, #8e44ad, #5b2c83); }}
+        .navbtn.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
+        .navbtn.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
+        .navbtn.navy {{ background: linear-gradient(135deg, #2f3e4e, #22313f); }}
+        .small {{ font-size:12px; opacity:.92; font-weight:700; }}
         label {{ display:block; margin:10px 0 6px; font-weight:600; }}
         input, select {{ width:100%; padding:10px; border:1px solid #d9e2ec; border-radius:8px; }}
         button {{ margin-top:14px; padding:10px 16px; border:none; border-radius:8px; background:#1abc9c; color:#fff; font-weight:600; cursor:pointer; }}
@@ -2487,34 +2829,56 @@ def _basic_web_shell(title: str, body_html: str) -> str:
         .actionbar .gray {{ background:#95a5a6; }}
         .actionbar .purple {{ background:#8e44ad; }}
         .links a {{ color:#1f2d3a; text-decoration:none; margin-left:10px; }}
+        @media (max-width: 980px) {{
+          .layout {{ flex-direction: column; }}
+          .sidebar {{ width: 100%; position: relative; top: auto; }}
+          .nav {{ flex-direction: row; overflow:auto; padding-bottom: 6px; }}
+          .navgroup {{ min-width: 320px; flex: 0 0 auto; }}
+        }}
       </style>
     </head>
     <body>
       <div class="wrap">
-        <div class="card">
-          <div class="titlebar"><h2>{title}</h2></div>
-          <div style="font-size:12px;color:#637381;margin-bottom:8px;">
-            מוסדות: {status['inst_total']} | שינויים: {status['changes_total']} | שינוי אחרון: {status['last_received']}
+        <div class="layout">
+          <div class="sidebar">
+            <div class="nav">
+              <div class="navgroup">
+                <div class="navtitle">ניהול</div>
+                <a class="navbtn navy" href="/web/admin">תלמידים</a>
+                <a class="navbtn blue" href="/web/teachers">ניהול מורים</a>
+                <a class="navbtn orange" href="/web/cashier">קופה</a>
+                <a class="navbtn gray" href="/web/reports">דוחות</a>
+              </div>
+              <div class="navgroup">
+                <div class="navtitle">תצוגה ותוכן</div>
+                <a class="navbtn blue" href="/web/display-settings">הגדרות תצוגה <span class="small">(צבעים/צלילים/מטבעות)</span></a>
+                <a class="navbtn green" href="/web/messages">הודעות</a>
+                <a class="navbtn purple" href="/web/special-bonus">בונוס מיוחד</a>
+                <a class="navbtn purple" href="/web/time-bonus">בונוס זמנים</a>
+                <a class="navbtn orange" href="/web/bonuses">בונוסים</a>
+                <a class="navbtn orange" href="/web/holidays">חגים/חופשות</a>
+              </div>
+              <div class="navgroup">
+                <div class="navtitle">מערכת</div>
+                <a class="navbtn blue" href="/web/system-settings">הגדרות מערכת</a>
+                <a class="navbtn gray" href="/web/logs">לוגים</a>
+                <a class="navbtn gray" href="/web/upgrades">שדרוגים</a>
+                <a class="navbtn gray" href="/web/logout">יציאה</a>
+              </div>
+            </div>
           </div>
-          <div class="tabs">
-            <a class="tab" href="/web/admin">תלמידים</a>
-            <a class="tab" href="/web/upgrades">שדרוגים</a>
-            <a class="tab" href="/web/messages">הודעות</a>
-            <a class="tab" href="/web/special-bonus">בונוס מיוחד</a>
-            <a class="tab" href="/web/time-bonus">בונוס זמנים</a>
-            <a class="tab" href="/web/teachers">ניהול מורים</a>
-            <a class="tab" href="/web/system-settings">הגדרות מערכת</a>
-            <a class="tab" href="/web/display-settings">הגדרות תצוגה</a>
-            <a class="tab" href="/web/bonuses">בונוסים</a>
-            <a class="tab" href="/web/holidays">חגים/חופשות</a>
-            <a class="tab" href="/web/cashier">קופה</a>
-            <a class="tab" href="/web/reports">דוחות</a>
-            <a class="tab" href="/web/logs">לוגים</a>
-          </div>
-          {body_html}
-          <div class="links">
-            <a href="/web/admin">עמדת ניהול</a>
-            <a href="/web/logout">יציאה</a>
+          <div class="content">
+            <div class="card">
+              <div class="titlebar"><h2>{title}</h2></div>
+              <div style="font-size:12px;color:#637381;margin-bottom:8px;">
+                מוסדות: {status['inst_total']} | שינויים: {status['changes_total']} | שינוי אחרון: {status['last_received']}
+              </div>
+              {body_html}
+              <div class="links">
+                <a href="/web/admin">עמדת ניהול</a>
+                <a href="/web/logout">יציאה</a>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -2528,15 +2892,22 @@ def web_cashier(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>עמדת קופה</h2>
-    <p>מסך קופה יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/cashier">➕ מוצר חדש</a>
-      <a class="blue" href="/web/cashier">🧾 היסטוריית רכישות</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'cashier_settings', '{\n  "enabled": true,\n  "items": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "עמדת קופה",
+        'cashier_settings',
+        value_json,
+        'הגדרות קופה (JSON). בהמשך יתווסף מסך ניהול מוצרים/קטגוריות והיסטוריה.',
+        back_href='/web/admin',
+    )
     return _basic_web_shell("עמדת קופה", body)
 
 
@@ -2545,13 +2916,25 @@ def web_ads_media(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>הודעות / פרסומות / מדיה</h2>
-    <p>מסך ניהול מדיה יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="purple" href="/web/ads-media">⬆️ העלאת מדיה</a>
-      <a class="blue" href="/web/messages">↩️ למסך הודעות</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'ads_media', '{\n  "items": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    editor = _web_json_editor(
+        "מדיה / פרסומות",
+        'ads_media',
+        value_json,
+        'רשימת מדיה/פרסומות להצגה בעמדות (JSON). בהמשך יתווסף ממשק העלאה ידידותי.',
+        back_href='/web/messages',
+    )
+    body = editor + """
+    <div class=\"actionbar\">
+      <a class=\"blue\" href=\"/web/messages\">↩️ למסך הודעות</a>
     </div>
     """
     return _basic_web_shell("מדיה", body)
@@ -2562,14 +2945,22 @@ def web_colors(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>צבעים</h2>
-    <p>מסך ניהול צבעים/טווחי נקודות יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/colors">➕ טווח חדש</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'color_settings', '{\n  "ranges": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "צבעים",
+        'color_settings',
+        value_json,
+        'טווחי נקודות/צבעים (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        back_href='/web/display-settings',
+    )
     return _basic_web_shell("צבעים", body)
 
 
@@ -2578,14 +2969,22 @@ def web_sounds(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>צלילים</h2>
-    <p>מסך ניהול צלילים יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="purple" href="/web/sounds">⬆️ העלאת צליל</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'sound_settings', '{\n  "enabled": true,\n  "items": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "צלילים",
+        'sound_settings',
+        value_json,
+        'הגדרות צלילים (JSON). בהמשך יתווסף ממשק העלאה ידידותי.',
+        back_href='/web/display-settings',
+    )
     return _basic_web_shell("צלילים", body)
 
 
@@ -2594,14 +2993,22 @@ def web_coins(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>מטבעות ויעדים</h2>
-    <p>מסך ניהול מטבעות/יעדים יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/coins">➕ הוסף מטבע</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'coins_settings', '{\n  "coins": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "מטבעות ויעדים",
+        'coins_settings',
+        value_json,
+        'הגדרות מטבעות/יעדים (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        back_href='/web/display-settings',
+    )
     return _basic_web_shell("מטבעות", body)
 
 
@@ -2610,12 +3017,25 @@ def web_reports(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>דוחות</h2>
-    <p>מסך דוחות יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="blue" href="/web/export/download">⬇️ ייצוא תלמידים (CSV)</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'reports_settings', '{\n  "enabled": true\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    editor = _web_json_editor(
+        "דוחות",
+        'reports_settings',
+        value_json,
+        'הגדרות דוחות (JSON). ייצוא תלמידים (CSV) זמין כבר עכשיו.',
+        back_href='/web/admin',
+    )
+    body = editor + """
+    <div class=\"actionbar\">
+      <a class=\"blue\" href=\"/web/export/download\">⬇️ ייצוא תלמידים (CSV)</a>
     </div>
     """
     return _basic_web_shell("דוחות", body)
@@ -2901,14 +3321,22 @@ def web_bonuses(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>בונוסים</h2>
-    <p>מסך ניהול בונוסים יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/bonuses">➕ הוסף בונוס</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'bonus_settings', '{\n  "bonuses": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "בונוסים",
+        'bonus_settings',
+        value_json,
+        'הגדרות בונוסים (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        back_href='/web/admin',
+    )
     return _basic_web_shell("בונוסים", body)
 
 
@@ -2917,14 +3345,22 @@ def web_holidays(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>חגים וחופשות</h2>
-    <p>מסך ניהול חגים/חופשות יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/holidays">🎉 הוסף חג</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'holidays', '{\n  "items": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "חגים וחופשות",
+        'holidays',
+        value_json,
+        'הגדרות חגים/חופשות (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        back_href='/web/admin',
+    )
     return _basic_web_shell("חגים וחופשות", body)
 
 
@@ -2933,15 +3369,22 @@ def web_upgrades(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>שדרוגים</h2>
-    <p>מסך שדרוגים יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/upgrades">⬆️ העלאת גרסה</a>
-      <a class="blue" href="/web/upgrades">📦 ניהול גרסאות</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'upgrades_settings', '{\n  "auto_update": false,\n  "channel": "stable"\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "שדרוגים",
+        'upgrades_settings',
+        value_json,
+        'הגדרות שדרוגים (JSON). בהמשך יתווספו העלאת גרסה וניהול גרסאות בפועל.',
+        back_href='/web/admin',
+    )
     return _basic_web_shell("שדרוגים", body)
 
 
@@ -2950,16 +3393,28 @@ def web_messages(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>הודעות כלליות</h2>
-    <p>מסך ניהול הודעות כלליות יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/messages">➕ הודעה חדשה</a>
-      <a class="purple" href="/web/ads-media">🖼️ מדיה / פרסומות</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'messages', '{\n  "items": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    editor = _web_json_editor(
+        "הודעות כלליות",
+        'messages',
+        value_json,
+        'רשימת הודעות להצגה בעמדות (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        back_href='/web/admin',
+    )
+    body = editor + """
+    <div class=\"actionbar\">
+      <a class=\"purple\" href=\"/web/ads-media\">🖼️ מדיה / פרסומות</a>
     </div>
     """
-    return _basic_web_shell("הודעות כלליות", body)
+    return _basic_web_shell("הודעות", body)
 
 
 @app.get("/web/special-bonus", response_class=HTMLResponse)
@@ -2967,13 +3422,25 @@ def web_special_bonus(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>בונוס מיוחד</h2>
-    <p>מסך בונוס מיוחד יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/special-bonus">➕ יצירת בונוס מיוחד</a>
-      <a class="blue" href="/web/bonuses">↩️ למסך בונוסים</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'special_bonus', '{\n  "items": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    editor = _web_json_editor(
+        "בונוס מיוחד",
+        'special_bonus',
+        value_json,
+        'בונוס מיוחד (JSON). בהמשך יתווסף מסך יצירה ידידותי.',
+        back_href='/web/bonuses',
+    )
+    body = editor + """
+    <div class=\"actionbar\">
+      <a class=\"blue\" href=\"/web/bonuses\">↩️ למסך בונוסים</a>
     </div>
     """
     return _basic_web_shell("בונוס מיוחד", body)
@@ -2984,13 +3451,25 @@ def web_time_bonus(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>בונוס זמנים</h2>
-    <p>מסך בונוס זמנים יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/time-bonus">➕ כלל חדש</a>
-      <a class="blue" href="/web/holidays">📅 חגים/חופשות</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'time_bonus', '{\n  "rules": []\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    editor = _web_json_editor(
+        "בונוס זמנים",
+        'time_bonus',
+        value_json,
+        'כללי בונוס לפי זמן (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        back_href='/web/holidays',
+    )
+    body = editor + """
+    <div class=\"actionbar\">
+      <a class=\"blue\" href=\"/web/holidays\">📅 חגים/חופשות</a>
     </div>
     """
     return _basic_web_shell("בונוס זמנים", body)
@@ -3279,17 +3758,22 @@ def web_system_settings(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>הגדרות מערכת</h2>
-    <p>מסך הגדרות מערכת יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/system-settings">💾 שמירה</a>
-      <a class="blue" href="/web/system-settings">📁 תיקייה משותפת</a>
-      <a class="blue" href="/web/system-settings">🖼️ לוגו</a>
-      <a class="blue" href="/web/system-settings">🧑‍🎓 תיקיית תמונות תלמידים</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'system_settings', '{\n  "deployment_mode": "hybrid",\n  "shared_folder": "",\n  "logo_path": ""\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "הגדרות מערכת",
+        'system_settings',
+        value_json,
+        'הגדרות מערכת כלליות (JSON). בהמשך יתווספו מסכים ייעודיים לתיקייה משותפת/לוגו/נתיבים.',
+        back_href='/web/admin',
+    )
     return _basic_web_shell("הגדרות מערכת", body)
 
 
@@ -3298,15 +3782,28 @@ def web_display_settings(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>הגדרות תצוגה</h2>
-    <p>מסך הגדרות תצוגה יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="blue" href="/web/colors">🎨 צבעים</a>
-      <a class="blue" href="/web/sounds">🔊 צלילים</a>
-      <a class="blue" href="/web/coins">🪙 מטבעות</a>
-      <a class="blue" href="/web/holidays">📅 חגים/חופשות</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'display_settings', '{\n  "enabled": true\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    editor = _web_json_editor(
+        "הגדרות תצוגה",
+        'display_settings',
+        value_json,
+        'הגדרות תצוגה כלליות (JSON). לעריכה של צבעים/צלילים/מטבעות/חגים השתמש בכפתורים למטה.',
+        back_href='/web/admin',
+    )
+    body = editor + """
+    <div class=\"actionbar\">
+      <a class=\"blue\" href=\"/web/colors\">🎨 צבעים</a>
+      <a class=\"blue\" href=\"/web/sounds\">🔊 צלילים</a>
+      <a class=\"blue\" href=\"/web/coins\">🪙 מטבעות</a>
+      <a class=\"blue\" href=\"/web/holidays\">📅 חגים/חופשות</a>
     </div>
     """
     return _basic_web_shell("הגדרות תצוגה", body)
@@ -3317,14 +3814,22 @@ def web_logs(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>לוגים</h2>
-    <p>מסך לוגים יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="blue" href="/web/logs">🔄 רענן</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'log_settings', '{\n  "retention_days": 30\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "לוגים",
+        'log_settings',
+        value_json,
+        'הגדרות לוגים (JSON). בהמשך יתווספו הורדה/ניקוי בפועל.',
+        back_href='/web/admin',
+    )
     return _basic_web_shell("לוגים", body)
 
 
@@ -3333,14 +3838,22 @@ def web_settings(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    body = """
-    <h2>הגדרות מערכת</h2>
-    <p>מסך הגדרות יתווסף כאן.</p>
-    <div class="actionbar">
-      <a class="green" href="/web/settings">💾 שמירה</a>
-      <a class="gray" href="/web/admin">↩️ חזרה לניהול</a>
-    </div>
-    """
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'settings', '{\n  "notes": ""\n}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    body = _web_json_editor(
+        "הגדרות",
+        'settings',
+        value_json,
+        'הגדרות כלליות (JSON). עמוד זה מחליף placeholder ונותן מקום לשמור הגדרות נוספות בווב.',
+        back_href='/web/admin',
+    )
     return _basic_web_shell("הגדרות", body)
 
 

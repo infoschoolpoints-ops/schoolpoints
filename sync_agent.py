@@ -12,6 +12,8 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import argparse
+import hashlib
+import atexit
 from typing import List, Dict, Any, Optional
 
 try:
@@ -23,6 +25,84 @@ except Exception:
 DEFAULT_PUSH_URL = ""
 DEFAULT_BATCH_SIZE = 200
 DEFAULT_PULL_LIMIT = 500
+
+
+_LOCK_FD: Optional[int] = None
+
+
+def _lock_dir(base_dir: str) -> str:
+    try:
+        cfg_path = _get_config_file_path(base_dir)
+        d = os.path.dirname(os.path.abspath(cfg_path))
+        if d and os.path.isdir(d):
+            return d
+    except Exception:
+        pass
+    return base_dir
+
+
+def _lock_path_for_db(base_dir: str, db_path: str) -> str:
+    try:
+        norm = os.path.abspath(str(db_path or '')).lower()
+    except Exception:
+        norm = str(db_path or '')
+    h = hashlib.md5(norm.encode('utf-8', errors='ignore')).hexdigest()[:16]
+    return os.path.join(_lock_dir(base_dir), f"sync_agent_{h}.lock")
+
+
+def _acquire_db_lock(base_dir: str, db_path: str) -> bool:
+    global _LOCK_FD
+    if _LOCK_FD is not None:
+        return True
+    lock_path = _lock_path_for_db(base_dir, db_path)
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except FileExistsError:
+        try:
+            existing = ''
+            try:
+                with open(lock_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    existing = (f.read() or '').strip()
+            except Exception:
+                existing = ''
+            msg = f"[LOCK] Another sync_agent seems to be running for this DB (lock exists: {lock_path})"
+            if existing:
+                msg += f" | {existing}"
+            print(msg)
+        except Exception:
+            pass
+        return False
+    except Exception as exc:
+        try:
+            print(f"[LOCK] Failed to create lockfile: {lock_path} ({exc})")
+        except Exception:
+            pass
+        return False
+
+    try:
+        os.write(fd, f"pid={os.getpid()} db={db_path}\n".encode('utf-8', errors='ignore'))
+    except Exception:
+        pass
+    _LOCK_FD = fd
+
+    def _cleanup() -> None:
+        global _LOCK_FD
+        try:
+            if _LOCK_FD is not None:
+                try:
+                    os.close(_LOCK_FD)
+                except Exception:
+                    pass
+                _LOCK_FD = None
+            try:
+                os.remove(lock_path)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    atexit.register(_cleanup)
+    return True
 
 
 def _get_config_file_path(base_dir: str) -> str:
@@ -47,6 +127,164 @@ def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
+    try:
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        rows = cur.fetchall() or []
+        cols: List[str] = []
+        for r in rows:
+            try:
+                cols.append(str(r['name']))
+            except Exception:
+                try:
+                    cols.append(str(r[1]))
+                except Exception:
+                    pass
+        return [c for c in cols if c]
+    except Exception:
+        return []
+
+
+def _replace_rows_local(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any]]) -> int:
+    cols = _table_columns(conn, table)
+    if not cols:
+        return 0
+    cur = conn.cursor()
+    cur.execute(f"DELETE FROM {table}")
+    if not rows:
+        return 0
+
+    allowed = set(cols)
+    # don't attempt to write timestamps that might have defaults
+    allowed.discard('created_at')
+    allowed.discard('updated_at')
+
+    insert_cols: List[str] = []
+    for k in (rows[0] or {}).keys():
+        if k in allowed:
+            insert_cols.append(k)
+    if not insert_cols:
+        for k in cols:
+            if k in allowed:
+                insert_cols.append(k)
+    if not insert_cols:
+        return 0
+
+    placeholders = ','.join(['?'] * len(insert_cols))
+    sql = f"INSERT INTO {table} ({','.join(insert_cols)}) VALUES ({placeholders})"
+    values = []
+    for r in rows:
+        r = r or {}
+        values.append([r.get(c) for c in insert_cols])
+    cur.executemany(sql, values)
+    return int(len(values))
+
+
+def _snapshot_url_from_push(push_url: str, cfg: Dict[str, Any]) -> str:
+    url = str(cfg.get('sync_snapshot_url') or '').strip()
+    if url:
+        return url
+    if push_url and push_url.endswith('/sync/push'):
+        return push_url[:-len('/sync/push')] + '/sync/snapshot'
+    return ''
+
+
+def pull_snapshot(snapshot_url: str, *, api_key: str = '', tenant_id: str = '') -> Dict[str, Any] | None:
+    if not snapshot_url:
+        return None
+    q = f"tenant_id={urllib.parse.quote(str(tenant_id or ''))}"
+    url = snapshot_url + ('&' if '?' in snapshot_url else '?') + q
+    req = urllib.request.Request(
+        url,
+        headers={
+            'Content-Type': 'application/json',
+            'api-key': str(api_key or ''),
+            'x-api-key': str(api_key or ''),
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            body = resp.read() or b''
+        try:
+            data = json.loads(body.decode('utf-8', errors='ignore') or '{}')
+        except Exception:
+            data = None
+        if not isinstance(data, dict):
+            return None
+        return data
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode('utf-8', errors='ignore')
+        except Exception:
+            body = ''
+        print(f"[SNAPSHOT-PULL] HTTP {exc.code}: {body}")
+        return None
+    except Exception as exc:
+        print(f"[SNAPSHOT-PULL] Request error: {exc}")
+        return None
+
+
+def _is_db_empty_for_bootstrap(conn: sqlite3.Connection) -> bool:
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT COUNT(*) FROM teachers')
+        t = int(cur.fetchone()[0] or 0)
+        cur.execute('SELECT COUNT(*) FROM students')
+        s = int(cur.fetchone()[0] or 0)
+        return (t == 0 and s == 0)
+    except Exception:
+        return True
+
+
+def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    # snapshot can be {snapshot:{table:[rows]}} or direct dict
+    snap = snapshot.get('snapshot') if isinstance(snapshot, dict) else None
+    if not isinstance(snap, dict):
+        snap = snapshot if isinstance(snapshot, dict) else {}
+
+    tables = [
+        'teachers',
+        'students',
+        'messages',
+        'settings',
+        'product_categories',
+        'products',
+        'product_variants',
+        'cashier_responsibles',
+        'time_bonus_schedules',
+        'public_closures',
+        'activities',
+        'activity_schedules',
+        'activity_claims',
+        'scheduled_services',
+        'scheduled_service_dates',
+        'scheduled_service_slots',
+        'scheduled_service_reservations',
+        'web_settings',
+    ]
+    applied: Dict[str, int] = {}
+    cur = conn.cursor()
+    cur.execute('BEGIN IMMEDIATE')
+    try:
+        for t in tables:
+            try:
+                rows = snap.get(t) if isinstance(snap, dict) else None
+                if not isinstance(rows, list):
+                    rows = []
+                applied[t] = _replace_rows_local(conn, t, rows)
+            except Exception:
+                applied[t] = 0
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    return {'ok': True, 'tables': applied}
 
 
 def _load_config(base_dir: str) -> Dict[str, Any]:
@@ -534,6 +772,43 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
     station_id = str(cfg.get('sync_station_id') or '').strip()
     pull_url = _pull_url_from_push(push_url, cfg)
 
+    snapshot_url = _snapshot_url_from_push(push_url, cfg)
+    try:
+        force_bootstrap = str(cfg.get('sync_bootstrap_force') or '').strip() in ('1', 'true', 'yes')
+    except Exception:
+        force_bootstrap = False
+
+    if not _acquire_db_lock(base_dir, str(db_path)):
+        return
+
+    # Bootstrap full sync for a new machine (once)
+    try:
+        conn0 = _connect(str(db_path))
+        try:
+            _ensure_sync_state(conn0)
+            done = str(_get_sync_state(conn0, 'bootstrap_snapshot_done', '0') or '0').strip()
+            should_run = force_bootstrap or (done != '1')
+            if should_run and tenant_id and api_key and snapshot_url:
+                if force_bootstrap or _is_db_empty_for_bootstrap(conn0):
+                    print(f"[BOOTSTRAP] Pulling full snapshot from cloud...")
+                    resp = pull_snapshot(snapshot_url, api_key=api_key, tenant_id=tenant_id)
+                    if isinstance(resp, dict) and resp.get('ok'):
+                        try:
+                            res = apply_snapshot(conn0, resp)
+                            print(f"[BOOTSTRAP] Applied snapshot (teachers={res.get('tables',{}).get('teachers',0)} students={res.get('tables',{}).get('students',0)})")
+                            _set_sync_state(conn0, 'bootstrap_snapshot_done', '1')
+                        except Exception as e:
+                            print(f"[BOOTSTRAP] Apply snapshot failed: {e}")
+                    else:
+                        print('[BOOTSTRAP] Snapshot pull failed')
+                else:
+                    print('[BOOTSTRAP] Skipped (local DB not empty)')
+                    _set_sync_state(conn0, 'bootstrap_snapshot_done', '1')
+        finally:
+            conn0.close()
+    except Exception:
+        pass
+
     try:
         pull_enabled = bool(pull_url and api_key and tenant_id)
         print(f"[CFG] tenant_id={tenant_id or '-'} station_id={station_id or '-'} push_url={'set' if bool(push_url) else '-'} pull_url={'set' if bool(pull_url) else '-'} pull_enabled={1 if pull_enabled else 0}")
@@ -627,6 +902,9 @@ if __name__ == '__main__':
     api_key = str(cfg.get('sync_api_key') or cfg.get('api_key') or cfg.get('sync_key') or '').strip()
     tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
     station_id = str(cfg.get('sync_station_id') or '').strip()
+
+    if not _acquire_db_lock(base_dir, str(db_path)):
+        raise SystemExit(2)
 
     if args.show_pending:
         _print_pending(db_path, limit=int(args.limit or 20), include_synced=False)
