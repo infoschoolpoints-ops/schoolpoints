@@ -9946,7 +9946,7 @@ class AdminStation:
 
             # שורה - שם מוסד (אנגלית)
             row1ci = tk.Frame(frame2, bg='#ecf0f1')
-            row1ci.pack(fill=tk.X, pady=3)
+            row1ci.pack_forget()
             row1ci.columnconfigure(1, weight=1)
             tk.Label(row1ci, text=fix_rtl_text("שם מוסד (אנגלית):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
             tk.Entry(row1ci, textvariable=tenant_name_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right').grid(row=0, column=1, sticky='e', padx=5)
@@ -9954,7 +9954,7 @@ class AdminStation:
 
             # שורה - קוד מוסד לסנכרון
             row1di = tk.Frame(frame2, bg='#ecf0f1')
-            row1di.pack(fill=tk.X, pady=3)
+            row1di.pack_forget()
             row1di.columnconfigure(1, weight=1)
             tk.Label(row1di, text=fix_rtl_text("קוד מוסד (Tenant ID):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
             tenant_id_entry_i = tk.Entry(row1di, textvariable=tenant_id_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right')
@@ -9967,7 +9967,7 @@ class AdminStation:
             except Exception:
                 push_url_var = tk.StringVar(value='')
             row1ei = tk.Frame(frame2, bg='#ecf0f1')
-            row1ei.pack(fill=tk.X, pady=3)
+            row1ei.pack_forget()
             row1ei.columnconfigure(1, weight=1)
             tk.Label(row1ei, text=fix_rtl_text("כתובת סנכרון (Push URL):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
             push_url_entry_i = tk.Entry(row1ei, textvariable=push_url_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right')
@@ -9980,7 +9980,7 @@ class AdminStation:
             except Exception:
                 api_key_var = tk.StringVar(value='')
             row1fi = tk.Frame(frame2, bg='#ecf0f1')
-            row1fi.pack(fill=tk.X, pady=3)
+            row1fi.pack_forget()
             row1fi.columnconfigure(1, weight=1)
             tk.Label(row1fi, text=fix_rtl_text("מפתח API (לסנכרון):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
             api_key_entry_i = tk.Entry(row1fi, textvariable=api_key_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right', show='*')
@@ -10211,6 +10211,7 @@ class AdminStation:
             connect_row.pack(fill=tk.X, pady=(6, 0))
             connect_row.columnconfigure(1, weight=1)
             tk.Label(connect_row, text=fix_rtl_text("חיבור לחשבון ענן:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
+            pairing_in_progress = {'on': False}
             connect_btn = tk.Button(
                 connect_row,
                 text='🌐 התחבר',
@@ -10321,6 +10322,24 @@ class AdminStation:
                 except Exception:
                     allow_cloud = False
 
+                try:
+                    if bool(pairing_in_progress.get('on')) and allow_cloud and (not connected):
+                        try:
+                            connect_btn.configure(text=fix_rtl_text('ממתין...'), state='disabled')
+                        except Exception:
+                            pass
+                        try:
+                            disconnect_btn.configure(state='disabled')
+                        except Exception:
+                            pass
+                        try:
+                            cloud_state_lbl.configure(text=fix_rtl_text('ממתין לאישור בדפדפן...'))
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+
                 if (not allow_cloud):
                     try:
                         connect_btn.configure(text='🌐 התחבר')
@@ -10371,10 +10390,23 @@ class AdminStation:
                     import threading
                     base = _get_cloud_base_url()
 
+                    try:
+                        pairing_in_progress['on'] = True
+                    except Exception:
+                        pass
+                    try:
+                        _refresh_cloud_ui()
+                    except Exception:
+                        pass
+
                     def _pair_worker():
-                        res = self._device_pair_start_and_poll(base, poll_timeout_sec=240) or {}
+                        res = self._device_pair_start_and_poll(base, poll_timeout_sec=600) or {}
 
                         def _on_done():
+                            try:
+                                pairing_in_progress['on'] = False
+                            except Exception:
+                                pass
                             if bool(res.get('ok')):
                                 cfg2 = self.load_app_config() or {}
                                 cfg2['sync_tenant_id'] = str(res.get('tenant_id') or '').strip()
