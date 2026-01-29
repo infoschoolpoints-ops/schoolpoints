@@ -41,3 +41,21 @@ Thumbs.db
 # Temporary
 *.tmp
 *.temp
+
+# Printer/logo reverse-engineering test artifacts (not runtime)
+/all4shop_*.png
+/alt_*.png
+/decoded_*.png
+/struct1_*.png
+/difference_visualization.png
+/vertical_encoding.png
+/single_pixel_*.png
+/test_pattern_method7.png
+/all4shop_raw_data.bin
+
+# One-off analysis scripts (not runtime)
+/reverse_engineer_encoding.py
+/find_correct_encoding.py
+/deep_structure1_analysis.py
+/create_all4shop_from_text.py
+/print_all4shop_with_text.py
