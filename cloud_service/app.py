@@ -86,6 +86,15 @@ def _integrity_errors():
     return tuple(errs)
 
 
+def _random_pair_code() -> str:
+    # short human-friendly code (no ambiguous chars)
+    alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    try:
+        return ''.join(secrets.choice(alphabet) for _ in range(8))
+    except Exception:
+        return secrets.token_hex(4).upper()
+
+
 def _now_expr() -> str:
     return 'CURRENT_TIMESTAMP'
 
@@ -239,6 +248,207 @@ def admin_logout() -> Response:
 
 def _web_auth_enabled() -> bool:
     return True
+
+
+def _ensure_device_pairings_table() -> None:
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS device_pairings (
+                    id BIGSERIAL PRIMARY KEY,
+                    code TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NULL,
+                    approved_at TIMESTAMP NULL,
+                    consumed_at TIMESTAMP NULL,
+                    tenant_id TEXT NULL,
+                    api_key TEXT NULL,
+                    push_url TEXT NULL
+                )
+                '''
+            )
+        else:
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS device_pairings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT,
+                    approved_at TEXT,
+                    consumed_at TEXT,
+                    tenant_id TEXT,
+                    api_key TEXT,
+                    push_url TEXT
+                )
+                '''
+            )
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.post('/api/device/pair/start')
+def api_device_pair_start(request: Request) -> Dict[str, Any]:
+    _ensure_device_pairings_table()
+    code = _random_pair_code()
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        # best-effort retry on rare collision
+        for _ in range(4):
+            try:
+                cur.execute(
+                    _sql_placeholder(
+                        'INSERT INTO device_pairings (code) VALUES (?)'
+                    ),
+                    (code,)
+                )
+                conn.commit()
+                break
+            except _integrity_errors():
+                code = _random_pair_code()
+                continue
+        verify_url = str(request.base_url).rstrip('/') + '/web/device/pair?code=' + code
+        return {'ok': True, 'code': code, 'verify_url': verify_url}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get('/api/device/pair/poll')
+def api_device_pair_poll(code: str = Query(default='')) -> Dict[str, Any]:
+    _ensure_device_pairings_table()
+    code = str(code or '').strip().upper()
+    if not code:
+        raise HTTPException(status_code=400, detail='missing code')
+
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                'SELECT code, approved_at, consumed_at, tenant_id, api_key, push_url FROM device_pairings WHERE code = ? LIMIT 1'
+            ),
+            (code,)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='invalid code')
+        r = dict(row) if isinstance(row, dict) else {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
+        if r.get('consumed_at'):
+            return {'ok': True, 'status': 'consumed'}
+        if not r.get('approved_at'):
+            return {'ok': True, 'status': 'pending'}
+        tenant_id = str(r.get('tenant_id') or '').strip()
+        api_key = str(r.get('api_key') or '').strip()
+        push_url = str(r.get('push_url') or '').strip()
+        if not (tenant_id and api_key and push_url):
+            return {'ok': True, 'status': 'pending'}
+
+        # Mark consumed so creds are one-time delivery.
+        try:
+            cur.execute(
+                _sql_placeholder('UPDATE device_pairings SET consumed_at = ' + _now_expr() + ' WHERE code = ?'),
+                (code,)
+            )
+            conn.commit()
+        except Exception:
+            pass
+        return {
+            'ok': True,
+            'status': 'ready',
+            'tenant_id': tenant_id,
+            'api_key': api_key,
+            'push_url': push_url,
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get('/web/device/pair', response_class=HTMLResponse)
+def web_device_pair(request: Request, code: str = Query(default='')) -> str:
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard  # type: ignore[return-value]
+    code = str(code or '').strip().upper()
+    if not code:
+        body = "<h2>חיבור עמדה</h2><p>חסר קוד.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>"
+        return _basic_web_shell('חיבור עמדה', body)
+    body = f"""
+    <h2>חיבור עמדה</h2>
+    <p>לאשר חיבור עמדה עם הקוד:</p>
+    <div style='font-size:28px;font-weight:900;letter-spacing:2px;margin:10px 0;'>{code}</div>
+    <form method='post' action='/web/device/pair'>
+      <input type='hidden' name='code' value='{code}' />
+      <button class='green' type='submit'>אישור חיבור</button>
+    </form>
+    <div class='actionbar'>
+      <a class='gray' href='/web/admin'>חזרה</a>
+    </div>
+    """
+    return _basic_web_shell('חיבור עמדה', body)
+
+
+@app.post('/web/device/pair', response_class=HTMLResponse)
+def web_device_pair_submit(request: Request, code: str = Form(...)) -> str:
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard  # type: ignore[return-value]
+    _ensure_device_pairings_table()
+
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return _basic_web_shell('חיבור עמדה', "<h2>חיבור עמדה</h2><p>חסר tenant.</p>")
+
+    code = str(code or '').strip().upper()
+    if not code:
+        return _basic_web_shell('חיבור עמדה', "<h2>חיבור עמדה</h2><p>חסר קוד.</p>")
+
+    # Fetch institution api_key
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT api_key FROM institutions WHERE tenant_id = ? LIMIT 1'),
+            (tenant_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return _basic_web_shell('חיבור עמדה', "<h2>חיבור עמדה</h2><p>לא נמצא מוסד.</p>")
+        api_key = (row.get('api_key') if isinstance(row, dict) else row[0])
+        api_key = str(api_key or '').strip()
+        push_url = str(request.base_url).rstrip('/') + '/sync/push'
+
+        try:
+            cur.execute(
+                _sql_placeholder(
+                    'UPDATE device_pairings SET approved_at = ' + _now_expr() + ', tenant_id = ?, api_key = ?, push_url = ? WHERE code = ? AND consumed_at IS NULL'
+                ),
+                (tenant_id, api_key, push_url, code)
+            )
+            conn.commit()
+        except Exception:
+            pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    body = "<h2>חיבור עמדה</h2><p>אושר. אפשר לחזור לתוכנה המקומית.</p><div class='actionbar'><a class='green' href='/web/admin'>המשך</a></div>"
+    return _basic_web_shell('חיבור עמדה', body)
 
 
 def _web_auth_credentials() -> Dict[str, str]:
@@ -898,6 +1108,10 @@ def _tenant_db_ready(tenant_id: str) -> bool:
 @app.on_event("startup")
 def _startup() -> None:
     _init_db()
+    try:
+        _ensure_device_pairings_table()
+    except Exception:
+        pass
 
 
 class ChangeItem(BaseModel):

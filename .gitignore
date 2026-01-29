@@ -1,0 +1,43 @@
+# Build artifacts
+/dist/
+/build/
+/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Installer/Output artifacts
+/Output/*
+!/Output/version.issinc
+!/Output/version.json
+!/Output/PDF/
+
+# Logs
+*.log
+/public_station_startup.log
+/pip_install.log
+/license_manager.log
+
+# Backups
+*.bak
+*.backup
+
+# OS junk
+Thumbs.db
+.DS_Store
+
+# Large design/source assets not needed for runtime
+*.psd
+
+# Local databases / local configs (clean install versions are under _clean_install)
+/school_points.db
+/config.json
+/bonus_settings.json
+/color_settings.json
+/db_path.txt
+/excel_path.txt
+/master_card.txt
+
+# Temporary
+*.tmp
+*.temp

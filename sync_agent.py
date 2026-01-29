@@ -25,6 +25,24 @@ DEFAULT_BATCH_SIZE = 200
 DEFAULT_PULL_LIMIT = 500
 
 
+def _get_config_file_path(base_dir: str) -> str:
+    for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
+        root = os.environ.get(env_name)
+        if not root:
+            continue
+        try:
+            if os.path.isdir(root) and os.access(root, os.W_OK):
+                cfg_dir = os.path.join(root, "SchoolPoints")
+                try:
+                    os.makedirs(cfg_dir, exist_ok=True)
+                except Exception:
+                    pass
+                return os.path.join(cfg_dir, "config.json")
+        except Exception:
+            continue
+    return os.path.join(base_dir, 'config.json')
+
+
 def _connect(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -32,13 +50,52 @@ def _connect(db_path: str) -> sqlite3.Connection:
 
 
 def _load_config(base_dir: str) -> Dict[str, Any]:
-    cfg_path = os.path.join(base_dir, 'config.json')
-    if os.path.exists(cfg_path):
-        try:
-            with open(cfg_path, 'r', encoding='utf-8') as f:
+    live_config = _get_config_file_path(base_dir)
+    base_config = os.path.join(base_dir, 'config.json')
+
+    local_cfg: Dict[str, Any] = {}
+    try:
+        if os.path.exists(live_config):
+            with open(live_config, 'r', encoding='utf-8') as f:
+                local_cfg = json.load(f) or {}
+    except Exception:
+        local_cfg = {}
+
+    shared_folder = None
+    try:
+        if isinstance(local_cfg, dict):
+            shared_folder = local_cfg.get('shared_folder') or local_cfg.get('network_root')
+    except Exception:
+        shared_folder = None
+
+    if shared_folder and os.path.isdir(shared_folder):
+        shared_config_path = os.path.join(shared_folder, 'config.json')
+        if os.path.exists(shared_config_path):
+            try:
+                with open(shared_config_path, 'r', encoding='utf-8') as f:
+                    shared_cfg = json.load(f) or {}
+                if isinstance(shared_cfg, dict):
+                    # keep db_path from local if it exists
+                    try:
+                        if isinstance(local_cfg, dict) and local_cfg.get('db_path'):
+                            merged = dict(shared_cfg)
+                            merged['db_path'] = local_cfg.get('db_path')
+                            return merged
+                    except Exception:
+                        pass
+                    return shared_cfg
+            except Exception:
+                pass
+
+    if isinstance(local_cfg, dict) and local_cfg:
+        return local_cfg
+
+    try:
+        if os.path.exists(base_config):
+            with open(base_config, 'r', encoding='utf-8') as f:
                 return json.load(f) or {}
-        except Exception:
-            return {}
+    except Exception:
+        pass
     return {}
 
 

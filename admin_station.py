@@ -253,6 +253,14 @@ class AdminStation:
             except Exception:
                 pass
             return
+
+        # הפעלת סנכרון רקע אוטומטי (Hybrid/Cloud בלבד)
+        self._sync_agent_thread = None
+        self._sync_agent_started = False
+        try:
+            self._maybe_start_sync_agent()
+        except Exception:
+            pass
         
         # רישוי מערכת – רק לאחר שהוגדרה תיקיית הרשת/הגדרות האפליקציה
         self.license_manager = license_manager or LicenseManager(self.base_dir, "admin")
@@ -297,6 +305,70 @@ class AdminStation:
 
         # הצגת מסך התחברות
         self.show_login_screen()
+
+    def _maybe_start_sync_agent(self) -> None:
+        try:
+            if bool(getattr(self, '_sync_agent_started', False)):
+                return
+        except Exception:
+            pass
+
+        try:
+            cfg = self.load_app_config() or {}
+        except Exception:
+            cfg = {}
+
+        try:
+            mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
+        except Exception:
+            mode = 'local'
+
+        if mode not in ('hybrid', 'cloud'):
+            return
+
+        try:
+            tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
+        except Exception:
+            tenant_id = ''
+        try:
+            api_key = str(cfg.get('sync_api_key') or '').strip()
+        except Exception:
+            api_key = ''
+        try:
+            push_url = str(cfg.get('sync_push_url') or '').strip()
+        except Exception:
+            push_url = ''
+
+        if not (tenant_id and api_key and push_url):
+            return
+
+        try:
+            interval_sec = int(cfg.get('sync_interval_sec') or 60)
+        except Exception:
+            interval_sec = 60
+        interval_sec = max(10, int(interval_sec or 60))
+
+        def _run_sync_loop():
+            try:
+                import sync_agent
+                sync_agent.main_loop(interval_sec=interval_sec)
+            except Exception:
+                pass
+
+        try:
+            self._sync_agent_started = True
+        except Exception:
+            pass
+        try:
+            t = threading.Thread(target=_run_sync_loop, daemon=True)
+            self._sync_agent_thread = t
+            t.start()
+        except Exception:
+            try:
+                self._sync_agent_started = False
+            except Exception:
+                pass
+            return
 
     def _push_points_action(self, label: str, changes: list):
         """שומר פעולה לשחזור (Undo). changes = [{'student_id':..,'old_points':..,'new_points':..}, ...]"""
