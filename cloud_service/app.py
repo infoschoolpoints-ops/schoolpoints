@@ -2727,6 +2727,53 @@ def web_signin(request: Request) -> str:
     return _public_web_shell("כניסה למערכת", body)
 
 
+@app.post("/web/institution-login", response_class=HTMLResponse)
+def web_institution_login_submit(
+    request: Request,
+    tenant_id: str = Form(...),
+    institution_password: str = Form(...),
+    next: str = Form(default='/web/teacher-login'),
+) -> Response:
+    tid = str(tenant_id or '').strip()
+    pw = str(institution_password or '').strip()
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
+            (tid,)
+        )
+        row = cur.fetchone()
+        pw_hash = (row.get('password_hash') if isinstance(row, dict) else (row[0] if row else None))
+        if (not row) or (not str(pw_hash or '').strip()) or (not _pbkdf2_verify(pw, str(pw_hash))):
+            body = """
+            <h2>שגיאת התחברות</h2>
+            <p>קוד מוסד או סיסמת מוסד לא תקינים.</p>
+            <div class="actionbar" style="justify-content:flex-start;">
+              <a class="blue" href="/web/signin">נסה שוב</a>
+              <a class="gray" href="/web/login">חזרה</a>
+            </div>
+            """
+            return HTMLResponse(_public_web_shell("כניסה למערכת", body), status_code=401)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    try:
+        nxt = str(next or '').strip()
+    except Exception:
+        nxt = ''
+    if not nxt.startswith('/'):
+        nxt = '/web/teacher-login'
+
+    response = RedirectResponse(url=nxt, status_code=302)
+    response.set_cookie("web_tenant", tid, httponly=True)
+    response.delete_cookie("web_teacher")
+    return response
+
+
 @app.get("/web/teacher-login", response_class=HTMLResponse)
 def web_teacher_login(request: Request) -> Response:
     guard = _web_require_tenant(request)
