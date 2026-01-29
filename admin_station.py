@@ -370,6 +370,87 @@ class AdminStation:
                 pass
             return
 
+    def _device_pair_start_and_poll(self, cloud_base_url: str, poll_timeout_sec: int = 240) -> dict:
+        try:
+            import urllib.request
+            import urllib.parse
+            import urllib.error
+            import time
+        except Exception:
+            return {'ok': False, 'error': 'missing urllib'}
+
+        base = str(cloud_base_url or '').strip().rstrip('/')
+        if not base:
+            base = 'https://schoolpoints.co.il'
+
+        start_url = base + '/api/device/pair/start'
+        code = ''
+        verify_url = ''
+
+        try:
+            req = urllib.request.Request(start_url, data=b'', method='POST')
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                raw = resp.read().decode('utf-8', errors='ignore')
+            try:
+                data = json.loads(raw or '{}')
+            except Exception:
+                data = {}
+            if isinstance(data, dict) and bool(data.get('ok')):
+                code = str(data.get('code') or '').strip().upper()
+                verify_url = str(data.get('verify_url') or '').strip()
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode('utf-8', errors='ignore')
+            except Exception:
+                body = ''
+            msg = f"HTTP {getattr(e, 'code', '')}".strip()
+            if body:
+                msg = msg + f"\n{body}" if msg else body
+            return {'ok': False, 'error': msg or 'http error'}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+        if not (code and verify_url):
+            return {'ok': False, 'error': 'start failed'}
+
+        try:
+            webbrowser.open(verify_url)
+        except Exception:
+            pass
+
+        poll_url = base + '/api/device/pair/poll?code=' + urllib.parse.quote(code)
+        deadline = time.time() + max(10, int(poll_timeout_sec or 240))
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(poll_url, timeout=10) as resp:
+                    raw2 = resp.read().decode('utf-8', errors='ignore')
+                try:
+                    data2 = json.loads(raw2 or '{}')
+                except Exception:
+                    data2 = {}
+                if isinstance(data2, dict) and bool(data2.get('ok')):
+                    st = str(data2.get('status') or '').strip().lower()
+                    if st == 'ready':
+                        tid = str(data2.get('tenant_id') or '').strip()
+                        key = str(data2.get('api_key') or '').strip()
+                        purl = str(data2.get('push_url') or '').strip()
+                        if tid and key and purl:
+                            return {
+                                'ok': True,
+                                'code': code,
+                                'verify_url': verify_url,
+                                'tenant_id': tid,
+                                'api_key': key,
+                                'push_url': purl,
+                            }
+                    if st == 'consumed':
+                        return {'ok': False, 'error': 'consumed'}
+            except Exception:
+                pass
+            time.sleep(2)
+
+        return {'ok': False, 'error': 'timeout', 'code': code, 'verify_url': verify_url}
+
     def _push_points_action(self, label: str, changes: list):
         """שומר פעולה לשחזור (Undo). changes = [{'student_id':..,'old_points':..,'new_points':..}, ...]"""
         try:
@@ -9876,7 +9957,8 @@ class AdminStation:
             row1di.pack(fill=tk.X, pady=3)
             row1di.columnconfigure(1, weight=1)
             tk.Label(row1di, text=fix_rtl_text("קוד מוסד (Tenant ID):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
-            tk.Entry(row1di, textvariable=tenant_id_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right').grid(row=0, column=1, sticky='e', padx=5)
+            tenant_id_entry_i = tk.Entry(row1di, textvariable=tenant_id_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right')
+            tenant_id_entry_i.grid(row=0, column=1, sticky='e', padx=5)
             tk.Label(row1di, text=fix_rtl_text("(אותיות/מספרים)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
 
             # שורה - כתובת סנכרון (Push URL)
@@ -9888,7 +9970,8 @@ class AdminStation:
             row1ei.pack(fill=tk.X, pady=3)
             row1ei.columnconfigure(1, weight=1)
             tk.Label(row1ei, text=fix_rtl_text("כתובת סנכרון (Push URL):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
-            tk.Entry(row1ei, textvariable=push_url_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right').grid(row=0, column=1, sticky='e', padx=5)
+            push_url_entry_i = tk.Entry(row1ei, textvariable=push_url_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right')
+            push_url_entry_i.grid(row=0, column=1, sticky='e', padx=5)
             tk.Label(row1ei, text=fix_rtl_text("(/sync/push)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
 
             # שורה - מפתח API
@@ -9900,8 +9983,22 @@ class AdminStation:
             row1fi.pack(fill=tk.X, pady=3)
             row1fi.columnconfigure(1, weight=1)
             tk.Label(row1fi, text=fix_rtl_text("מפתח API (לסנכרון):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
-            tk.Entry(row1fi, textvariable=api_key_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right', show='*').grid(row=0, column=1, sticky='e', padx=5)
+            api_key_entry_i = tk.Entry(row1fi, textvariable=api_key_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right', show='*')
+            api_key_entry_i.grid(row=0, column=1, sticky='e', padx=5)
             tk.Label(row1fi, text=fix_rtl_text("(סודי)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
+
+            try:
+                tenant_id_entry_i.configure(state='readonly', readonlybackground='#e5e5e5')
+            except Exception:
+                pass
+            try:
+                push_url_entry_i.configure(state='readonly', readonlybackground='#e5e5e5')
+            except Exception:
+                pass
+            try:
+                api_key_entry_i.configure(state='readonly', readonlybackground='#e5e5e5')
+            except Exception:
+                pass
 
             # שורה - לוגו לעמדה הציבורית
             row2i = tk.Frame(frame2, bg='#ecf0f1')
@@ -10022,6 +10119,19 @@ class AdminStation:
                         messagebox.showerror('שגיאה', str(e), parent=dialog2)
                     except Exception:
                         pass
+
+            def _get_cloud_base_url() -> str:
+                try:
+                    cfg0 = self.load_app_config() or {}
+                except Exception:
+                    cfg0 = {}
+                try:
+                    base = str(cfg0.get('cloud_base_url') or '').strip()
+                except Exception:
+                    base = ''
+                if not base:
+                    base = 'https://schoolpoints.co.il'
+                return str(base).strip().rstrip('/')
 
             def _is_cloud_connected() -> bool:
                 try:
@@ -10256,6 +10366,79 @@ class AdminStation:
             def _connect_verified():
                 # Open browser for signup/login, then verify credentials against server.
                 # Important: do NOT call _open_cloud_connect here because it may be wrapped later.
+                _ = None
+                try:
+                    import threading
+                    base = _get_cloud_base_url()
+
+                    def _pair_worker():
+                        res = self._device_pair_start_and_poll(base, poll_timeout_sec=240) or {}
+
+                        def _on_done():
+                            if bool(res.get('ok')):
+                                cfg2 = self.load_app_config() or {}
+                                cfg2['sync_tenant_id'] = str(res.get('tenant_id') or '').strip()
+                                cfg2['sync_api_key'] = str(res.get('api_key') or '').strip()
+                                cfg2['sync_push_url'] = str(res.get('push_url') or '').strip()
+                                try:
+                                    self.save_app_config(cfg2)
+                                except Exception:
+                                    pass
+                                try:
+                                    tenant_id_var.set(str(cfg2.get('sync_tenant_id') or ''))
+                                except Exception:
+                                    pass
+                                try:
+                                    api_key_var.set(str(cfg2.get('sync_api_key') or ''))
+                                except Exception:
+                                    pass
+                                try:
+                                    push_url_var.set(str(cfg2.get('sync_push_url') or ''))
+                                except Exception:
+                                    pass
+                                try:
+                                    self._maybe_start_sync_agent()
+                                except Exception:
+                                    pass
+                                try:
+                                    cloud_state_lbl.configure(text=fix_rtl_text('מחובר לענן'))
+                                except Exception:
+                                    pass
+                                try:
+                                    messagebox.showinfo('חיבור לענן', 'העמדה התחברה לענן בהצלחה.', parent=dialog2)
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    cloud_state_lbl.configure(text=fix_rtl_text('לא מחובר'))
+                                except Exception:
+                                    pass
+                                try:
+                                    err = str(res.get('error') or 'שגיאת חיבור')
+                                except Exception:
+                                    err = 'שגיאת חיבור'
+                                try:
+                                    messagebox.showerror('חיבור לענן', err, parent=dialog2)
+                                except Exception:
+                                    pass
+                            try:
+                                _refresh_cloud_ui()
+                            except Exception:
+                                pass
+
+                        try:
+                            dialog2.after(0, _on_done)
+                        except Exception:
+                            _on_done()
+
+                    try:
+                        cloud_state_lbl.configure(text=fix_rtl_text('חיבור אוטומטי... (פותח דפדפן)'))
+                    except Exception:
+                        pass
+                    threading.Thread(target=_pair_worker, daemon=True).start()
+                    return
+                except Exception:
+                    pass
                 try:
                     _orig_open_cloud()
                 except Exception:
