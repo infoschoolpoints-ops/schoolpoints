@@ -958,11 +958,26 @@ def _web_json_editor(title: str, key: str, value_json: str, hint: str, back_href
     <style>
       textarea {{ width:100%; min-height: 240px; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:13px; font-family: Consolas, monospace; direction:ltr; }}
       .hint {{ color:#637381; font-size:13px; line-height:1.8; margin: 8px 0 10px; }}
-      .row {{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }}
+      .row {{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }}
       .row a {{ text-decoration:none; }}
-      .btn {{ padding:10px 14px; border-radius:10px; border:none; font-weight:900; cursor:pointer; color:#fff; }}
-      .btn-save {{ background:#2ecc71; }}
-      .btn-back {{ background:#95a5a6; }}
+      .btn {{
+        padding:10px 16px;
+        border-radius:12px;
+        border:1px solid rgba(255,255,255,.18);
+        font-weight:900;
+        cursor:pointer;
+        color:#fff;
+        box-shadow:0 10px 22px rgba(0,0,0,.12);
+        transition: transform .08s ease, filter .15s ease, box-shadow .15s ease, opacity .15s ease;
+        opacity: .95;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }}
+      .btn:hover {{ filter: brightness(1.03); opacity: 1; box-shadow:0 14px 26px rgba(0,0,0,.16); }}
+      .btn:active {{ transform: translateY(1px) scale(.99); box-shadow:0 8px 16px rgba(0,0,0,.12); }}
+      .btn-save {{ background: linear-gradient(135deg, #22c55e, #16a34a); }}
+      .btn-back {{ background: linear-gradient(135deg, #94a3b8, #64748b); }}
+      .btn-link {{ display:inline-flex; align-items:center; gap:8px; }}
     </style>
     <h2>{title}</h2>
     <div class="hint">{safe_hint}</div>
@@ -970,9 +985,9 @@ def _web_json_editor(title: str, key: str, value_json: str, hint: str, back_href
       <input type="hidden" name="setting_key" value="{safe_key}" />
       <input type="hidden" name="redirect_to" value="{back_href}" />
       <textarea name="value_json">{safe_val}</textarea>
-      <div class="actionbar" style="justify-content:flex-end;">
+      <div class="actionbar" style="justify-content:flex-end; gap:12px;">
         <button class="btn btn-save" type="submit">💾 שמירה</button>
-        <a class="gray" href="{back_href}">↩️ חזרה</a>
+        <a class="btn btn-back btn-link" href="{back_href}">↩️ חזרה</a>
       </div>
     </form>
     """
