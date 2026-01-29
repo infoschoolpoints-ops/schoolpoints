@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import shutil
 import urllib.parse
+import datetime
 
 try:
     import psycopg2
@@ -26,6 +27,11 @@ except Exception:
 from fastapi import FastAPI, Header, HTTPException, Form, Query, Request
 from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse
 from pydantic import BaseModel
+
+try:
+    import boto3
+except Exception:
+    boto3 = None  # type: ignore[assignment]
 
 app = FastAPI(title="SchoolPoints Sync")
 
@@ -51,6 +57,13 @@ DB_PATH = os.path.join(DATA_DIR, 'cloud.db')
 DATABASE_URL = str(os.getenv('DATABASE_URL') or '').strip()
 USE_POSTGRES = bool(DATABASE_URL)
 
+SPACES_REGION = str(os.getenv('SPACES_REGION') or '').strip()
+SPACES_BUCKET = str(os.getenv('SPACES_BUCKET') or '').strip()
+SPACES_ENDPOINT = str(os.getenv('SPACES_ENDPOINT') or '').strip()
+SPACES_CDN_BASE_URL = str(os.getenv('SPACES_CDN_BASE_URL') or '').strip()
+SPACES_KEY = str(os.getenv('SPACES_KEY') or '').strip()
+SPACES_SECRET = str(os.getenv('SPACES_SECRET') or '').strip()
+
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
@@ -75,6 +88,23 @@ def _sql_placeholder(sql: str) -> str:
     if not USE_POSTGRES:
         return sql
     return sql.replace('?', '%s')
+
+
+def _spaces_client():
+    if boto3 is None:
+        return None
+    if not (SPACES_BUCKET and SPACES_ENDPOINT and SPACES_KEY and SPACES_SECRET):
+        return None
+    try:
+        return boto3.client(
+            's3',
+            region_name=(SPACES_REGION or 'us-east-1'),
+            endpoint_url=SPACES_ENDPOINT,
+            aws_access_key_id=SPACES_KEY,
+            aws_secret_access_key=SPACES_SECRET,
+        )
+    except Exception:
+        return None
 
 
 def _public_base_url(request: Request) -> str:
@@ -4684,6 +4714,7 @@ def web_admin(request: Request):
         </div>
         <div class="tabs">
           <a class="tab" href="/web/admin">תלמידים</a>
+          <a class="tab" href="/web/spaces-test">בדיקת אחסון</a>
           <a class="tab" href="/web/upgrades">שדרוגים</a>
           <a class="tab" href="/web/messages">הודעות</a>
           <a class="tab" href="/web/special-bonus">בונוס מיוחד</a>
@@ -4750,6 +4781,159 @@ def web_admin(request: Request):
     </body>
     </html>
     """
+
+
+@app.get('/web/spaces-test', response_class=HTMLResponse)
+def web_spaces_test(request: Request) -> Response:
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+
+    tenant_id = _web_tenant_from_cookie(request)
+    teacher = _web_current_teacher(request) or {}
+
+    has_boto = bool(boto3 is not None)
+    has_cfg = bool(SPACES_BUCKET and SPACES_ENDPOINT and SPACES_KEY and SPACES_SECRET)
+
+    return HTMLResponse(
+        f"""
+        <!doctype html>
+        <html lang=\"he\">
+        <head>
+          <meta charset=\"utf-8\" />
+          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+          <title>SchoolPoints - בדיקת אחסון</title>
+          <style>
+            :root {{ --navy:#2f3e4e; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
+            body {{ margin:0; font-family:\"Segoe UI\", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction:rtl; }}
+            .wrap {{ max-width:980px; margin:18px auto; padding:0 16px 24px; }}
+            .titlebar {{ background:var(--navy); color:#fff; padding:14px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; }}
+            .titlebar h2 {{ margin:0; font-size:20px; }}
+            .tabs {{ margin:10px 0; display:flex; gap:6px; flex-wrap:wrap; }}
+            .tab {{ background:var(--tab); padding:6px 10px; border-radius:4px; font-size:12px; text-decoration:none; color:#1f2d3a; border:1px solid var(--line); }}
+            .card {{ background:#fff; border-radius:10px; border:1px solid var(--line); box-shadow:0 6px 16px rgba(40,55,70,.08); padding:14px; }}
+            .hint {{ color:#637381; font-size:13px; line-height:1.8; margin:8px 0; }}
+            .kv {{ display:grid; grid-template-columns: 200px 1fr; gap:8px; font-size:13px; }}
+            .kv div {{ padding:6px 0; border-bottom:1px dashed #e3e9ee; }}
+            .btn {{ padding:10px 14px; border-radius:10px; border:1px solid rgba(0,0,0,.08); background:#fff; cursor:pointer; font-weight:800; }}
+            .btn-primary {{ background: linear-gradient(135deg, #22c55e, #16a34a); color:#fff; border-color:transparent; }}
+          </style>
+        </head>
+        <body>
+          <div class=\"wrap\">
+            <div class=\"titlebar\">
+              <h2>בדיקת אחסון (Spaces/CDN)</h2>
+              <span>שלום {str(teacher.get('name') or '').strip() or 'מורה'} · <a href=\"/web/logout\" style=\"color:#fff;\">יציאה</a></span>
+            </div>
+            <div class=\"tabs\">
+              <a class=\"tab\" href=\"/web/admin\">תלמידים</a>
+              <a class=\"tab\" href=\"/web/spaces-test\">בדיקת אחסון</a>
+            </div>
+            <div class=\"card\">
+              <div class=\"hint\">הדף הזה מעלה קובץ בדיקה קטן ל־Spaces תחת tenant שלך ומציג קישורי בדיקה.</div>
+              <div class=\"kv\">
+                <div><b>Tenant</b></div><div>{str(tenant_id or '')}</div>
+                <div><b>Bucket</b></div><div>{str(SPACES_BUCKET or '')}</div>
+                <div><b>Endpoint</b></div><div>{str(SPACES_ENDPOINT or '')}</div>
+                <div><b>CDN Base</b></div><div>{str(SPACES_CDN_BASE_URL or '')}</div>
+                <div><b>boto3</b></div><div>{'OK' if has_boto else 'MISSING'}</div>
+                <div><b>Config</b></div><div>{'OK' if has_cfg else 'MISSING (ENV vars)'} </div>
+              </div>
+              <form method=\"post\" action=\"/web/spaces-test\" style=\"margin-top:12px;\">
+                <button class=\"btn btn-primary\" type=\"submit\">בדוק עכשיו</button>
+                <a class=\"btn\" href=\"/web/admin\" style=\"text-decoration:none;\">חזרה</a>
+              </form>
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+    )
+
+
+@app.post('/web/spaces-test', response_class=HTMLResponse)
+def web_spaces_test_submit(request: Request) -> Response:
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+
+    tenant_id = str(_web_tenant_from_cookie(request) or '').strip()
+    if not tenant_id:
+        return RedirectResponse(url='/web/spaces-test?msg=missing_tenant', status_code=302)
+
+    s3 = _spaces_client()
+    if s3 is None:
+        return RedirectResponse(url='/web/spaces-test?msg=missing_boto_or_env', status_code=302)
+
+    probe_id = secrets.token_hex(6)
+    key = f"tenants/{tenant_id}/__probe__/probe-{probe_id}.txt"
+    body = f"ok {datetime.datetime.utcnow().isoformat()}Z tenant={tenant_id}"
+    try:
+        s3.put_object(Bucket=SPACES_BUCKET, Key=key, Body=body.encode('utf-8'), ContentType='text/plain')
+    except Exception:
+        return RedirectResponse(url='/web/spaces-test?msg=put_failed', status_code=302)
+
+    presigned = ''
+    try:
+        presigned = s3.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': SPACES_BUCKET, 'Key': key},
+            ExpiresIn=60 * 10,
+        )
+    except Exception:
+        presigned = ''
+
+    cdn_url = ''
+    try:
+        base = str(SPACES_CDN_BASE_URL or '').strip().rstrip('/')
+        if base:
+            cdn_url = base + '/' + urllib.parse.quote(key)
+    except Exception:
+        cdn_url = ''
+
+    return HTMLResponse(
+        f"""
+        <!doctype html>
+        <html lang=\"he\">
+        <head>
+          <meta charset=\"utf-8\" />
+          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+          <title>SchoolPoints - בדיקת אחסון</title>
+          <style>
+            body {{ margin:0; font-family:\"Segoe UI\", Arial, sans-serif; background:#eef2f4; color:#1f2d3a; direction:rtl; }}
+            .wrap {{ max-width:980px; margin:18px auto; padding:0 16px 24px; }}
+            .card {{ background:#fff; border-radius:10px; border:1px solid #d6dde3; box-shadow:0 6px 16px rgba(40,55,70,.08); padding:14px; }}
+            .btn {{ padding:10px 14px; border-radius:10px; border:1px solid rgba(0,0,0,.08); background:#fff; cursor:pointer; font-weight:800; text-decoration:none; display:inline-block; }}
+            .btn-primary {{ background: linear-gradient(135deg, #22c55e, #16a34a); color:#fff; border-color:transparent; }}
+            code {{ background:#f6f8f9; padding:2px 6px; border-radius:6px; }}
+            .hint {{ color:#637381; font-size:13px; line-height:1.8; margin:8px 0; }}
+          </style>
+        </head>
+        <body>
+          <div class=\"wrap\">
+            <div class=\"card\">
+              <h2 style=\"margin-top:0;\">בדיקה הצליחה ✅</h2>
+              <div class=\"hint\">נוצר קובץ בדיקה תחת: <code>{key}</code></div>
+              <div style=\"margin-top:10px;\">
+                <div style=\"margin-bottom:6px;\"><b>CDN URL</b></div>
+                <div><a href=\"{cdn_url}\" target=\"_blank\">{cdn_url or 'N/A'}</a></div>
+              </div>
+              <div style=\"margin-top:10px;\">
+                <div style=\"margin-bottom:6px;\"><b>Presigned URL (10 דקות)</b></div>
+                <div><a href=\"{presigned}\" target=\"_blank\">{presigned or 'N/A'}</a></div>
+              </div>
+              <div style=\"margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;\">
+                <form method=\"post\" action=\"/web/spaces-test\">
+                  <button class=\"btn btn-primary\" type=\"submit\">בדיקה נוספת</button>
+                </form>
+                <a class=\"btn\" href=\"/web/admin\">חזרה לניהול</a>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+    )
 
 
 @app.post("/admin/setup", response_class=HTMLResponse)
