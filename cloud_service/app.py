@@ -801,16 +801,16 @@ def _read_text_file(path: str) -> str:
 
 def _public_web_shell(title: str, body_html: str) -> str:
     footer = """
-      <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line); display:flex; gap:12px; flex-wrap:wrap; justify-content:space-between; align-items:center;">
-        <div style="font-size:13px; color:#637381;">
-          <div style="font-weight:800; color:#1f2d3a;">אזור אישי</div>
-          <div id="whoami" style="margin-top:4px;">
-            <a href="/web/signin" style="color:#1f2d3a; text-decoration:none; font-weight:700;">התחברות</a>
+      <div class="footerbar">
+        <div class="footer-left">
+          <div class="footer-title">אזור אישי</div>
+          <div id="whoami" class="whoami">
+            <a href="/web/signin">התחברות</a>
           </div>
         </div>
-        <div class="actionbar" style="justify-content:flex-end; margin-top:0;">
-          <a class="blue" href="/web">דף הבית</a>
-          <a class="gray" href="javascript:history.back()">אחורה</a>
+        <div class="footer-actions">
+          <a class="btn blue" href="/web">דף הבית</a>
+          <a class="btn gray" href="javascript:history.back()">אחורה</a>
         </div>
       </div>
       <script>
@@ -824,10 +824,10 @@ def _public_web_shell(title: str, body_html: str) -> str:
             if (!data || !data.tenant_id) return;
             const name = (data.institution_name || data.tenant_id || '').toString();
             el.innerHTML = `
-              <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-                <span style="font-weight:800; color:#1f2d3a;">${name}</span>
-                <a href="/web/account" style="color:#1f2d3a; text-decoration:none; font-weight:700;">תפריט מוסד</a>
-                <a href="/web/logout" style="color:#1f2d3a; text-decoration:none; font-weight:700;">יציאה</a>
+              <div class="whoami-row">
+                <span class="whoami-name">${name}</span>
+                <a href="/web/account">תפריט מוסד</a>
+                <a href="/web/logout">יציאה</a>
               </div>
             `;
           } catch (e) {
@@ -845,27 +845,154 @@ def _public_web_shell(title: str, body_html: str) -> str:
       <link rel="icon" href="/web/assets/icons/public.png" />
       <link rel="shortcut icon" href="/web/assets/icons/public.png" />
       <style>
-        :root {{ --navy:#2f3e4e; --mint:#1abc9c; --sky:#3498db; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
-        body {{ margin:0; font-family: "Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction: rtl; }}
-        .wrap {{ max-width: 980px; margin: 24px auto; padding: 0 16px; }}
-        .card {{ background:#fff; border-radius:10px; padding:20px; border:1px solid var(--line); box-shadow:0 6px 18px rgba(40,55,70,.08); }}
-        .titlebar {{ background:var(--navy); color:#fff; padding:14px 18px; border-radius:10px 10px 0 0; margin:-20px -20px 16px; }}
-        .titlebar h2 {{ margin:0; font-size:20px; }}
+        :root {{
+          --navy:#20324b;
+          --navy2:#2f3e70;
+          --mint:#1abc9c;
+          --sky:#3498db;
+          --violet:#8e44ad;
+          --orange:#f39c12;
+          --line: rgba(255,255,255,.18);
+          --glass: rgba(255,255,255,.12);
+          --glass2: rgba(255,255,255,.18);
+          --shadow: 0 18px 40px rgba(0,0,0,.22);
+          --text: rgba(255,255,255,.92);
+        }}
+        html, body {{ height:100%; }}
+        body {{
+          margin:0;
+          font-family: "Segoe UI", Arial, sans-serif;
+          color: var(--text);
+          direction: rtl;
+          background:
+            radial-gradient(1200px 700px at 20% 10%, rgba(52,152,219,.55), rgba(0,0,0,0) 55%),
+            radial-gradient(900px 600px at 90% 35%, rgba(142,68,173,.45), rgba(0,0,0,0) 55%),
+            radial-gradient(800px 520px at 55% 92%, rgba(243,156,18,.30), rgba(0,0,0,0) 60%),
+            linear-gradient(180deg, #0f1b2b, #162642 55%, #0f1b2b);
+        }}
+        a {{ color: rgba(255,255,255,.92); }}
+        .topbar {{
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
+          background: rgba(255,255,255,.10);
+          border-bottom: 1px solid var(--line);
+        }}
+        .topbar-inner {{
+          max-width: 1100px;
+          margin: 0 auto;
+          padding: 14px 16px;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap: 14px;
+        }}
+        .brand {{ display:flex; align-items:center; gap: 10px; min-width: 0; }}
+        .brand img {{ width: 38px; height: 38px; border-radius: 10px; box-shadow: 0 10px 22px rgba(0,0,0,.25); }}
+        .brand-title {{ font-weight: 950; letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .brand-sub {{ font-size: 12px; opacity: .86; margin-top: 2px; }}
+        .brand-col {{ display:flex; flex-direction:column; min-width: 0; }}
+        .top-actions {{ display:flex; align-items:center; gap: 10px; flex-wrap: wrap; justify-content:flex-end; }}
+        .btn {{
+          display:inline-flex;
+          align-items:center;
+          justify-content:center;
+          gap: 8px;
+          padding: 10px 14px;
+          border-radius: 14px;
+          text-decoration:none;
+          font-weight: 900;
+          box-shadow: 0 14px 28px rgba(0,0,0,.24);
+          border: 1px solid rgba(255,255,255,.16);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+        }}
+        .btn:active {{ transform: translateY(1px); }}
+        .btn.green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
+        .btn.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
+        .btn.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
+        .btn.purple {{ background: linear-gradient(135deg, #8e44ad, #5b2c83); }}
+        .btn.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
+        .wrap {{ max-width: 1100px; margin: 18px auto 26px; padding: 0 16px; }}
+        .card {{
+          background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.09));
+          border-radius: 18px;
+          padding: 18px;
+          border: 1px solid rgba(255,255,255,.18);
+          box-shadow: var(--shadow);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+        }}
+        .titlebar {{
+          background: linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
+          border: 1px solid rgba(255,255,255,.18);
+          color: rgba(255,255,255,.96);
+          padding: 14px 16px;
+          border-radius: 14px;
+          margin: 0 0 14px;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap: 12px;
+        }}
+        .titlebar h2 {{ margin:0; font-size:20px; font-weight: 950; letter-spacing: .2px; }}
+        .content {{ color: rgba(255,255,255,.92); }}
         .actionbar {{ margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }}
-        .actionbar a {{ padding:10px 14px; border-radius:8px; color:#fff; text-decoration:none; border:none; font-weight:700; }}
-        .actionbar .green {{ background:#2ecc71; }}
-        .actionbar .blue {{ background:#3498db; }}
-        .actionbar .gray {{ background:#95a5a6; }}
-        .small {{ font-size:13px; color:#637381; text-align:center; margin-top:10px; }}
-        .small a {{ color:#1f2d3a; }}
+        .actionbar a {{ padding:10px 14px; border-radius:14px; color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.16); font-weight:900; box-shadow: 0 14px 28px rgba(0,0,0,.22); }}
+        .actionbar .green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
+        .actionbar .blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
+        .actionbar .gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
+        .small {{ font-size:13px; opacity:.86; text-align:center; margin-top:10px; }}
+        .footerbar {{
+          margin-top: 16px;
+          padding-top: 14px;
+          border-top: 1px solid rgba(255,255,255,.18);
+          display:flex;
+          gap: 12px;
+          flex-wrap: wrap;
+          justify-content: space-between;
+          align-items: center;
+        }}
+        .footer-title {{ font-weight: 950; opacity: .96; }}
+        .whoami {{ margin-top: 6px; font-weight: 800; }}
+        .whoami a {{ text-decoration: none; font-weight: 900; }}
+        .whoami-row {{ display:flex; gap: 10px; align-items:center; flex-wrap:wrap; }}
+        .whoami-name {{ font-weight: 950; }}
+        .footer-actions {{ display:flex; gap: 10px; flex-wrap: wrap; justify-content:flex-end; }}
+        @media (max-width: 740px) {{
+          .topbar-inner {{ flex-direction: column; align-items: stretch; }}
+          .top-actions {{ justify-content: center; }}
+          .titlebar {{ flex-direction: column; align-items: flex-start; }}
+        }}
       </style>
     </head>
     <body>
+      <div class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <img src="/web/assets/icons/public.png" alt="SchoolPoints" />
+            <div class="brand-col">
+              <div class="brand-title">נקודות בית ספר</div>
+              <div class="brand-sub">SchoolPoints</div>
+            </div>
+          </div>
+          <div class="top-actions">
+            <a class="btn blue" href="/web">דף הבית</a>
+            <a class="btn green" href="/web/signin">כניסה</a>
+            <a class="btn orange" href="/web/download">הורדה</a>
+            <a class="btn purple" href="/web/contact">צור קשר</a>
+          </div>
+        </div>
+      </div>
       <div class="wrap">
         <div class="card">
           <div class="titlebar"><h2>{title}</h2></div>
-          {body_html}
-          {footer}
+          <div class="content">
+            {body_html}
+            {footer}
+          </div>
         </div>
       </div>
     </body>
