@@ -615,7 +615,9 @@ def _web_require_teacher(request: Request) -> Response | None:
 
 @app.get('/web/login', include_in_schema=False)
 def web_login(request: Request) -> Response:
-    return _web_redirect_with_next('/web/signin', request=request)
+    # Do not use _web_redirect_with_next here: it would set next=/web/login
+    # and create a redirect loop after successful signin.
+    return RedirectResponse(url='/web/signin', status_code=302)
 
 
 @app.get('/web/logout', include_in_schema=False)
@@ -669,6 +671,8 @@ def web_signin_submit(
         return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>סיסמה שגויה.</p>')
 
     nxt = _web_next_from_request(request, '/web/teacher-login')
+    if nxt in ('/web/login', '/web/signin'):
+        nxt = '/web/teacher-login'
     resp = RedirectResponse(url=nxt, status_code=302)
     resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
     return resp
