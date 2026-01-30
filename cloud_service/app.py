@@ -710,6 +710,7 @@ def _basic_web_shell(title: str, body_html: str, request: Request | None = None)
         is_admin = False
 
     admin_only_style = '' if is_admin else 'display:none;'
+    teacher_only_style = 'display:none;' if is_admin else ''
 
     return f"""
     <!doctype html>
@@ -764,6 +765,10 @@ def _basic_web_shell(title: str, body_html: str, request: Request | None = None)
         <div class=\"layout\">
           <div class=\"sidebar\">
             <div class=\"nav\">
+              <div class=\"navgroup\" style=\"{teacher_only_style}\">
+                <div class=\"navtitle\">תלמידים</div>
+                <a class=\"navbtn navy\" href=\"/web/admin\">תלמידים</a>
+              </div>
               <div class=\"navgroup\" style=\"{admin_only_style}\">
                 <div class=\"navtitle\">ניהול</div>
                 <a class=\"navbtn navy\" href=\"/web/admin\">תלמידים</a>
@@ -2939,7 +2944,7 @@ def api_teachers_delete(request: Request, payload: TeacherDeletePayload) -> Dict
 
 @app.get("/web/system-settings", response_class=HTMLResponse)
 def web_system_settings(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -2963,7 +2968,7 @@ def web_system_settings(request: Request):
 
 @app.get("/web/display-settings", response_class=HTMLResponse)
 def web_display_settings(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -2995,7 +3000,7 @@ def web_display_settings(request: Request):
 
 @app.get("/web/colors", response_class=HTMLResponse)
 def web_colors(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3019,7 +3024,7 @@ def web_colors(request: Request):
 
 @app.get("/web/sounds", response_class=HTMLResponse)
 def web_sounds(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3043,7 +3048,7 @@ def web_sounds(request: Request):
 
 @app.get("/web/coins", response_class=HTMLResponse)
 def web_coins(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3067,7 +3072,7 @@ def web_coins(request: Request):
 
 @app.get("/web/messages", response_class=HTMLResponse)
 def web_messages(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3096,7 +3101,7 @@ def web_messages(request: Request):
 
 @app.get("/web/ads-media", response_class=HTMLResponse)
 def web_ads_media(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3125,7 +3130,7 @@ def web_ads_media(request: Request):
 
 @app.get("/web/bonuses", response_class=HTMLResponse)
 def web_bonuses(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3149,7 +3154,7 @@ def web_bonuses(request: Request):
 
 @app.get("/web/holidays", response_class=HTMLResponse)
 def web_holidays(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3173,7 +3178,7 @@ def web_holidays(request: Request):
 
 @app.get("/web/upgrades", response_class=HTMLResponse)
 def web_upgrades(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3197,7 +3202,7 @@ def web_upgrades(request: Request):
 
 @app.get("/web/special-bonus", response_class=HTMLResponse)
 def web_special_bonus(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3226,7 +3231,7 @@ def web_special_bonus(request: Request):
 
 @app.get("/web/time-bonus", response_class=HTMLResponse)
 def web_time_bonus(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3255,7 +3260,7 @@ def web_time_bonus(request: Request):
 
 @app.get("/web/cashier", response_class=HTMLResponse)
 def web_cashier(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3279,7 +3284,7 @@ def web_cashier(request: Request):
 
 @app.get("/web/reports", response_class=HTMLResponse)
 def web_reports(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3308,7 +3313,7 @@ def web_reports(request: Request):
 
 @app.get("/web/logs", response_class=HTMLResponse)
 def web_logs(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
@@ -3332,7 +3337,7 @@ def web_logs(request: Request):
 
 @app.get("/web/settings", response_class=HTMLResponse)
 def web_settings(request: Request):
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
