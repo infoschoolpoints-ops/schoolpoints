@@ -11,6 +11,7 @@ import sqlite3
 import csv
 import io
 import json
+import html
 import secrets
 import hashlib
 import hmac
@@ -594,7 +595,7 @@ def _web_redirect_with_next(target: str, *, request: Request) -> RedirectRespons
 def _web_require_login(request: Request) -> Response | None:
     if _web_auth_ok(request):
         return None
-    return _web_redirect_with_next('/web/login', request=request)
+    return _web_redirect_with_next('/web/signin', request=request)
 
 
 def _web_require_tenant(request: Request) -> Response | None:
@@ -640,7 +641,7 @@ def web_login(request: Request) -> Response:
 
 @app.get('/web/logout', include_in_schema=False)
 def web_logout() -> Response:
-    resp = RedirectResponse(url='/web/login', status_code=302)
+    resp = RedirectResponse(url='/web', status_code=302)
     resp.delete_cookie('web_teacher')
     resp.delete_cookie('web_tenant')
     resp.delete_cookie('web_user')
@@ -808,7 +809,7 @@ def _public_web_shell(title: str, body_html: str) -> str:
           </div>
         </div>
         <div class="actionbar" style="justify-content:flex-end; margin-top:0;">
-          <a class="blue" href="/web/login">דף הבית</a>
+          <a class="blue" href="/web">דף הבית</a>
           <a class="gray" href="javascript:history.back()">אחורה</a>
         </div>
       </div>
@@ -2581,219 +2582,21 @@ def web_equipment_required_content() -> str:
         html = html.replace('</head>', '<link rel="icon" href="/web/assets/icons/public.png" /></head>')
     return html
 
-
-@app.get("/web/download", response_class=HTMLResponse)
 def web_download() -> str:
     download_url = "https://drive.google.com/drive/folders/1jM8CpSPbO0avrmNLA3MBcCPXpdC0JGxc?usp=sharing"
     body = f"""
-    <div style=\"text-align:center;\">
-      <div style=\"font-size:22px;font-weight:900;\">הורדת התוכנה</div>
-      <div style=\"margin-top:10px;line-height:1.8;\">ההתקנה נמצאת בתיקיית Google Drive.</div>
-      <div class=\"actionbar\" style=\"justify-content:center;\">
-        <a class=\"green\" href=\"{download_url}\" target=\"_blank\" rel=\"noopener\">להורדה</a>
-        <a class=\"blue\" href=\"/web/guide\">מדריך</a>
-        <a class=\"gray\" href=\"/web/login\">חזרה</a>
+    <div style="text-align:center;">
+      <div style="font-size:22px;font-weight:900;">הורדת התוכנה</div>
+      <div style="margin-top:10px;line-height:1.8;">ההתקנה נמצאת בתיקיית Google Drive.</div>
+      <div class="actionbar" style="justify-content:center;">
+        <a class="green" href="{download_url}" target="_blank" rel="noopener">להורדה</a>
+        <a class="blue" href="/web/guide">מדריך</a>
+        <a class="gray" href="/web">חזרה</a>
       </div>
-      <div class=\"small\">build: {APP_BUILD_TAG}</div>
+      <div class="small">build: {APP_BUILD_TAG}</div>
     </div>
     """
     return _public_web_shell("הורדה", body)
-
-
-@app.get("/web/account", response_class=HTMLResponse)
-def web_account(request: Request) -> str:
-    tenant_id = _web_tenant_from_cookie(request)
-    if not tenant_id:
-        return _public_web_shell("אזור אישי", "<h2>אזור אישי</h2><p>יש להתחבר כדי לצפות בפרטי המוסד.</p>")
-    body = f"""
-    <h2>תפריט מוסד</h2>
-    <div style=\"color:#637381; margin-top:-6px;\">מוסד: <b>{tenant_id}</b></div>
-    <div class=\"actionbar\" style=\"justify-content:flex-start;\">
-      <a class=\"blue\" href=\"/web/account/password\">החלפת סיסמה</a>
-      <a class=\"blue\" href=\"/web/account/forgot\">שכחתי סיסמה</a>
-      <a class=\"blue\" href=\"/web/account/payments\">תשלומים</a>
-      <a class=\"gray\" href=\"/web/admin\">ניהול</a>
-    </div>
-    """
-    return _public_web_shell("אזור אישי", body)
-
-
-@app.get("/web/account/password", response_class=HTMLResponse)
-def web_account_password(request: Request) -> str:
-    tenant_id = _web_tenant_from_cookie(request)
-    if not tenant_id:
-        return _public_web_shell("החלפת סיסמה", "<h2>החלפת סיסמה</h2><p>יש להתחבר כדי להחליף סיסמה.</p>")
-    body = """
-    <style>
-      form { display:grid; grid-template-columns: 1fr; gap:10px; max-width: 520px; }
-      label { font-weight:800; font-size:13px; }
-      input { width:100%; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:15px; background:#fff; }
-      button { padding:12px 16px; border:none; border-radius:10px; background:var(--mint); color:#fff; font-weight:900; cursor:pointer; font-size:15px; }
-      .hint { color:#637381; line-height:1.9; font-size:13px; }
-    </style>
-    <h2>החלפת סיסמה</h2>
-    <div class="hint">כדי לשנות סיסמת מוסד יש להזין את הסיסמה הנוכחית ואת הסיסמה החדשה.</div>
-    <form method="post" action="/web/account/password" style="margin-top:12px;">
-      <label>סיסמה נוכחית</label>
-      <input name="current_password" type="password" required />
-      <label>סיסמה חדשה</label>
-      <input name="new_password" type="password" required />
-      <label>אימות סיסמה חדשה</label>
-      <input name="new_password2" type="password" required />
-      <button type="submit">שמירה</button>
-    </form>
-    <div class="actionbar" style="justify-content:flex-start;">
-      <a class="gray" href="/web/account">חזרה</a>
-    </div>
-    """
-    return _public_web_shell("החלפת סיסמה", body)
-
-
-@app.post("/web/account/password", response_class=HTMLResponse)
-def web_account_password_submit(
-    request: Request,
-    current_password: str = Form(...),
-    new_password: str = Form(...),
-    new_password2: str = Form(...),
-) -> str:
-    tenant_id = _web_tenant_from_cookie(request)
-    if not tenant_id:
-        return _public_web_shell("החלפת סיסמה", "<h2>החלפת סיסמה</h2><p>יש להתחבר כדי להחליף סיסמה.</p>")
-
-    if str(new_password or '') != str(new_password2 or ''):
-        body = """
-        <h2>שגיאה</h2>
-        <p>הסיסמה החדשה ואימות הסיסמה לא תואמים.</p>
-        <div class="actionbar" style="justify-content:flex-start;">
-          <a class="gray" href="/web/account/password">חזרה</a>
-        </div>
-        """
-        return _public_web_shell("החלפת סיסמה", body)
-
-    conn = _db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            _sql_placeholder('SELECT password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
-            (str(tenant_id).strip(),)
-        )
-        row = cur.fetchone()
-        pw_hash = (row.get('password_hash') if isinstance(row, dict) else (row[0] if row else None))
-        if not row or not str(pw_hash or '').strip():
-            body = """
-            <h2>שגיאה</h2>
-            <p>לא נמצאה סיסמת מוסד. פנה למנהל המערכת.</p>
-            <div class="actionbar" style="justify-content:flex-start;">
-              <a class="gray" href="/web/account">חזרה</a>
-            </div>
-            """
-            return _public_web_shell("החלפת סיסמה", body)
-
-        if not _pbkdf2_verify(str(current_password or '').strip(), str(pw_hash)):
-            body = """
-            <h2>שגיאה</h2>
-            <p>הסיסמה הנוכחית אינה תקינה.</p>
-            <div class="actionbar" style="justify-content:flex-start;">
-              <a class="gray" href="/web/account/password">נסה שוב</a>
-            </div>
-            """
-            return _public_web_shell("החלפת סיסמה", body)
-
-        new_hash = _pbkdf2_hash(str(new_password or '').strip())
-        cur.execute(
-            _sql_placeholder('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?'),
-            (str(new_hash), str(tenant_id).strip())
-        )
-        conn.commit()
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-    body = """
-    <h2>סיסמה עודכנה</h2>
-    <p>הסיסמה נשמרה בהצלחה.</p>
-    <div class="actionbar" style="justify-content:flex-start;">
-      <a class="blue" href="/web/account">חזרה לאזור אישי</a>
-      <a class="gray" href="/web/admin">ניהול</a>
-    </div>
-    """
-    return _public_web_shell("החלפת סיסמה", body)
-
-
-@app.get("/web/account/forgot", response_class=HTMLResponse)
-def web_account_forgot(request: Request) -> str:
-    body = """
-    <h2>שכחתי סיסמה</h2>
-    <p style="line-height:1.9; color:#637381;">
-      כרגע שחזור סיסמה אוטומטי אינו זמין דרך הווב.
-      כדי לאפס סיסמת מוסד יש לפנות למנהל המערכת / התמיכה.
-    </p>
-    <div class="actionbar" style="justify-content:flex-start;">
-      <a class="blue" href="/web/contact">פנייה לתמיכה</a>
-      <a class="gray" href="/web/account">חזרה</a>
-    </div>
-    """
-    return _public_web_shell("שכחתי סיסמה", body)
-
-
-@app.get("/web/account/payments", response_class=HTMLResponse)
-def web_account_payments(request: Request) -> str:
-    tenant_id = _web_tenant_from_cookie(request)
-    if not tenant_id:
-        return _public_web_shell("תשלומים", "<h2>תשלומים</h2><p>יש להתחבר כדי לצפות בתשלומים.</p>")
-    body = """
-    <h2>תשלומים</h2>
-    <p style="line-height:1.9; color:#637381;">
-      תשלומים/חידוש רישיון מנוהלים כרגע דרך התמיכה.
-      ניתן ליצור קשר ולקבל הצעה/קישור לתשלום.
-    </p>
-    <div class="actionbar" style="justify-content:flex-start;">
-      <a class="blue" href="/web/pricing">לתמחור</a>
-      <a class="blue" href="/web/contact">צור קשר</a>
-      <a class="gray" href="/web/account">חזרה</a>
-    </div>
-    """
-    return _public_web_shell("תשלומים", body)
-
-@app.get("/web/pricing", response_class=HTMLResponse)
-def web_pricing() -> str:
-    body = f"""
-    <div style="text-align:center;">
-      <div style="font-size:26px;font-weight:950;">תמחור</div>
-      <div style="margin-top:8px; color:#637381; line-height:1.9;">רכישה חד-פעמית או השכרה חודשית. מתאים גם לעבודה עונתית: <b>2 חודשים + אפשרות הארכה</b>.</div>
-    </div>
-    <div class="actionbar" style="justify-content:center;">
-      <a class="green" href="/web/contact">צור קשר להצעה</a>
-      <a class="blue" href="/web/signin">כניסה</a>
-    </div>
-    <div class="small" style="text-align:center;">build: {APP_BUILD_TAG}</div>
-    """
-    return _public_web_shell("תמחור", body)
-
-
-@app.get("/web/contact", response_class=HTMLResponse)
-def web_contact() -> str:
-    body = f"""
-    <div style="text-align:center;">
-      <div style="font-size:22px;font-weight:900;">צור קשר</div>
-      <div style="margin-top:8px; color:#637381;">נשמח לעזור. ניתן להשאיר פרטים ונחזור אליך.</div>
-    </div>
-    <form method="post" action="/web/contact" style="margin-top:14px;">
-      <label>שם</label>
-      <input name="name" required />
-      <label>דוא"ל</label>
-      <input name="email" type="email" required />
-      <label>נושא</label>
-      <input name="subject" required />
-      <label>הודעה</label>
-      <textarea name="message" required></textarea>
-      <button type="submit">שליחה</button>
-    </form>
-    <div class="hint">build: {APP_BUILD_TAG}</div>
-    """
-    return _public_web_shell("צור קשר", body)
 
 
 @app.post("/web/settings/save")
@@ -2803,12 +2606,12 @@ def web_settings_save(
     value_json: str = Form(...),
     redirect_to: str = Form(default='/web/admin'),
 ) -> Response:
-    guard = _web_require_teacher(request)
+    guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
     if not tenant_id:
-        return RedirectResponse(url="/web/login", status_code=302)
+        return RedirectResponse(url="/web/signin", status_code=302)
 
     k = str(setting_key or '').strip()
     v = str(value_json or '').strip()
@@ -2840,6 +2643,163 @@ def web_settings_save(
         back_href='/web/admin',
     )
     return _basic_web_shell("עמדת ניהול", body, request=request)
+
+
+@app.get('/web/students/edit', response_class=HTMLResponse)
+def web_students_edit(request: Request, student_id: int = Query(default=0)):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    if int(student_id or 0) <= 0:
+        body = "<h2>עריכת תלמיד</h2><p>בחר/י תלמיד מהטבלה ואז לחץ/י 'ערוך תלמיד'.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>"
+        return _basic_web_shell('עריכת תלמיד', body, request=request)
+
+    teacher = _web_current_teacher(request) or {}
+    teacher_id = _safe_int(teacher.get('id'), 0)
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    allowed_classes: List[str] | None = None
+    if not is_admin:
+        allowed_classes = _web_teacher_allowed_classes(tenant_id, teacher_id)
+        allowed_classes = [str(c).strip() for c in (allowed_classes or []) if str(c).strip()]
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                'SELECT id, first_name, last_name, class_name, points, card_number, serial_number, photo_number, private_message '
+                'FROM students WHERE id = ? LIMIT 1'
+            ),
+            (int(student_id),)
+        )
+        row = cur.fetchone()
+        if not row:
+            body = "<h2>עריכת תלמיד</h2><p>תלמיד לא נמצא.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>"
+            return _basic_web_shell('עריכת תלמיד', body, request=request)
+        r = dict(row) if isinstance(row, dict) else {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
+
+        if allowed_classes is not None:
+            cn = str(r.get('class_name') or '').strip()
+            if cn and cn not in allowed_classes:
+                return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה לערוך תלמיד מכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def _esc(v: Any) -> str:
+        try:
+            return html.escape(str(v or ''))
+        except Exception:
+            return ''
+
+    body = f"""
+    <h2>עריכת תלמיד</h2>
+    <form method="post" action="/web/students/edit" style="max-width:640px; display:grid; grid-template-columns:1fr; gap:10px;">
+      <input type="hidden" name="student_id" value="{int(student_id)}" />
+      <label style="font-weight:900;">מס' סידורי</label>
+      <input name="serial_number" value="{_esc(r.get('serial_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+      <label style="font-weight:900;">שם משפחה</label>
+      <input name="last_name" value="{_esc(r.get('last_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+      <label style="font-weight:900;">שם פרטי</label>
+      <input name="first_name" value="{_esc(r.get('first_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+      <label style="font-weight:900;">כיתה</label>
+      <input name="class_name" value="{_esc(r.get('class_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+      <label style="font-weight:900;">כרטיס</label>
+      <input name="card_number" value="{_esc(r.get('card_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+      <label style="font-weight:900;">תמונה (מספר)</label>
+      <input name="photo_number" value="{_esc(r.get('photo_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+      <label style="font-weight:900;">נקודות</label>
+      <input name="points" value="{_esc(r.get('points'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+      <label style="font-weight:900;">הודעה פרטית</label>
+      <textarea name="private_message" style="padding:12px;border:1px solid var(--line);border-radius:10px; min-height:90px;">{_esc(r.get('private_message'))}</textarea>
+      <div class="actionbar" style="justify-content:flex-start;">
+        <button class="green" type="submit" style="padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;">שמירה</button>
+        <a class="gray" href="/web/admin" style="padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;">חזרה</a>
+      </div>
+    </form>
+    """
+    return _basic_web_shell('עריכת תלמיד', body, request=request)
+
+
+@app.post('/web/students/edit', response_class=HTMLResponse)
+def web_students_edit_submit(
+    request: Request,
+    student_id: int = Form(default=0),
+    serial_number: str = Form(default=''),
+    last_name: str = Form(default=''),
+    first_name: str = Form(default=''),
+    class_name: str = Form(default=''),
+    card_number: str = Form(default=''),
+    photo_number: str = Form(default=''),
+    points: str = Form(default=''),
+    private_message: str = Form(default=''),
+) -> Response:
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    sid = int(student_id or 0)
+    if sid <= 0:
+        return RedirectResponse(url='/web/admin', status_code=302)
+
+    teacher = _web_current_teacher(request) or {}
+    teacher_id = _safe_int(teacher.get('id'), 0)
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    allowed_classes: List[str] | None = None
+    if not is_admin:
+        allowed_classes = _web_teacher_allowed_classes(tenant_id, teacher_id)
+        allowed_classes = [str(c).strip() for c in (allowed_classes or []) if str(c).strip()]
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT class_name FROM students WHERE id = ? LIMIT 1'), (sid,))
+        row = cur.fetchone()
+        if not row:
+            return _basic_web_shell('עריכת תלמיד', "<h2>שגיאה</h2><p>תלמיד לא נמצא.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>", request=request)
+        current_class = str((row.get('class_name') if isinstance(row, dict) else row['class_name']) or '').strip()
+        if allowed_classes is not None and current_class and current_class not in allowed_classes:
+            return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה לערוך תלמיד מכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+        if allowed_classes is not None:
+            new_class = str(class_name or '').strip()
+            if new_class and new_class not in allowed_classes:
+                return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה להעביר תלמיד לכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+
+        try:
+            pts = int(str(points or '').strip() or '0')
+        except Exception:
+            pts = 0
+
+        cur.execute(
+            _sql_placeholder(
+                'UPDATE students SET serial_number = ?, last_name = ?, first_name = ?, class_name = ?, card_number = ?, photo_number = ?, points = ?, private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+            ),
+            (
+                str(serial_number or '').strip(),
+                str(last_name or '').strip(),
+                str(first_name or '').strip(),
+                str(class_name or '').strip(),
+                str(card_number or '').strip(),
+                str(photo_number or '').strip(),
+                int(pts),
+                str(private_message or ''),
+                int(sid),
+            )
+        )
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return RedirectResponse(url='/web/admin', status_code=302)
 
 
 @app.get("/web/teachers", response_class=HTMLResponse)
@@ -4326,7 +4286,6 @@ def web_admin(request: Request):
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.last_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.first_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.class_name ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.id_number ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="points" contenteditable="true">${r.points ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="private_message" contenteditable="true">${r.private_message ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.card_number ?? ''}</td>
@@ -4502,7 +4461,6 @@ def web_admin(request: Request):
                   <th>משפחה</th>
                   <th>פרטי</th>
                   <th>כיתה</th>
-                  <th>ת"ז</th>
                   <th>נקודות</th>
                   <th>הודעה פרטית</th>
                   <th>כרטיס</th>
