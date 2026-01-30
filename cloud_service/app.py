@@ -184,6 +184,39 @@ def _institutions() -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def _get_institution(tenant_id: str) -> Dict[str, Any] | None:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        return None
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT tenant_id, name, api_key, password_hash, created_at FROM institutions WHERE tenant_id = ? LIMIT 1'),
+            (tenant_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        if isinstance(row, dict):
+            return dict(row)
+        try:
+            return dict(row)
+        except Exception:
+            return {
+                'tenant_id': row[0],
+                'name': row[1],
+                'api_key': row[2],
+                'password_hash': row[3] if len(row) > 3 else None,
+                'created_at': row[4] if len(row) > 4 else None,
+            }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def _tenant_guard(tenant_id: str) -> bool:
     active = _current_tenant_id()
     if not active:
@@ -578,6 +611,129 @@ def _web_require_teacher(request: Request) -> Response | None:
     if _web_teacher_from_cookie(request):
         return None
     return _web_redirect_with_next('/web/teacher-login', request=request)
+
+
+@app.get('/web/login', include_in_schema=False)
+def web_login(request: Request) -> Response:
+    return _web_redirect_with_next('/web/signin', request=request)
+
+
+@app.get('/web/logout', include_in_schema=False)
+def web_logout() -> Response:
+    resp = RedirectResponse(url='/web/login', status_code=302)
+    resp.delete_cookie('web_teacher')
+    resp.delete_cookie('web_tenant')
+    resp.delete_cookie('web_user')
+    return resp
+
+
+@app.get('/web/signin', response_class=HTMLResponse)
+def web_signin(request: Request) -> str:
+    nxt = _web_next_from_request(request, '/web/teacher-login')
+    body = f"""
+    <h2>כניסת מוסד</h2>
+    <div style=\"color:#637381; margin-top:-6px;\">יש להזין Tenant וסיסמת מוסד.</div>
+    <form method=\"post\" action=\"/web/signin?next={urllib.parse.quote(nxt, safe='')}\" style=\"margin-top:12px; max-width:520px;\">
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">Tenant</label>
+      <input name=\"tenant_id\" autocomplete=\"username\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">סיסמה</label>
+      <input name=\"password\" type=\"password\" autocomplete=\"current-password\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+        <button class=\"green\" type=\"submit\" style=\"padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;\">כניסה</button>
+        <a class=\"gray\" href=\"/web/download\" style=\"padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;\">הורדה</a>
+      </div>
+    </form>
+    <div class=\"small\">build: {APP_BUILD_TAG}</div>
+    """
+    return _public_web_shell('כניסת מוסד', body)
+
+
+@app.post('/web/signin', response_class=HTMLResponse)
+def web_signin_submit(
+    request: Request,
+    tenant_id: str = Form(default=''),
+    password: str = Form(default=''),
+) -> Response:
+    tenant_id = str(tenant_id or '').strip()
+    password = str(password or '').strip()
+    if not tenant_id or not password:
+        return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>חסרים פרטים.</p>')
+
+    inst = _get_institution(tenant_id)
+    if not inst:
+        return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>מוסד לא נמצא.</p>')
+    pw_hash = str(inst.get('password_hash') or '').strip()
+    if not pw_hash:
+        return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>לא הוגדרה סיסמת מוסד. פנה למנהל.</p>')
+    if not _pbkdf2_verify(password, pw_hash):
+        return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>סיסמה שגויה.</p>')
+
+    nxt = _web_next_from_request(request, '/web/teacher-login')
+    resp = RedirectResponse(url=nxt, status_code=302)
+    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    return resp
+
+
+@app.get('/web/teacher-login', response_class=HTMLResponse)
+def web_teacher_login(request: Request) -> Response:
+    guard = _web_require_tenant(request)
+    if guard:
+        return guard
+    nxt = _web_next_from_request(request, '/web/admin')
+    body = f"""
+    <h2>כניסת מורה</h2>
+    <div style=\"color:#637381; margin-top:-6px;\">יש להעביר כרטיס מורה או להזין מספר כרטיס.</div>
+    <form method=\"post\" action=\"/web/teacher-login?next={urllib.parse.quote(nxt, safe='')}\" style=\"margin-top:12px; max-width:520px;\">
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">כרטיס מורה</label>
+      <input name=\"card_number\" autofocus style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+        <button class=\"green\" type=\"submit\" style=\"padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;\">כניסה</button>
+        <a class=\"gray\" href=\"/web/logout\" style=\"padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;\">החלפת מוסד</a>
+      </div>
+    </form>
+    """
+    return _public_web_shell('כניסת מורה', body)
+
+
+@app.post('/web/teacher-login', response_class=HTMLResponse)
+def web_teacher_login_submit(
+    request: Request,
+    card_number: str = Form(default=''),
+) -> Response:
+    guard = _web_require_tenant(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    card_number = str(card_number or '').strip()
+    if not card_number:
+        return _public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>חסר כרטיס.</p>')
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                'SELECT id, name, is_admin FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1'
+            ),
+            (card_number, card_number, card_number)
+        )
+        row = cur.fetchone()
+        if not row:
+            return _public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>כרטיס מורה לא נמצא.</p>')
+        teacher_id = (row.get('id') if isinstance(row, dict) else row['id'])
+        teacher_id = str(teacher_id or '').strip()
+        if not teacher_id:
+            return _public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>מזהה מורה לא תקין.</p>')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    nxt = _web_next_from_request(request, '/web/admin')
+    resp = RedirectResponse(url=nxt, status_code=302)
+    resp.set_cookie('web_teacher', str(teacher_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
+    return resp
 
 
 def _web_require_admin_teacher(request: Request) -> Response | None:
