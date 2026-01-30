@@ -38,7 +38,7 @@ app = FastAPI(title="SchoolPoints Sync")
 
 @app.get("/", include_in_schema=False)
 def root() -> Response:
-    return RedirectResponse(url="/web/login", status_code=302)
+    return RedirectResponse(url="/web", status_code=302)
 
 APP_BUILD_TAG = "2026-01-28-managed-postgres"
 
@@ -611,6 +611,24 @@ def _web_require_teacher(request: Request) -> Response | None:
     if _web_teacher_from_cookie(request):
         return None
     return _web_redirect_with_next('/web/teacher-login', request=request)
+
+
+@app.get('/web', response_class=HTMLResponse)
+@app.get('/web/', response_class=HTMLResponse)
+def web_home() -> str:
+    body = f"""
+    <div style=\"text-align:center;\">
+      <div style=\"font-size:26px;font-weight:950;\">SchoolPoints</div>
+      <div style=\"margin-top:10px;line-height:1.8;color:#637381;\">ניהול נקודות · סינכרון · עמדות</div>
+      <div class=\"actionbar\" style=\"justify-content:center;\">
+        <a class=\"green\" href=\"/web/signin\">כניסה</a>
+        <a class=\"blue\" href=\"/web/download\">הורדה</a>
+        <a class=\"gray\" href=\"/web/contact\">צור קשר</a>
+      </div>
+      <div class=\"small\" style=\"margin-top:14px;\">build: {APP_BUILD_TAG}</div>
+    </div>
+    """
+    return _public_web_shell('דף הבית', body)
 
 
 @app.get('/web/login', include_in_schema=False)
