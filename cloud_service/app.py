@@ -3621,6 +3621,18 @@ def api_students(
     active_tenant = _web_tenant_from_cookie(request)
     if active_tenant and tenant_id and tenant_id != active_tenant:
         return {"items": [], "limit": limit, "offset": offset, "query": q}
+
+    teacher = _web_current_teacher(request) or {}
+    teacher_id = _safe_int(teacher.get('id'), 0)
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    allowed_classes: List[str] | None = None
+    if not is_admin and teacher_id > 0:
+        try:
+            allowed_classes = _web_teacher_allowed_classes(active_tenant, teacher_id)
+            allowed_classes = [str(c).strip() for c in (allowed_classes or []) if str(c).strip()]
+        except Exception:
+            allowed_classes = []
+
     conn = _tenant_school_db(active_tenant)
     cur = conn.cursor()
     query = """
@@ -3629,10 +3641,27 @@ def api_students(
         FROM students
     """
     params: List[Any] = []
+
+    wheres: List[str] = []
+    if allowed_classes is not None:
+        if not allowed_classes:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return {"items": [], "limit": limit, "offset": offset, "query": q}
+        placeholders = ','.join(['?'] * len(allowed_classes))
+        wheres.append(f"class_name IN ({placeholders})")
+        params.extend(list(allowed_classes))
+
     if q:
-        query += " WHERE first_name LIKE ? OR last_name LIKE ? OR class_name LIKE ? OR id_number LIKE ?"
+        wheres.append("(first_name LIKE ? OR last_name LIKE ? OR class_name LIKE ? OR id_number LIKE ?)")
         like = f"%{q.strip()}%"
         params.extend([like, like, like, like])
+
+    if wheres:
+        query += " WHERE " + " AND ".join(wheres)
+
     if USE_POSTGRES:
         query += (
             " ORDER BY "
@@ -4115,9 +4144,11 @@ def web_admin(request: Request):
           rowsEl.innerHTML = data.items.map(r => `
             <tr data-id="${r.id}">
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.serial_number ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${(r.photo_number && String(r.photo_number).trim()) ? '📷' : ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.last_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.first_name ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.class_name ?? ''}</td>
+              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.id_number ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="points" contenteditable="true">${r.points ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="private_message" contenteditable="true">${r.private_message ?? ''}</td>
               <td style="padding:8px;border-top:1px solid #e8eef2;">${r.card_number ?? ''}</td>
@@ -4289,9 +4320,11 @@ def web_admin(request: Request):
               <thead>
                 <tr>
                   <th>מס'</th>
+                  <th>תמונה</th>
                   <th>משפחה</th>
                   <th>פרטי</th>
                   <th>כיתה</th>
+                  <th>ת"ז</th>
                   <th>נקודות</th>
                   <th>הודעה פרטית</th>
                   <th>כרטיס</th>
