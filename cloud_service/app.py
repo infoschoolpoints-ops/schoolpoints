@@ -653,9 +653,9 @@ def web_signin(request: Request) -> str:
     nxt = _web_next_from_request(request, '/web/teacher-login')
     body = f"""
     <h2>כניסת מוסד</h2>
-    <div style=\"color:#637381; margin-top:-6px;\">יש להזין Tenant וסיסמת מוסד.</div>
+    <div style=\"color:#637381; margin-top:-6px;\">יש להזין קוד מוסד וסיסמת מוסד.</div>
     <form method=\"post\" action=\"/web/signin?next={urllib.parse.quote(nxt, safe='')}\" style=\"margin-top:12px; max-width:520px;\">
-      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">Tenant</label>
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">קוד מוסד</label>
       <input name=\"tenant_id\" autocomplete=\"username\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
       <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">סיסמה</label>
       <input name=\"password\" type=\"password\" autocomplete=\"current-password\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
@@ -797,6 +797,30 @@ def _read_text_file(path: str) -> str:
             return f.read()
     except Exception:
         return ""
+
+
+@app.get('/web/assets/{asset_path:path}', include_in_schema=False)
+def web_assets(asset_path: str) -> Response:
+    rel = str(asset_path or '').replace('\\', '/').lstrip('/')
+    if not rel or '..' in rel:
+        raise HTTPException(status_code=404, detail='Not found')
+
+    rel_l = rel.lower()
+    base = ROOT_DIR
+    if rel_l.startswith('icons/'):
+        base = os.path.join(ROOT_DIR, 'icons')
+        rel = rel[len('icons/'):]
+    elif rel_l.startswith('equipment_required_files/'):
+        base = os.path.join(ROOT_DIR, 'equipment_required_files')
+        rel = rel[len('equipment_required_files/'):]
+
+    path = os.path.abspath(os.path.join(base, rel))
+    base_abs = os.path.abspath(base)
+    if not path.startswith(base_abs):
+        raise HTTPException(status_code=404, detail='Not found')
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail='Not found')
+    return FileResponse(path)
 
 
 def _public_web_shell(title: str, body_html: str) -> str:
@@ -1028,18 +1052,113 @@ def _basic_web_shell(title: str, body_html: str, request: Request | None = None)
       <link rel=\"icon\" href=\"/web/assets/icons/public.png\" />
       <link rel=\"shortcut icon\" href=\"/web/assets/icons/public.png\" />
       <style>
-        :root {{ --navy:#2f3e4e; --mint:#1abc9c; --sky:#3498db; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; }}
-        body {{ margin:0; font-family: \"Segoe UI\", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction: rtl; }}
-        .wrap {{ max-width: 1180px; margin: 24px auto; padding: 0 16px; }}
+        :root {{
+          --navy:#20324b;
+          --navy2:#2f3e70;
+          --mint:#1abc9c;
+          --sky:#3498db;
+          --violet:#8e44ad;
+          --orange:#f39c12;
+          --line: rgba(255,255,255,.18);
+          --glass: rgba(255,255,255,.12);
+          --glass2: rgba(255,255,255,.18);
+          --shadow: 0 18px 40px rgba(0,0,0,.22);
+          --text: rgba(255,255,255,.92);
+        }}
+        html, body {{ height:100%; }}
+        body {{
+          margin:0;
+          font-family: \"Segoe UI\", Arial, sans-serif;
+          color: var(--text);
+          direction: rtl;
+          background:
+            radial-gradient(1200px 700px at 20% 10%, rgba(52,152,219,.55), rgba(0,0,0,0) 55%),
+            radial-gradient(900px 600px at 90% 35%, rgba(142,68,173,.45), rgba(0,0,0,0) 55%),
+            radial-gradient(800px 520px at 55% 92%, rgba(243,156,18,.30), rgba(0,0,0,0) 60%),
+            linear-gradient(180deg, #0f1b2b, #162642 55%, #0f1b2b);
+        }}
+        a {{ color: rgba(255,255,255,.92); }}
+        .topbar {{
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          backdrop-filter: blur(14px);
+          -webkit-backdrop-filter: blur(14px);
+          background: rgba(255,255,255,.10);
+          border-bottom: 1px solid var(--line);
+        }}
+        .topbar-inner {{
+          max-width: 1180px;
+          margin: 0 auto;
+          padding: 14px 16px;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap: 14px;
+        }}
+        .brand {{ display:flex; align-items:center; gap: 10px; min-width: 0; }}
+        .brand img {{ width: 38px; height: 38px; border-radius: 10px; box-shadow: 0 10px 22px rgba(0,0,0,.25); }}
+        .brand-title {{ font-weight: 950; letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .brand-sub {{ font-size: 12px; opacity: .86; margin-top: 2px; }}
+        .brand-col {{ display:flex; flex-direction:column; min-width: 0; }}
+        .top-actions {{ display:flex; align-items:center; gap: 10px; flex-wrap: wrap; justify-content:flex-end; }}
+        .btn {{
+          display:inline-flex;
+          align-items:center;
+          justify-content:center;
+          gap: 8px;
+          padding: 10px 14px;
+          border-radius: 14px;
+          text-decoration:none;
+          font-weight: 900;
+          box-shadow: 0 14px 28px rgba(0,0,0,.24);
+          border: 1px solid rgba(255,255,255,.16);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+        }}
+        .btn:active {{ transform: translateY(1px); }}
+        .btn.green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
+        .btn.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
+        .btn.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
+        .btn.purple {{ background: linear-gradient(135deg, #8e44ad, #5b2c83); }}
+        .btn.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
+        .wrap {{ max-width: 1180px; margin: 18px auto 26px; padding: 0 16px; }}
         .layout {{ display:flex; gap:14px; align-items:flex-start; }}
         .sidebar {{ width: 260px; position: sticky; top: 16px; }}
         .content {{ flex: 1; min-width: 0; }}
-        .card {{ background:#fff; border-radius:10px; padding:20px; border:1px solid var(--line); box-shadow:0 6px 18px rgba(40,55,70,.08); }}
-        .titlebar {{ background:var(--navy); color:#fff; padding:14px 18px; border-radius:10px 10px 0 0; margin:-20px -20px 16px; }}
+        .card {{
+          background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.09));
+          border-radius: 18px;
+          padding: 18px;
+          border: 1px solid rgba(255,255,255,.18);
+          box-shadow: var(--shadow);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+        }}
+        .titlebar {{
+          background: linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
+          border: 1px solid rgba(255,255,255,.18);
+          color: rgba(255,255,255,.96);
+          padding: 14px 16px;
+          border-radius: 14px;
+          margin: 0 0 14px;
+          display:flex;
+          align-items:center;
+          justify-content:space-between;
+          gap: 12px;
+        }}
         .titlebar h2 {{ margin:0; font-size:20px; }}
         .nav {{ display:flex; flex-direction:column; gap:10px; }}
-        .navgroup {{ background:#fff; border:1px solid var(--line); border-radius:12px; padding:12px; box-shadow:0 6px 18px rgba(40,55,70,.06); }}
-        .navtitle {{ font-weight:900; color:#2f3e4e; margin:2px 0 10px; font-size:14px; }}
+        .navgroup {{
+          background: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.08));
+          border: 1px solid rgba(255,255,255,.18);
+          border-radius: 16px;
+          padding: 12px;
+          box-shadow: 0 14px 28px rgba(0,0,0,.18);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+        }}
+        .navtitle {{ font-weight:950; color: rgba(255,255,255,.92); margin:2px 0 10px; font-size:14px; }}
         .navbtn {{ display:block; text-decoration:none; color:#fff; padding:12px 14px; border-radius:12px; font-weight:900; font-size:14px; box-shadow:0 10px 22px rgba(0,0,0,.10); }}
         .navbtn:active {{ transform: translateY(1px); }}
         .navbtn.green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
@@ -1056,17 +1175,38 @@ def _basic_web_shell(title: str, body_html: str, request: Request | None = None)
         .actionbar .orange {{ background:#f39c12; }}
         .actionbar .gray {{ background:#95a5a6; }}
         .actionbar .purple {{ background:#8e44ad; }}
-        .links {{ margin-top:12px; font-size:13px; }}
-        .links a {{ color:#1f2d3a; text-decoration:none; margin-left:10px; }}
+        .links {{ margin-top:12px; font-size:13px; opacity:.92; }}
+        .links a {{ color: rgba(255,255,255,.92); text-decoration:none; margin-left:10px; font-weight:800; }}
         @media (max-width: 980px) {{
           .layout {{ flex-direction: column; }}
           .sidebar {{ width: 100%; position: relative; top: auto; }}
           .nav {{ flex-direction: row; overflow:auto; padding-bottom: 6px; }}
           .navgroup {{ min-width: 320px; flex: 0 0 auto; }}
         }}
+        @media (max-width: 740px) {{
+          .topbar-inner {{ flex-direction: column; align-items: stretch; }}
+          .top-actions {{ justify-content: center; }}
+        }}
       </style>
     </head>
     <body>
+      <div class=\"topbar\">
+        <div class=\"topbar-inner\">
+          <div class=\"brand\">
+            <img src=\"/web/assets/icons/public.png\" alt=\"SchoolPoints\" />
+            <div class=\"brand-col\">
+              <div class=\"brand-title\">עמדת ניהול</div>
+              <div class=\"brand-sub\">SchoolPoints</div>
+            </div>
+          </div>
+          <div class=\"top-actions\">
+            <a class=\"btn blue\" href=\"/web/admin\">תלמידים</a>
+            <a class=\"btn gray\" href=\"/web/guide\">מדריך</a>
+            <a class=\"btn gray\" href=\"/web\">דף הבית</a>
+            <a class=\"btn gray\" href=\"/web/logout\">יציאה</a>
+          </div>
+        </div>
+      </div>
       <div class=\"wrap\">
         <div class=\"layout\">
           <div class=\"sidebar\">
@@ -1103,7 +1243,7 @@ def _basic_web_shell(title: str, body_html: str, request: Request | None = None)
           <div class=\"content\">
             <div class=\"card\">
               <div class=\"titlebar\"><h2>{title}</h2></div>
-              <div style=\"font-size:12px;color:#637381;margin-bottom:8px;\">
+              <div style=\"font-size:12px;opacity:.86;margin-bottom:8px;\">
                 מוסדות: {status['inst_total']} | שינויים: {status['changes_total']} | שינוי אחרון: {status['last_received']}
               </div>
               {body_html}
@@ -2709,6 +2849,68 @@ def web_equipment_required_content() -> str:
         html = html.replace('</head>', '<link rel="icon" href="/web/assets/icons/public.png" /></head>')
     return html
 
+
+@app.get('/web/guide', response_class=HTMLResponse)
+def web_guide() -> str:
+    path = os.path.join(ROOT_DIR, 'guide_index.html')
+    html = _read_text_file(path)
+    if not html:
+        body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
+        return _public_web_shell('מדריך', body)
+    html = str(html)
+    if '</head>' in html:
+        html = html.replace('</head>', '<link rel="icon" href="/web/assets/icons/public.png" /></head>')
+    return html
+
+
+@app.get('/web/contact', response_class=HTMLResponse)
+def web_contact() -> str:
+    body = f"""
+    <h2>צור קשר</h2>
+    <div style=\"opacity:.86; margin-top:-6px;\">נחזור אליך בהקדם.</div>
+    <form method=\"post\" action=\"/web/contact\" style=\"margin-top:12px; max-width:680px;\">
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">שם</label>
+      <input name=\"name\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">אימייל</label>
+      <input name=\"email\" type=\"email\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">נושא</label>
+      <input name=\"subject\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" />
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">הודעה</label>
+      <textarea name=\"message\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px; min-height:120px;\" required></textarea>
+      <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+        <button class=\"green\" type=\"submit\" style=\"padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;\">שליחה</button>
+        <a class=\"gray\" href=\"/web\" style=\"padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;\">חזרה</a>
+      </div>
+      <div class=\"small\">build: {APP_BUILD_TAG}</div>
+    </form>
+    """
+    return _public_web_shell('צור קשר', body)
+
+
+@app.post('/web/contact', response_class=HTMLResponse)
+def web_contact_submit(
+    name: str = Form(default=''),
+    email: str = Form(default=''),
+    subject: str = Form(default=''),
+    message: str = Form(default=''),
+) -> Response:
+    name = str(name or '').strip()
+    email = str(email or '').strip()
+    subject = str(subject or '').strip()
+    message = str(message or '').strip()
+    if not name or not email or not message:
+        body = "<h2>צור קשר</h2><p>חסרים פרטים.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/contact\">חזרה</a></div>"
+        return HTMLResponse(_public_web_shell('צור קשר', body), status_code=400)
+    try:
+        _save_contact_message(name=name, email=email, subject=subject, message=message)
+    except Exception:
+        body = "<h2>צור קשר</h2><p>שגיאה בשליחה. נסה שוב.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/contact\">חזרה</a></div>"
+        return HTMLResponse(_public_web_shell('צור קשר', body), status_code=500)
+    body = "<h2>תודה!</h2><p>ההודעה נשלחה בהצלחה.</p><div class=\"actionbar\"><a class=\"blue\" href=\"/web\">דף הבית</a><a class=\"gray\" href=\"/web/guide\">מדריך</a></div>"
+    return HTMLResponse(_public_web_shell('צור קשר', body), status_code=200)
+
+
+@app.get('/web/download', response_class=HTMLResponse)
 def web_download() -> str:
     download_url = "https://drive.google.com/drive/folders/1jM8CpSPbO0avrmNLA3MBcCPXpdC0JGxc?usp=sharing"
     body = f"""
