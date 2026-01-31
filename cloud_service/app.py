@@ -619,11 +619,15 @@ def _web_require_teacher(request: Request) -> Response | None:
 def web_home() -> str:
     body = f"""
     <div style=\"text-align:center;\">
-      <div style=\"font-size:26px;font-weight:950;\">SchoolPoints</div>
-      <div style=\"margin-top:10px;line-height:1.8;color:#637381;\">ניהול נקודות · סינכרון · עמדות</div>
-      <div class=\"actionbar\" style=\"justify-content:center;\">
+      <div style=\"font-size:28px;font-weight:950; letter-spacing:.2px;\">תוכנת נקודות</div>
+      <div style=\"margin-top:10px;line-height:1.9; opacity:.90; max-width:780px; margin-left:auto; margin-right:auto;\">
+        מערכת לניהול נקודות בבתי ספר: עמדת תלמידים, עמדת קופה ועמדת ניהול.
+        כולל סינכרון ושדרוגים, עם ממשק מהיר ונוח.
+      </div>
+      <div class=\"actionbar\" style=\"justify-content:center; margin-top:16px;\">
         <a class=\"green\" href=\"/web/signin\">כניסה</a>
         <a class=\"blue\" href=\"/web/download\">הורדה</a>
+        <a class=\"gray\" href=\"/web/guide\">מדריך</a>
         <a class=\"gray\" href=\"/web/contact\">צור קשר</a>
       </div>
       <div class=\"small\" style=\"margin-top:14px;\">build: {APP_BUILD_TAG}</div>
@@ -708,7 +712,7 @@ def web_teacher_login(request: Request) -> Response:
     <div style=\"color:#637381; margin-top:-6px;\">יש להעביר כרטיס מורה או להזין מספר כרטיס.</div>
     <form method=\"post\" action=\"/web/teacher-login?next={urllib.parse.quote(nxt, safe='')}\" style=\"margin-top:12px; max-width:520px;\">
       <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">כרטיס מורה</label>
-      <input name=\"card_number\" autofocus style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <input name=\"card_number\" type=\"password\" autofocus style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
       <div class=\"actionbar\" style=\"justify-content:flex-start;\">
         <button class=\"green\" type=\"submit\" style=\"padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;\">כניסה</button>
         <a class=\"gray\" href=\"/web/logout\" style=\"padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;\">החלפת מוסד</a>
@@ -2969,7 +2973,7 @@ def web_settings_save(
         "עמדת ניהול",
         'admin_settings',
         value_json,
-        'הגדרות עמדת ניהול (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        'הגדרות עמדת ניהול.',
         back_href='/web/admin',
     )
     return _basic_web_shell("עמדת ניהול", body, request=request)
@@ -3169,12 +3173,12 @@ def web_teachers(request: Request):
           const data = await resp.json();
           rowsEl.innerHTML = data.items.map(r => `
             <tr data-id="${r.id}">
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.id ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.name ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;direction:ltr;">${r.card_number ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;direction:ltr;">${r.card_number2 ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;direction:ltr;">${r.card_number3 ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${(r.is_admin ? 'כן' : '')}</td>
+              <td class="cell">${r.id ?? ''}</td>
+              <td class="cell">${r.name ?? ''}</td>
+              <td class="cell ltr">${r.card_number ?? ''}</td>
+              <td class="cell ltr">${r.card_number2 ?? ''}</td>
+              <td class="cell ltr">${r.card_number3 ?? ''}</td>
+              <td class="cell">${(r.is_admin ? 'כן' : '')}</td>
             </tr>`).join('');
           statusEl.textContent = `נטענו ${data.items.length} מורים`;
           document.querySelectorAll('tr[data-id]').forEach(tr => {
@@ -3254,26 +3258,45 @@ def web_teachers(request: Request):
 
     body = """
     <style>
-      table { width:100%; border-collapse:collapse; font-size:13px; }
-      th, td { padding:8px; border-bottom:1px solid #e3e9ee; text-align:right; }
-      th { background:#f6f8f9; }
-      tbody tr:nth-child(even) { background:#f3f6f8; }
+      table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; overflow:hidden; border-radius:14px; }
+      thead th {
+        position: sticky;
+        top: 0;
+        background: rgba(255,255,255,.12);
+        color: rgba(255,255,255,.92);
+        border-bottom: 1px solid rgba(255,255,255,.16);
+        padding: 10px 10px;
+        text-align: right;
+        font-weight: 950;
+        white-space: nowrap;
+      }
+      tbody tr { background: rgba(0,0,0,.08); }
+      tbody tr:nth-child(even) { background: rgba(255,255,255,.06); }
+      tbody tr:hover { background: rgba(26,188,156,.18); }
+      .cell {
+        padding: 10px 10px;
+        border-bottom: 1px solid rgba(255,255,255,.12);
+        color: rgba(255,255,255,.92);
+        white-space: nowrap;
+      }
+      .cell.ltr { direction:ltr; text-align:left; }
       .bar { margin:10px 0; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-      .bar input { padding:6px 8px; border:1px solid var(--line); border-radius:6px; }
-      .btn { padding:8px 12px; border-radius:6px; color:#fff; text-decoration:none; border:none; font-weight:600; cursor:pointer; }
-      .btn-green { background:#2ecc71; }
-      .btn-blue { background:#3498db; }
-      .btn-red { background:#e74c3c; }
+      .bar input { padding:10px 12px; border:1px solid rgba(255,255,255,.18); border-radius:12px; background: rgba(0,0,0,.18); color: rgba(255,255,255,.92); }
+      .bar input::placeholder { color: rgba(255,255,255,.62); }
+      .btn { padding:10px 14px; border-radius:14px; color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.16); font-weight:900; cursor:pointer; box-shadow: 0 14px 28px rgba(0,0,0,.22); }
+      .btn-green { background: linear-gradient(135deg, #2ecc71, #1abc9c); }
+      .btn-blue { background: linear-gradient(135deg, #3498db, #2f80ed); }
+      .btn-red { background: linear-gradient(135deg, #e74c3c, #c0392b); }
     </style>
     <div class="bar">
       <input id="t_search" placeholder="חיפוש" />
-      <span id="t_status" style="color:#637381;">טוען...</span>
+      <span id="t_status" style="opacity:.86;">טוען...</span>
     </div>
     <div class="bar">
       <button class="btn btn-green" id="t_new" type="button">➕ הוסף מורה</button>
       <button class="btn btn-blue" id="t_edit" type="button" style="opacity:.55;pointer-events:none;">✏️ עריכה</button>
       <button class="btn btn-red" id="t_delete" type="button" style="opacity:.55;pointer-events:none;">🗑️ מחיקה</button>
-      <span id="t_selected" style="color:#637381;">לא נבחר מורה</span>
+      <span id="t_selected" style="opacity:.86;">לא נבחר מורה</span>
     </div>
     <div style="overflow:auto;">
       <table>
@@ -3428,7 +3451,7 @@ def web_system_settings(request: Request):
         "הגדרות מערכת",
         'system_settings',
         value_json,
-        'הגדרות מערכת כלליות (JSON). בהמשך יתווספו מסכים ייעודיים לתיקייה משותפת/לוגו/נתיבים.',
+        'הגדרות מערכת כלליות.',
         back_href='/web/admin',
     )
     return _basic_web_shell("הגדרות מערכת", body, request=request)
@@ -3484,7 +3507,7 @@ def web_colors(request: Request):
         "צבעים",
         'color_settings',
         value_json,
-        'טווחי נקודות/צבעים (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        'טווחי נקודות/צבעים.',
         back_href='/web/display-settings',
     )
     return _basic_web_shell("צבעים", body, request=request)
@@ -3508,7 +3531,7 @@ def web_sounds(request: Request):
         "צלילים",
         'sound_settings',
         value_json,
-        'הגדרות צלילים (JSON). בהמשך יתווסף ממשק העלאה ידידותי.',
+        'הגדרות צלילים.',
         back_href='/web/display-settings',
     )
     return _basic_web_shell("צלילים", body, request=request)
@@ -3532,7 +3555,7 @@ def web_coins(request: Request):
         "מטבעות ויעדים",
         'coins_settings',
         value_json,
-        'הגדרות מטבעות/יעדים (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        'הגדרות מטבעות/יעדים.',
         back_href='/web/display-settings',
     )
     return _basic_web_shell("מטבעות", body, request=request)
@@ -3556,7 +3579,7 @@ def web_messages(request: Request):
         "הודעות כלליות",
         'messages',
         value_json,
-        'רשימת הודעות להצגה בעמדות (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        'רשימת הודעות להצגה בעמדות.',
         back_href='/web/admin',
     )
     body = editor + """
@@ -3585,7 +3608,7 @@ def web_ads_media(request: Request):
         "מדיה / פרסומות",
         'ads_media',
         value_json,
-        'רשימת מדיה/פרסומות להצגה בעמדות (JSON). בהמשך יתווסף ממשק העלאה ידידותי.',
+        'רשימת מדיה/פרסומות להצגה בעמדות.',
         back_href='/web/messages',
     )
     body = editor + """
@@ -3614,7 +3637,7 @@ def web_bonuses(request: Request):
         "בונוסים",
         'bonus_settings',
         value_json,
-        'הגדרות בונוסים (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        'הגדרות בונוסים.',
         back_href='/web/admin',
     )
     return _basic_web_shell("בונוסים", body, request=request)
@@ -3638,7 +3661,7 @@ def web_holidays(request: Request):
         "חגים וחופשות",
         'holidays',
         value_json,
-        'הגדרות חגים/חופשות (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        'הגדרות חגים/חופשות.',
         back_href='/web/admin',
     )
     return _basic_web_shell("חגים וחופשות", body, request=request)
@@ -3662,7 +3685,7 @@ def web_upgrades(request: Request):
         "שדרוגים",
         'upgrades_settings',
         value_json,
-        'הגדרות שדרוגים (JSON). בהמשך יתווספו העלאת גרסה וניהול גרסאות בפועל.',
+        'הגדרות שדרוגים.',
         back_href='/web/admin',
     )
     return _basic_web_shell("שדרוגים", body, request=request)
@@ -3686,7 +3709,7 @@ def web_special_bonus(request: Request):
         "בונוס מיוחד",
         'special_bonus',
         value_json,
-        'בונוס מיוחד (JSON). בהמשך יתווסף מסך יצירה ידידותי.',
+        'בונוס מיוחד.',
         back_href='/web/bonuses',
     )
     body = editor + """
@@ -3715,7 +3738,7 @@ def web_time_bonus(request: Request):
         "בונוס זמנים",
         'time_bonus',
         value_json,
-        'כללי בונוס לפי זמן (JSON). בהמשך יתווסף מסך עריכה ידידותי.',
+        'כללי בונוס לפי זמן.',
         back_href='/web/holidays',
     )
     body = editor + """
@@ -3744,7 +3767,7 @@ def web_cashier(request: Request):
         "עמדת קופה",
         'cashier_settings',
         value_json,
-        'הגדרות קופה (JSON). בהמשך יתווסף מסך ניהול מוצרים/קטגוריות והיסטוריה.',
+        'הגדרות קופה.',
         back_href='/web/admin',
     )
     return _basic_web_shell("עמדת קופה", body, request=request)
@@ -3797,7 +3820,7 @@ def web_logs(request: Request):
         "לוגים",
         'log_settings',
         value_json,
-        'הגדרות לוגים (JSON). בהמשך יתווספו הורדה/ניקוי בפועל.',
+        'הגדרות לוגים.',
         back_href='/web/admin',
     )
     return _basic_web_shell("לוגים", body, request=request)
@@ -4611,14 +4634,14 @@ def web_admin(request: Request):
           const data = await resp.json();
           rowsEl.innerHTML = data.items.map(r => `
             <tr data-id="${r.id}">
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.serial_number ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${(r.photo_number && String(r.photo_number).trim()) ? '📷' : ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.last_name ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.first_name ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.class_name ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="points" contenteditable="true">${r.points ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;" data-field="private_message" contenteditable="true">${r.private_message ?? ''}</td>
-              <td style="padding:8px;border-top:1px solid #e8eef2;">${r.card_number ?? ''}</td>
+              <td class="cell">${r.serial_number ?? ''}</td>
+              <td class="cell">${(r.photo_number && String(r.photo_number).trim()) ? '📷' : ''}</td>
+              <td class="cell">${r.last_name ?? ''}</td>
+              <td class="cell">${r.first_name ?? ''}</td>
+              <td class="cell">${r.class_name ?? ''}</td>
+              <td class="cell editable" data-field="points" contenteditable="true">${r.points ?? ''}</td>
+              <td class="cell editable" data-field="private_message" contenteditable="true">${r.private_message ?? ''}</td>
+              <td class="cell ltr">${r.card_number ?? ''}</td>
             </tr>`).join('');
           statusEl.textContent = `נטענו ${data.items.length} תלמידים`;
 
@@ -4710,114 +4733,75 @@ def web_admin(request: Request):
         load();
       </script>
     """
-    return f"""
-    <!doctype html>
-    <html lang="he">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>SchoolPoints - ניהול</title>
-      <style>
-        :root {{ --navy:#2f3e4e; --bg:#eef2f4; --line:#d6dde3; --tab:#ecf0f1; --accent:#1abc9c; }}
-        body {{ margin:0; font-family:"Segoe UI", Arial, sans-serif; background:var(--bg); color:#1f2d3a; direction:rtl; }}
-        .wrap {{ max-width:1180px; margin:18px auto; padding:0 16px 24px; }}
-        .titlebar {{ background:var(--navy); color:#fff; padding:14px 16px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; }}
-        .titlebar h2 {{ margin:0; font-size:20px; }}
-        .tabs {{ margin:10px 0; display:flex; gap:6px; flex-wrap:wrap; }}
-        .tab {{ background:var(--tab); padding:6px 10px; border-radius:4px; font-size:12px; text-decoration:none; color:#1f2d3a; border:1px solid var(--line); }}
-        .actions a {{ padding:8px 12px; border:1px solid var(--line); border-radius:6px; background:#fff; text-decoration:none; color:#1f2d3a; font-weight:600; }}
-        .btn-green {{ background:#2ecc71; color:#fff; border-color:#27ae60; }}
-        .btn-blue {{ background:#3498db; color:#fff; border-color:#2c80ba; }}
-        .btn-orange {{ background:#f39c12; color:#fff; border-color:#d68910; }}
-        .btn-purple {{ background:#8e44ad; color:#fff; border-color:#7d3c98; }}
-        .btn-gray {{ background:#95a5a6; color:#fff; border-color:#7f8c8d; }}
-        .footerbar {{ margin-top:12px; display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }}
-        .card {{ background:#fff; border-radius:8px; border:1px solid var(--line); box-shadow:0 6px 16px rgba(40,55,70,.08); padding:12px; }}
-        table {{ width:100%; border-collapse:collapse; font-size:13px; }}
-        th, td {{ padding:8px; border-bottom:1px solid #e3e9ee; text-align:right; }}
-        th {{ background:#f6f8f9; }}
-        tbody tr:nth-child(even) {{ background:#f3f6f8; }}
-        .searchbar {{ margin:10px 0; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }}
-        .searchbar input, .searchbar select {{ padding:6px 8px; border:1px solid var(--line); border-radius:6px; }}
-      </style>
-    </head>
-    <body>
-      <div class="wrap">
-        <div class="titlebar">
-          <h2>עמדת ניהול – ווב</h2>
-          <span>מערכת ניהול נקודות · <a href="/web/logout" style="color:#fff;">יציאה</a></span>
-        </div>
-        <div class="tabs">
-          <a class="tab" href="/web/admin">תלמידים</a>
-          <a class="tab" href="/web/spaces-test">בדיקת אחסון</a>
-          <a class="tab" href="/web/upgrades">שדרוגים</a>
-          <a class="tab" href="/web/messages">הודעות</a>
-          <a class="tab" href="/web/special-bonus">בונוס מיוחד</a>
-          <a class="tab" href="/web/time-bonus">בונוס זמנים</a>
-          <a class="tab" href="/web/teachers">ניהול מורים</a>
-          <a class="tab" href="/web/system-settings">הגדרות מערכת</a>
-          <a class="tab" href="/web/display-settings">הגדרות תצוגה</a>
-          <a class="tab" href="/web/bonuses">בונוסים</a>
-          <a class="tab" href="/web/holidays">חגים/חופשות</a>
-          <a class="tab" href="/web/logs">לוגים</a>
-        </div>
-        <div class="actions" style="display:flex;gap:10px;flex-wrap:wrap;margin:10px 0 14px;">
-          <a class="btn-green" href="/web/students/new">➕ הוסף תלמיד</a>
-          <a class="btn-blue" href="/web/students/edit">✏️ ערוך תלמיד</a>
-          <a class="btn-orange" href="/web/students/delete">🗑️ מחיקת תלמיד</a>
-          <a class="btn-purple" href="/web/import">⬆️ ייבוא אקסל</a>
-          <a class="btn-gray" href="/web/export">⬇️ ייצוא אקסל</a>
-        </div>
-        <div class="searchbar">
-          <label>מוסד פעיל:</label>
-          <input value="" id="tenant" disabled style="min-width:160px;" />
-          <input id="search" placeholder="חיפוש" />
-          <span id="status" style="color:#637381;">טוען...</span>
-        </div>
-        <div class="actions" style="display:flex;gap:10px;flex-wrap:wrap;margin:0 0 10px;align-items:center;">
-          <a class="btn-blue" id="btnEditPoints" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך נקודות</a>
-          <a class="btn-blue" id="btnQuickDelta" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">⚡ עדכון מהיר</a>
-          <a class="btn-blue" id="btnEditMsg" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך הודעה</a>
-          <a class="btn-blue" id="btnEditStudent" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך תלמיד</a>
-          <span id="selected" style="color:#637381;">לא נבחר תלמיד</span>
-        </div>
-        <div class="card">
-          <div style="overflow:auto;">
-            <table>
-              <thead>
-                <tr>
-                  <th>מס'</th>
-                  <th>תמונה</th>
-                  <th>משפחה</th>
-                  <th>פרטי</th>
-                  <th>כיתה</th>
-                  <th>נקודות</th>
-                  <th>הודעה פרטית</th>
-                  <th>כרטיס</th>
-                </tr>
-              </thead>
-              <tbody id="rows"></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="footerbar">
-          <a class="btn-green" href="/web/students/new">➕ הוסף תלמיד</a>
-          <a class="btn-blue" href="/web/students/edit">✏️ ערוך תלמיד</a>
-          <a class="btn-orange" href="/web/students/delete">🗑️ מחיקה</a>
-          <a class="btn-purple" href="/web/import">⬆️ ייבוא</a>
-          <a class="btn-gray" href="/web/export">⬇️ ייצוא</a>
-        </div>
-      </div>
-      {js}
-      <script>
-        try {{
-          document.getElementById('tenant').value = "";
-          document.getElementById('tenant').value = {tenant_json};
-        }} catch(e) {{}}
-      </script>
-    </body>
-    </html>
+    body = f"""
+    <style>
+      table {{ width:100%; border-collapse:separate; border-spacing:0; font-size:13px; overflow:hidden; border-radius:14px; }}
+      thead th {{
+        position: sticky;
+        top: 0;
+        background: rgba(255,255,255,.12);
+        color: rgba(255,255,255,.92);
+        border-bottom: 1px solid rgba(255,255,255,.16);
+        padding: 10px 10px;
+        text-align: right;
+        font-weight: 950;
+        white-space: nowrap;
+      }}
+      tbody tr {{ background: rgba(0,0,0,.08); }}
+      tbody tr:nth-child(even) {{ background: rgba(255,255,255,.06); }}
+      tbody tr:hover {{ background: rgba(26,188,156,.18); }}
+      .cell {{
+        padding: 10px 10px;
+        border-bottom: 1px solid rgba(255,255,255,.12);
+        color: rgba(255,255,255,.92);
+        white-space: nowrap;
+      }}
+      .cell.ltr {{ direction:ltr; text-align:left; }}
+      .cell.editable {{ outline: none; border-radius: 10px; }}
+      .cell.editable:focus {{ background: rgba(255,255,255,.10); box-shadow: 0 0 0 2px rgba(26,188,156,.55); }}
+      .bar {{ margin:10px 0; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }}
+      .bar input {{ padding:10px 12px; border:1px solid rgba(255,255,255,.18); border-radius:12px; background: rgba(0,0,0,.18); color: rgba(255,255,255,.92); }}
+      .bar input::placeholder {{ color: rgba(255,255,255,.62); }}
+      .hint {{ opacity:.86; font-size:13px; line-height:1.8; margin:6px 0 0; }}
+      .btn2 {{ padding:10px 14px; border-radius:14px; color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.16); font-weight:900; cursor:pointer; box-shadow: 0 14px 28px rgba(0,0,0,.22); }}
+      .btn2.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
+      .btn2.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
+      .btn2.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
+    </style>
+
+    <div class="bar">
+      <input id="search" placeholder="חיפוש" />
+      <span id="status" style="opacity:.86;">טוען...</span>
+      <span class="hint">מוסד פעיל: <b>{html.escape(str(tenant_id or ''))}</b></span>
+    </div>
+
+    <div class="bar">
+      <a class="btn2 blue" id="btnEditPoints" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך נקודות</a>
+      <a class="btn2 orange" id="btnQuickDelta" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">⚡ עדכון מהיר</a>
+      <a class="btn2 blue" id="btnEditMsg" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך הודעה</a>
+      <a class="btn2 blue" id="btnEditStudent" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך תלמיד</a>
+      <span id="selected" style="opacity:.86;">לא נבחר תלמיד</span>
+    </div>
+
+    <div style="overflow:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>מס'</th>
+            <th>תמונה</th>
+            <th>משפחה</th>
+            <th>פרטי</th>
+            <th>כיתה</th>
+            <th>נקודות</th>
+            <th>הודעה פרטית</th>
+            <th>כרטיס</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
     """
+    return HTMLResponse(_basic_web_shell("תלמידים", body + js, request=request))
 
 
 @app.get('/web/spaces-test', response_class=HTMLResponse)
