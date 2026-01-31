@@ -1945,6 +1945,23 @@ class StudentQuickUpdatePayload(BaseModel):
     student_ids: List[int] | None = None
 
 
+class StudentSavePayload(BaseModel):
+    student_id: int | None = None
+    last_name: str | None = None
+    first_name: str | None = None
+    id_number: str | None = None
+    class_name: str | None = None
+    card_number: str | None = None
+    photo_number: str | None = None
+    serial_number: str | None = None
+    points: int | None = None
+    private_message: str | None = None
+
+
+class StudentDeletePayload(BaseModel):
+    student_id: int
+
+
 class TeacherSavePayload(BaseModel):
     teacher_id: int | None = None
     name: str | None = None
@@ -1960,6 +1977,11 @@ class TeacherSavePayload(BaseModel):
 
 class TeacherDeletePayload(BaseModel):
     teacher_id: int
+
+
+class TeacherClassesPayload(BaseModel):
+    teacher_id: int
+    classes: List[str] = []
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -1995,6 +2017,64 @@ def _web_current_teacher(request: Request) -> Dict[str, Any] | None:
         if not row:
             return None
         return dict(row)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _web_current_teacher_permissions(request: Request) -> Dict[str, Any]:
+    tenant_id = _web_tenant_from_cookie(request)
+    teacher_id = _web_teacher_from_cookie(request)
+    if not tenant_id or not teacher_id:
+        return {
+            'id': 0,
+            'name': '',
+            'is_admin': 0,
+            'can_edit_student_card': 0,
+            'can_edit_student_photo': 0,
+        }
+    try:
+        tid = int(str(teacher_id).strip() or '0')
+    except Exception:
+        tid = 0
+    if tid <= 0:
+        return {
+            'id': 0,
+            'name': '',
+            'is_admin': 0,
+            'can_edit_student_card': 0,
+            'can_edit_student_photo': 0,
+        }
+
+    conn = _tenant_school_db(str(tenant_id))
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                'SELECT id, name, is_admin, can_edit_student_card, can_edit_student_photo '
+                'FROM teachers WHERE id = ? LIMIT 1'
+            ),
+            (int(tid),)
+        )
+        row = cur.fetchone()
+        if not row:
+            return {
+                'id': 0,
+                'name': '',
+                'is_admin': 0,
+                'can_edit_student_card': 0,
+                'can_edit_student_photo': 0,
+            }
+        r = dict(row) if isinstance(row, dict) else {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
+        return {
+            'id': _safe_int(r.get('id'), 0),
+            'name': _safe_str(r.get('name') or ''),
+            'is_admin': _safe_int(r.get('is_admin'), 0),
+            'can_edit_student_card': _safe_int(r.get('can_edit_student_card'), 0),
+            'can_edit_student_photo': _safe_int(r.get('can_edit_student_photo'), 0),
+        }
     finally:
         try:
             conn.close()
@@ -3150,8 +3230,30 @@ def web_teachers(request: Request):
         const btnNew = document.getElementById('t_new');
         const btnEdit = document.getElementById('t_edit');
         const btnDelete = document.getElementById('t_delete');
+        const modal = document.getElementById('t_modal');
+        const modalTitle = document.getElementById('t_modal_title');
+        const mId = document.getElementById('m_teacher_id');
+        const mName = document.getElementById('m_name');
+        const mCard1 = document.getElementById('m_card1');
+        const mCard2 = document.getElementById('m_card2');
+        const mCard3 = document.getElementById('m_card3');
+        const mIsAdmin = document.getElementById('m_is_admin');
+        const mCanEditCard = document.getElementById('m_can_edit_student_card');
+        const mCanEditPhoto = document.getElementById('m_can_edit_student_photo');
+        const mMaxPoints = document.getElementById('m_bonus_max_points_per_student');
+        const mMaxRuns = document.getElementById('m_bonus_max_total_runs');
+        const classesBox = document.getElementById('m_classes_box');
+        const btnSave = document.getElementById('m_save');
+        const btnCancel = document.getElementById('m_cancel');
+        const btnSelectAll = document.getElementById('m_select_all');
+        const btnClearAll = document.getElementById('m_clear_all');
+
         let selectedId = null;
         let timer = null;
+
+        function esc(s) {
+          return String(s ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+        }
 
         function setSelected(id) {
           selectedId = id;
@@ -3166,6 +3268,59 @@ def web_teachers(request: Request):
           });
         }
 
+        function openModal() {
+          modal.style.display = 'flex';
+        }
+
+        function closeModal() {
+          modal.style.display = 'none';
+        }
+
+        function setAdminMode(isAdmin) {
+          const on = !!isAdmin;
+          classesBox.style.opacity = on ? '.55' : '1';
+          classesBox.style.pointerEvents = on ? 'none' : 'auto';
+        }
+
+        async function loadAllClasses() {
+          try {
+            const resp = await fetch('/api/classes');
+            const data = await resp.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            return items.map(x => String(x)).filter(x => x.trim()).sort();
+          } catch (e) {
+            return [];
+          }
+        }
+
+        function renderClasses(allClasses, selected) {
+          const sel = new Set((selected || []).map(x => String(x)));
+          if (!allClasses || allClasses.length === 0) {
+            classesBox.innerHTML = '<div style="opacity:.86;">אין כיתות במערכת</div>';
+            return;
+          }
+          classesBox.innerHTML = allClasses.map(cls => {
+            const checked = sel.has(String(cls)) ? 'checked' : '';
+            return `<label class="ck"><input type="checkbox" value="${esc(cls)}" ${checked}/> ${esc(cls)}</label>`;
+          }).join('');
+        }
+
+        function getSelectedClassesFromUI() {
+          const out = [];
+          classesBox.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+            if (cb.checked) out.push(String(cb.value));
+          });
+          return out;
+        }
+
+        function normalizeIntOrNull(v) {
+          const s = String(v ?? '').trim();
+          if (!s) return null;
+          const n = parseInt(s, 10);
+          if (Number.isNaN(n) || n <= 0) return null;
+          return n;
+        }
+
         async function load() {
           statusEl.textContent = 'טוען...';
           const q = encodeURIComponent(searchEl.value || '');
@@ -3173,12 +3328,14 @@ def web_teachers(request: Request):
           const data = await resp.json();
           rowsEl.innerHTML = data.items.map(r => `
             <tr data-id="${r.id}">
-              <td class="cell">${r.id ?? ''}</td>
-              <td class="cell">${r.name ?? ''}</td>
-              <td class="cell ltr">${r.card_number ?? ''}</td>
-              <td class="cell ltr">${r.card_number2 ?? ''}</td>
-              <td class="cell ltr">${r.card_number3 ?? ''}</td>
-              <td class="cell">${(r.is_admin ? 'כן' : '')}</td>
+              <td class="cell">${esc(r.name)}</td>
+              <td class="cell ltr">${esc(r.masked_card)}</td>
+              <td class="cell">${esc(r.role)}</td>
+              <td class="cell">${esc(r.classes_str)}</td>
+              <td class="cell">${esc(r.bonus_max_points_per_student ?? '')}</td>
+              <td class="cell">${esc(r.bonus_max_total_runs ?? '')}</td>
+              <td class="cell">${esc(r.bonus_runs_used_today_str ?? '')}</td>
+              <td class="cell">${esc(r.bonus_points_today ?? '')}</td>
             </tr>`).join('');
           statusEl.textContent = `נטענו ${data.items.length} מורים`;
           document.querySelectorAll('tr[data-id]').forEach(tr => {
@@ -3198,9 +3355,23 @@ def web_teachers(request: Request):
           if (!resp.ok) {
             const txt = await resp.text();
             alert('שגיאה: ' + txt);
-            return;
+            return null;
           }
-          await load();
+          return await resp.json();
+        }
+
+        async function saveClasses(teacherId, classes) {
+          const resp = await fetch('/api/teacher-classes/set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ teacher_id: parseInt(String(teacherId), 10), classes: classes })
+          });
+          if (!resp.ok) {
+            const txt = await resp.text();
+            alert('שגיאה בשמירת כיתות: ' + txt);
+            return false;
+          }
+          return true;
         }
 
         async function del(teacher_id) {
@@ -3218,33 +3389,108 @@ def web_teachers(request: Request):
           await load();
         }
 
-        btnNew.addEventListener('click', async () => {
-          const name = prompt('שם מורה:');
-          if (name === null) return;
-          const code = prompt('כרטיס/קוד מורה (ראשי):');
-          if (code === null) return;
-          const isAdmin = confirm('להגדיר כמנהל?') ? 1 : 0;
-          await save({ name: String(name), card_number: String(code), is_admin: isAdmin });
-        });
+        async function openAdd() {
+          modalTitle.textContent = 'הוספת מורה';
+          mId.value = '';
+          mName.value = '';
+          mCard1.value = '';
+          mCard2.value = '';
+          mCard3.value = '';
+          mIsAdmin.checked = false;
+          mCanEditCard.checked = true;
+          mCanEditPhoto.checked = true;
+          mMaxPoints.value = '';
+          mMaxRuns.value = '';
+          const allClasses = await loadAllClasses();
+          renderClasses(allClasses, []);
+          setAdminMode(false);
+          openModal();
+          try { mName.focus(); } catch(e) {}
+        }
 
-        btnEdit.addEventListener('click', async () => {
+        async function openEdit() {
           if (!selectedId) return;
-          const name = prompt('שם מורה (השאר ריק כדי לא לשנות):');
-          if (name === null) return;
-          const code1 = prompt('כרטיס/קוד 1 (השאר ריק כדי לא לשנות):');
-          if (code1 === null) return;
-          const code2 = prompt('כרטיס/קוד 2 (ריק כדי לא לשנות):');
-          if (code2 === null) return;
-          const code3 = prompt('כרטיס/קוד 3 (ריק כדי לא לשנות):');
-          if (code3 === null) return;
-          const isAdmin = confirm('להגדיר כמנהל?') ? 1 : 0;
-          await save({ teacher_id: parseInt(selectedId, 10), name: String(name), card_number: String(code1), card_number2: String(code2), card_number3: String(code3), is_admin: isAdmin });
-        });
+          modalTitle.textContent = 'עריכת מורה';
+          const resp = await fetch(`/api/teachers/${encodeURIComponent(String(selectedId))}`);
+          if (!resp.ok) {
+            const txt = await resp.text();
+            alert('שגיאה בטעינת מורה: ' + txt);
+            return;
+          }
+          const t = await resp.json();
+          mId.value = String(t.id ?? selectedId);
+          mName.value = String(t.name ?? '');
+          mCard1.value = String(t.card_number ?? '');
+          mCard2.value = String(t.card_number2 ?? '');
+          mCard3.value = String(t.card_number3 ?? '');
+          mIsAdmin.checked = (parseInt(String(t.is_admin ?? 0), 10) === 1);
+          mCanEditCard.checked = (parseInt(String(t.can_edit_student_card ?? 1), 10) === 1);
+          mCanEditPhoto.checked = (parseInt(String(t.can_edit_student_photo ?? 1), 10) === 1);
+          mMaxPoints.value = (t.bonus_max_points_per_student ?? '') === null ? '' : String(t.bonus_max_points_per_student ?? '');
+          mMaxRuns.value = (t.bonus_max_total_runs ?? '') === null ? '' : String(t.bonus_max_total_runs ?? '');
+          const allClasses = await loadAllClasses();
+          renderClasses(allClasses, Array.isArray(t.classes) ? t.classes : []);
+          setAdminMode(mIsAdmin.checked);
+          openModal();
+        }
+
+        async function submitModal() {
+          const name = String(mName.value || '').trim();
+          const card1 = String(mCard1.value || '').trim();
+          const card2 = String(mCard2.value || '').trim();
+          const card3 = String(mCard3.value || '').trim();
+          if (!name) { alert('יש להזין שם מורה'); return; }
+          if (!(card1 || card2 || card3)) { alert('יש להזין לפחות מספר כרטיס אחד'); return; }
+          const isAdmin = mIsAdmin.checked ? 1 : 0;
+
+          const payload = {
+            teacher_id: mId.value ? parseInt(String(mId.value), 10) : null,
+            name: name,
+            card_number: card1,
+            card_number2: card2,
+            card_number3: card3,
+            is_admin: isAdmin,
+            can_edit_student_card: (mCanEditCard.checked ? 1 : 0),
+            can_edit_student_photo: (mCanEditPhoto.checked ? 1 : 0),
+            bonus_max_points_per_student: normalizeIntOrNull(mMaxPoints.value),
+            bonus_max_total_runs: normalizeIntOrNull(mMaxRuns.value)
+          };
+
+          btnSave.disabled = true;
+          try {
+            const res = await save(payload);
+            if (!res || !res.ok) return;
+            const teacherId = res.teacher_id || payload.teacher_id;
+            const classes = isAdmin ? [] : getSelectedClassesFromUI();
+            await saveClasses(teacherId, classes);
+            closeModal();
+            selectedId = null;
+            await load();
+          } finally {
+            btnSave.disabled = false;
+          }
+        }
+
+        btnNew.addEventListener('click', openAdd);
+        btnEdit.addEventListener('click', openEdit);
 
         btnDelete.addEventListener('click', async () => {
           if (!selectedId) return;
           if (!confirm('למחוק מורה?')) return;
           await del(parseInt(selectedId, 10));
+        });
+
+        btnSave.addEventListener('click', submitModal);
+        btnCancel.addEventListener('click', closeModal);
+        modal.addEventListener('click', (ev) => {
+          if (ev.target === modal) closeModal();
+        });
+        mIsAdmin.addEventListener('change', () => setAdminMode(mIsAdmin.checked));
+        btnSelectAll.addEventListener('click', () => {
+          classesBox.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
+        });
+        btnClearAll.addEventListener('click', () => {
+          classesBox.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
         });
 
         searchEl.addEventListener('input', () => {
@@ -3287,6 +3533,16 @@ def web_teachers(request: Request):
       .btn-green { background: linear-gradient(135deg, #2ecc71, #1abc9c); }
       .btn-blue { background: linear-gradient(135deg, #3498db, #2f80ed); }
       .btn-red { background: linear-gradient(135deg, #e74c3c, #c0392b); }
+      .modal-backdrop { display:none; position:fixed; inset:0; background: rgba(0,0,0,.55); z-index: 50; align-items:center; justify-content:center; padding: 16px; }
+      .modal { width: min(860px, 96vw); background: linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.10)); border:1px solid rgba(255,255,255,.18); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.35); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); padding: 16px; }
+      .modal h3 { margin: 0 0 10px; font-size: 18px; font-weight: 950; }
+      .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+      .grid label { font-weight: 900; font-size: 13px; opacity:.92; display:block; margin-bottom:6px; }
+      .grid input[type="text"], .grid input[type="password"], .grid input[type="number"] { width:100%; padding:10px 12px; border:1px solid rgba(255,255,255,.18); border-radius:12px; background: rgba(0,0,0,.18); color: rgba(255,255,255,.92); }
+      .grid input::placeholder { color: rgba(255,255,255,.62); }
+      .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top: 10px; }
+      .ck { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius: 999px; border:1px solid rgba(255,255,255,.16); background: rgba(0,0,0,.14); font-weight: 800; }
+      .classes { max-height: 220px; overflow:auto; padding: 10px; border-radius: 14px; border: 1px solid rgba(255,255,255,.16); background: rgba(0,0,0,.12); display:flex; flex-wrap:wrap; gap:8px; }
     </style>
     <div class="bar">
       <input id="t_search" placeholder="חיפוש" />
@@ -3302,16 +3558,77 @@ def web_teachers(request: Request):
       <table>
         <thead>
           <tr>
-            <th>ID</th>
             <th>שם</th>
-            <th>כרטיס 1</th>
-            <th>כרטיס 2</th>
-            <th>כרטיס 3</th>
-            <th>מנהל</th>
+            <th>מס׳ כרטיס / סיסמה</th>
+            <th>תפקיד</th>
+            <th>כיתות</th>
+            <th>מקס׳ נק׳<br/>בונוס לתלמיד</th>
+            <th>מקס׳ הפעלות<br/>בונוס ליום</th>
+            <th>הפעלות<br/>בונוס היום</th>
+            <th>סה"כ נק׳<br/>שהמורה חילק היום</th>
           </tr>
         </thead>
         <tbody id="t_rows"></tbody>
       </table>
+    </div>
+
+    <div id="t_modal" class="modal-backdrop">
+      <div class="modal">
+        <h3 id="t_modal_title">עריכת מורה</h3>
+        <input id="m_teacher_id" type="hidden" />
+        <div class="grid">
+          <div>
+            <label>שם המורה</label>
+            <input id="m_name" type="text" placeholder="שם" />
+          </div>
+          <div>
+            <label>מנהל</label>
+            <label class="ck"><input id="m_is_admin" type="checkbox" /> מנהל (הרשאות מלאות)</label>
+          </div>
+
+          <div>
+            <label>מספר כרטיס 1</label>
+            <input id="m_card1" type="password" placeholder="••••••" />
+          </div>
+          <div>
+            <label>מספר כרטיס 2</label>
+            <input id="m_card2" type="password" placeholder="••••••" />
+          </div>
+          <div>
+            <label>מספר כרטיס 3</label>
+            <input id="m_card3" type="password" placeholder="••••••" />
+          </div>
+          <div>
+            <label>הרשאות מורה</label>
+            <div class="row">
+              <label class="ck"><input id="m_can_edit_student_card" type="checkbox" checked /> מורה יכול לשנות מס' כרטיס לתלמיד</label>
+              <label class="ck"><input id="m_can_edit_student_photo" type="checkbox" checked /> מורה יכול לשנות תמונת תלמיד</label>
+            </div>
+          </div>
+          <div>
+            <label>מקסימום נקודות לבונוס מורה (לכל תלמיד)</label>
+            <input id="m_bonus_max_points_per_student" type="number" min="1" placeholder="ריק = ללא הגבלה" />
+          </div>
+          <div>
+            <label>מקסימום הפעלות בונוס ליום</label>
+            <input id="m_bonus_max_total_runs" type="number" min="1" placeholder="ריק = ללא הגבלה" />
+          </div>
+        </div>
+
+        <div style="margin-top:12px;">
+          <div style="font-weight:950; margin-bottom:8px;">כיתות</div>
+          <div class="row" style="margin-top:0;">
+            <button id="m_select_all" class="btn btn-blue" type="button">בחר הכל</button>
+            <button id="m_clear_all" class="btn btn-red" type="button">נקה הכל</button>
+          </div>
+          <div id="m_classes_box" class="classes" style="margin-top:10px;"></div>
+        </div>
+
+        <div class="row" style="justify-content:flex-end; margin-top:14px;">
+          <button id="m_cancel" class="btn btn-red" type="button">ביטול</button>
+          <button id="m_save" class="btn btn-green" type="button">שמירה</button>
+        </div>
+      </div>
     </div>
     """
     return HTMLResponse(_basic_web_shell("ניהול מורים", body + js, request=request))
@@ -3329,22 +3646,162 @@ def api_teachers(
         return {"items": [], "limit": limit, "offset": offset, "query": q}
     tenant_id = _web_tenant_from_cookie(request)
     conn = _tenant_school_db(tenant_id)
-    cur = conn.cursor()
-    query = """
-        SELECT id, name, card_number, card_number2, card_number3, is_admin
-        FROM teachers
-    """
-    params: List[Any] = []
-    if q:
-        like = f"%{q.strip()}%"
-        query += " WHERE name LIKE ? OR card_number LIKE ? OR card_number2 LIKE ? OR card_number3 LIKE ?"
-        params.extend([like, like, like, like])
-    query += " ORDER BY id ASC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
-    cur.execute(_sql_placeholder(query), params)
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return {"items": rows, "limit": limit, "offset": offset, "query": q}
+    try:
+        cur = conn.cursor()
+        query = """
+            SELECT
+              id, name, card_number, card_number2, card_number3, is_admin,
+              can_edit_student_card, can_edit_student_photo,
+              bonus_max_points_per_student, bonus_max_total_runs,
+              bonus_runs_used, bonus_runs_reset_date,
+              bonus_points_used, bonus_points_reset_date
+            FROM teachers
+        """
+        params: List[Any] = []
+        if q:
+            like = f"%{q.strip()}%"
+            query += " WHERE name LIKE ? OR card_number LIKE ? OR card_number2 LIKE ? OR card_number3 LIKE ?"
+            params.extend([like, like, like, like])
+        query += " ORDER BY name ASC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cur.execute(_sql_placeholder(query), params)
+        rows = [dict(r) for r in (cur.fetchall() or [])]
+
+        today_iso = datetime.date.today().isoformat()
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            rid = _safe_int(r.get('id'), 0)
+            name = str(r.get('name') or '').strip()
+            is_admin = bool(_safe_int(r.get('is_admin'), 0) == 1)
+
+            c1 = str(r.get('card_number') or '').strip()
+            c2 = str(r.get('card_number2') or '').strip()
+            c3 = str(r.get('card_number3') or '').strip()
+            has_any_card = bool(c1 or c2 or c3)
+            masked_card = '••••••' if has_any_card else '(ללא כרטיס)'
+
+            max_points = r.get('bonus_max_points_per_student')
+            max_runs = r.get('bonus_max_total_runs')
+
+            runs_used = _safe_int(r.get('bonus_runs_used'), 0)
+            runs_reset = str(r.get('bonus_runs_reset_date') or '').strip()
+            if runs_reset:
+                runs_reset = runs_reset[:10]
+            if not runs_reset or runs_reset != today_iso:
+                runs_used = 0
+
+            points_used = _safe_int(r.get('bonus_points_used'), 0)
+            points_reset = str(r.get('bonus_points_reset_date') or '').strip()
+            if points_reset:
+                points_reset = points_reset[:10]
+            if not points_reset or points_reset != today_iso:
+                points_used = 0
+
+            max_runs_i = None
+            try:
+                if max_runs is not None and str(max_runs).strip() != '':
+                    max_runs_i = int(max_runs)
+            except Exception:
+                max_runs_i = None
+
+            if max_runs_i is not None and max_runs_i > 0:
+                runs_used_str = f"{int(runs_used)}/{int(max_runs_i)}"
+            else:
+                runs_used_str = str(int(runs_used))
+
+            try:
+                classes = _web_teacher_allowed_classes(tenant_id, rid)
+            except Exception:
+                classes = []
+            classes_str = ', '.join(classes) if classes else '(אין כיתות)'
+
+            out.append({
+                'id': rid,
+                'name': name,
+                'masked_card': masked_card,
+                'role': ('מנהל' if is_admin else 'מורה'),
+                'classes': classes,
+                'classes_str': classes_str,
+                'bonus_max_points_per_student': max_points,
+                'bonus_max_total_runs': max_runs,
+                'bonus_runs_used_today': int(runs_used),
+                'bonus_runs_used_today_str': runs_used_str,
+                'bonus_points_today': int(points_used),
+                'can_edit_student_card': _safe_int(r.get('can_edit_student_card'), 1),
+                'can_edit_student_photo': _safe_int(r.get('can_edit_student_photo'), 1),
+            })
+
+        return {"items": out, "limit": limit, "offset": offset, "query": q}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get('/api/teachers/{teacher_id}')
+def api_teacher_get(request: Request, teacher_id: int) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                'SELECT id, name, card_number, card_number2, card_number3, is_admin, '
+                'can_edit_student_card, can_edit_student_photo, '
+                'bonus_max_points_per_student, bonus_max_total_runs '
+                'FROM teachers WHERE id = ? LIMIT 1'
+            ),
+            (int(teacher_id),)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='not found')
+        r = dict(row) if isinstance(row, dict) else {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
+        try:
+            classes = _web_teacher_allowed_classes(tenant_id, int(teacher_id))
+        except Exception:
+            classes = []
+        r['classes'] = classes
+        return r
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.post('/api/teacher-classes/set')
+def api_teacher_classes_set(request: Request, payload: TeacherClassesPayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    tid = int(payload.teacher_id or 0)
+    if tid <= 0:
+        raise HTTPException(status_code=400, detail='invalid teacher_id')
+    classes = [str(c).strip() for c in (payload.classes or []) if str(c).strip()]
+    classes = sorted(set(classes))
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM teacher_classes WHERE teacher_id = ?'), (int(tid),))
+        for cn in classes:
+            cur.execute(
+                _sql_placeholder('INSERT INTO teacher_classes (teacher_id, class_name) VALUES (?, ?)'),
+                (int(tid), str(cn))
+            )
+        conn.commit()
+        return {'ok': True, 'teacher_id': int(tid), 'classes': classes}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.post("/api/teachers/save")
@@ -3366,7 +3823,11 @@ def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str
             tid = max_id + 1
             cur.execute(
                 _sql_placeholder(
-                    'INSERT INTO teachers (id, name, card_number, card_number2, card_number3, is_admin) VALUES (?, ?, ?, ?, ?, ?)'
+                    'INSERT INTO teachers '
+                    '(id, name, card_number, card_number2, card_number3, is_admin, '
+                    'can_edit_student_card, can_edit_student_photo, '
+                    'bonus_max_points_per_student, bonus_max_total_runs) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                 ),
                 (
                     int(tid),
@@ -3375,6 +3836,10 @@ def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str
                     str(payload.card_number2 or '').strip(),
                     str(payload.card_number3 or '').strip(),
                     int(payload.is_admin or 0),
+                    int(1 if _safe_int(payload.can_edit_student_card, 1) == 1 else 0),
+                    int(1 if _safe_int(payload.can_edit_student_photo, 1) == 1 else 0),
+                    (int(payload.bonus_max_points_per_student) if payload.bonus_max_points_per_student is not None else None),
+                    (int(payload.bonus_max_total_runs) if payload.bonus_max_total_runs is not None else None),
                 )
             )
             conn.commit()
@@ -3397,6 +3862,18 @@ def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str
         if payload.is_admin is not None:
             sets.append('is_admin = ?')
             params.append(int(payload.is_admin))
+        if payload.can_edit_student_card is not None:
+            sets.append('can_edit_student_card = ?')
+            params.append(int(1 if _safe_int(payload.can_edit_student_card, 1) == 1 else 0))
+        if payload.can_edit_student_photo is not None:
+            sets.append('can_edit_student_photo = ?')
+            params.append(int(1 if _safe_int(payload.can_edit_student_photo, 1) == 1 else 0))
+        if payload.bonus_max_points_per_student is not None:
+            sets.append('bonus_max_points_per_student = ?')
+            params.append(int(payload.bonus_max_points_per_student))
+        if payload.bonus_max_total_runs is not None:
+            sets.append('bonus_max_total_runs = ?')
+            params.append(int(payload.bonus_max_total_runs))
         if not sets:
             return {'ok': True, 'updated': False, 'teacher_id': int(tid)}
         sets.append('updated_at = CURRENT_TIMESTAMP')
@@ -4570,12 +5047,148 @@ def api_students_quick_update(request: Request, payload: StudentQuickUpdatePaylo
             pass
 
 
+@app.post('/api/students/save')
+def api_students_save(request: Request, payload: StudentSavePayload) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='missing tenant')
+
+    teacher = _web_current_teacher_permissions(request)
+    teacher_id = _safe_int(teacher.get('id'), 0)
+    if teacher_id <= 0:
+        raise HTTPException(status_code=401, detail='missing teacher')
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
+    can_edit_photo = bool(_safe_int(teacher.get('can_edit_student_photo'), 0) == 1)
+
+    allowed_classes: List[str] | None = None
+    if not is_admin:
+        allowed_classes = _web_teacher_allowed_classes(str(tenant_id), int(teacher_id))
+        allowed_classes = [str(c).strip() for c in (allowed_classes or []) if str(c).strip()]
+
+    sid = int(payload.student_id or 0)
+    last_name = _safe_str(payload.last_name or '').strip()
+    first_name = _safe_str(payload.first_name or '').strip()
+    id_number = _safe_str(payload.id_number or '').strip()
+    class_name = _safe_str(payload.class_name or '').strip()
+    serial_number = _safe_str(payload.serial_number or '').strip()
+    card_number = _safe_str(payload.card_number or '').strip()
+    photo_number = _safe_str(payload.photo_number or '').strip()
+    private_message = _safe_str(payload.private_message or '')
+    points = payload.points
+
+    if not last_name or not first_name:
+        raise HTTPException(status_code=400, detail='missing name')
+    if points is not None:
+        try:
+            points = int(points)
+        except Exception:
+            raise HTTPException(status_code=400, detail='invalid points')
+
+    if allowed_classes is not None:
+        if not allowed_classes:
+            raise HTTPException(status_code=403, detail='not allowed')
+        if class_name and class_name not in set(allowed_classes):
+            raise HTTPException(status_code=403, detail='not allowed')
+
+    conn = _tenant_school_db(str(tenant_id))
+    try:
+        cur = conn.cursor()
+        if sid > 0:
+            cur.execute(_sql_placeholder('SELECT class_name, card_number, photo_number FROM students WHERE id = ? LIMIT 1'), (int(sid),))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail='student not found')
+            current_class = _safe_str((row.get('class_name') if isinstance(row, dict) else row['class_name']) or '').strip()
+            if allowed_classes is not None and current_class and current_class not in set(allowed_classes):
+                raise HTTPException(status_code=403, detail='not allowed')
+
+            sets: List[str] = ['last_name = ?', 'first_name = ?', 'id_number = ?', 'class_name = ?', 'serial_number = ?', 'private_message = ?']
+            params: List[Any] = [last_name, first_name, id_number, class_name, serial_number, private_message]
+            if points is not None:
+                sets.append('points = ?')
+                params.append(int(points))
+            if can_edit_card:
+                sets.append('card_number = ?')
+                params.append(card_number)
+            if can_edit_photo:
+                sets.append('photo_number = ?')
+                params.append(photo_number)
+            sets.append('updated_at = CURRENT_TIMESTAMP')
+            sql = 'UPDATE students SET ' + ', '.join(sets) + ' WHERE id = ?'
+            params.append(int(sid))
+            cur.execute(_sql_placeholder(sql), params)
+            conn.commit()
+            return {'ok': True, 'student_id': int(sid), 'created': False}
+
+        if not can_edit_card:
+            card_number = ''
+        if not can_edit_photo:
+            photo_number = ''
+        pts = int(points) if points is not None else 0
+        cur.execute(
+            _sql_placeholder(
+                'INSERT INTO students (serial_number, last_name, first_name, class_name, points, private_message, card_number, id_number, photo_number) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            ),
+            (serial_number, last_name, first_name, class_name, int(pts), private_message, card_number, id_number, photo_number)
+        )
+        new_id = int(cur.lastrowid or 0)
+        conn.commit()
+        return {'ok': True, 'student_id': int(new_id), 'created': True}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.post('/api/students/delete')
+def api_students_delete(request: Request, payload: StudentDeletePayload) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail='missing tenant')
+
+    teacher = _web_current_teacher_permissions(request)
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    if not is_admin:
+        raise HTTPException(status_code=403, detail='admin only')
+
+    sid = int(payload.student_id or 0)
+    if sid <= 0:
+        raise HTTPException(status_code=400, detail='invalid student_id')
+
+    conn = _tenant_school_db(str(tenant_id))
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM points_history WHERE student_id = ?'), (int(sid),))
+        try:
+            cur.execute(_sql_placeholder('DELETE FROM points_log WHERE student_id = ?'), (int(sid),))
+        except Exception:
+            pass
+        cur.execute(_sql_placeholder('DELETE FROM students WHERE id = ?'), (int(sid),))
+        conn.commit()
+        return {'ok': True}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.get("/web/admin", response_class=HTMLResponse)
 def web_admin(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
+    return RedirectResponse(url='/web/students', status_code=302)
     tenant_json = json.dumps(str(tenant_id or ''))
     js = """
       <script>
@@ -4802,6 +5415,316 @@ def web_admin(request: Request):
     </div>
     """
     return HTMLResponse(_basic_web_shell("תלמידים", body + js, request=request))
+
+
+@app.get("/web/students", response_class=HTMLResponse)
+def web_students(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+
+    teacher = _web_current_teacher_permissions(request)
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
+
+    body = f"""
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+      <input id="q" placeholder="חיפוש" style="padding:10px 12px; border:1px solid var(--line); border-radius:10px; min-width:220px;" />
+      <span id="st" style="opacity:.85;">טוען...</span>
+      <a class="gray" href="/web/logout" style="margin-right:auto;">יציאה</a>
+    </div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+      <a id="btnNew" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">➕ הוסף תלמיד</a>
+      <a id="btnEdit" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">✏️ ערוך</a>
+      <a id="btnDelete" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">🗑️ מחיקה</a>
+      <a id="btnQuick" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">⚡ עדכון מהיר</a>
+      <span id="sel" style="opacity:.86;">לא נבחר תלמיד</span>
+    </div>
+    <div style="overflow:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">בחר</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">מס'</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">משפחה</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">פרטי</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">כיתה</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">נקודות</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">כרטיס</th>
+          </tr>
+        </thead>
+        <tbody id=\"rows\"></tbody>
+      </table>
+    </div>
+
+    <div id="q_modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); align-items:center; justify-content:center; z-index:50;">
+      <div style="width:min(820px, calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow:auto; background:rgba(20,30,40,.92); border:1px solid rgba(255,255,255,.16); border-radius:16px; padding:14px; color:rgba(255,255,255,.92);">
+        <div style="font-weight:950; font-size:18px; margin-bottom:10px;">עדכון מהיר</div>
+        <div id="q_body"></div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-start; margin-top:12px;">
+          <a id="q_run" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">בצע</a>
+          <a id="q_cancel" class="gray" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">ביטול</a>
+        </div>
+      </div>
+    </div>
+    <script>
+      const qEl = document.getElementById('q');
+      const stEl = document.getElementById('st');
+      const rowsEl = document.getElementById('rows');
+      const selEl = document.getElementById('sel');
+      const btnEdit = document.getElementById('btnEdit');
+      const btnDelete = document.getElementById('btnDelete');
+      const btnNew = document.getElementById('btnNew');
+      const btnQuick = document.getElementById('btnQuick');
+      const qModal = document.getElementById('q_modal');
+      const qBody = document.getElementById('q_body');
+      const qRun = document.getElementById('q_run');
+      const qCancel = document.getElementById('q_cancel');
+      const IS_ADMIN = {1 if is_admin else 0};
+      const CAN_EDIT_CARD = {1 if can_edit_card else 0};
+      let selectedId = null;
+      let timer = null;
+
+      function renderQuickForm() {
+        if (!qBody) return;
+        qBody.innerHTML = '' +
+          '<div style="display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
+            '<div style="font-weight:900;">פעולה</div>' +
+            '<select id="q_operation" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);">' +
+              '<option value="add">הוספה</option>' +
+              '<option value="subtract">חיסור</option>' +
+              '<option value="set">מוחלט</option>' +
+            '</select>' +
+            '<div style="font-weight:900;">נקודות</div>' +
+            '<input id="q_points" type="number" value="1" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);" />' +
+            '<div style="font-weight:900;">מצב</div>' +
+            '<select id="q_mode" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);">' +
+              '<option value="card">כרטיס</option>' +
+              '<option value="serial_range">טווח סידורי</option>' +
+              '<option value="class">כיתה</option>' +
+              '<option value="students">תלמידים שנבחרו</option>' +
+              ((IS_ADMIN === 1) ? '<option value="all_school">כל בית הספר (מנהל)</option>' : '') +
+            '</select>' +
+          '</div>' +
+          '<div id="q_row_card" style="margin-top:10px; display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
+            '<div style="font-weight:900;">כרטיס</div>' +
+            '<input id="q_card" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92); direction:ltr; text-align:left;" />' +
+          '</div>' +
+          '<div id="q_row_serial" style="margin-top:10px; display:none;">' +
+            '<div style="display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
+              '<div style="font-weight:900;">טווח</div>' +
+              '<div style="display:flex; gap:10px; flex-wrap:wrap;">' +
+                '<input id="q_serial_from" type="number" placeholder="מ-" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92); width:160px;" />' +
+                '<input id="q_serial_to" type="number" placeholder="עד" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92); width:160px;" />' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div id="q_row_class" style="margin-top:10px; display:none;">' +
+            '<div style="display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
+              '<div style="font-weight:900;">כיתות</div>' +
+              '<input id="q_class_names" placeholder="לדוגמה: ז1, ז2" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);" />' +
+            '</div>' +
+          '</div>' +
+          '<div id="q_row_students" style="margin-top:10px; display:none; opacity:.85;">המצב הזה משתמש בתיבות הסימון בטבלה.</div>' +
+          '<div id="q_row_all" style="margin-top:10px; display:none; opacity:.85;">מצב מנהל: כל תלמידי בית הספר.</div>';
+
+        const modeEl = document.getElementById('q_mode');
+        function syncMode() {
+          const m = String(modeEl ? modeEl.value : 'card');
+          const a = document.getElementById('q_row_card');
+          const b = document.getElementById('q_row_serial');
+          const c = document.getElementById('q_row_class');
+          const d = document.getElementById('q_row_students');
+          const e = document.getElementById('q_row_all');
+          if (a) a.style.display = (m === 'card') ? 'grid' : 'none';
+          if (b) b.style.display = (m === 'serial_range') ? 'block' : 'none';
+          if (c) c.style.display = (m === 'class') ? 'block' : 'none';
+          if (d) d.style.display = (m === 'students') ? 'block' : 'none';
+          if (e) e.style.display = (m === 'all_school') ? 'block' : 'none';
+        }
+        if (modeEl) modeEl.addEventListener('change', syncMode);
+        syncMode();
+      }
+
+      function openQuickModal() {
+        if (!qModal) return;
+        renderQuickForm();
+        qModal.style.display = 'flex';
+      }
+
+      function closeQuickModal() {
+        if (!qModal) return;
+        qModal.style.display = 'none';
+      }
+
+      function getSelectedStudentIds() {
+        const ids = [];
+        try {
+          document.querySelectorAll('input.pick[type=checkbox]:checked').forEach(cb => {
+            const sid = parseInt(String(cb.getAttribute('data-id') || '0'), 10);
+            if (!Number.isNaN(sid) && sid > 0) ids.push(sid);
+          });
+        } catch (e) {
+          return [];
+        }
+        return ids;
+      }
+
+      function setSelected(id) {
+        selectedId = id;
+        const on = (selectedId !== null);
+        btnEdit.style.opacity = on ? '1' : '.55';
+        btnEdit.style.pointerEvents = on ? 'auto' : 'none';
+        btnDelete.style.opacity = (on && IS_ADMIN) ? '1' : '.55';
+        btnDelete.style.pointerEvents = (on && IS_ADMIN) ? 'auto' : 'none';
+        selEl.textContent = on ? ('נבחר תלמיד ID ' + String(selectedId)) : 'לא נבחר תלמיד';
+        document.querySelectorAll('tr[data-id]').forEach(tr => {
+          tr.style.outline = (String(tr.getAttribute('data-id')) === String(selectedId)) ? '2px solid #1abc9c' : 'none';
+        });
+      }
+
+      async function load() {
+        stEl.textContent = 'טוען...';
+        const q = encodeURIComponent(qEl.value || '');
+        const resp = await fetch('/api/students?q=' + q);
+        const data = await resp.json();
+        const items = Array.isArray(data.items) ? data.items : [];
+        rowsEl.innerHTML = items.map(r => (
+          '<tr data-id="' + String(r.id ?? '') + '">' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line);">' +
+              '<input class="pick" type="checkbox" data-id="' + String(r.id ?? '') + '" />' +
+            '</td>' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.serial_number ?? '') + '</td>' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.last_name ?? '') + '</td>' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.first_name ?? '') + '</td>' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.class_name ?? '') + '</td>' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.points ?? '') + '</td>' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line); direction:ltr; text-align:left;">' + (CAN_EDIT_CARD ? (r.card_number ?? '') : '••••••') + '</td>' +
+          '</tr>'
+        )).join('');
+        stEl.textContent = 'נטענו ' + items.length + ' תלמידים';
+
+        document.querySelectorAll('tr[data-id]').forEach(tr => {
+          tr.addEventListener('click', () => setSelected(tr.getAttribute('data-id')));
+        });
+        if (selectedId) setSelected(selectedId);
+      }
+
+      btnEdit.style.opacity = '.55';
+      btnEdit.style.pointerEvents = 'none';
+      if (!IS_ADMIN) {
+        btnDelete.style.opacity = '.55';
+        btnDelete.style.pointerEvents = 'none';
+      }
+
+      btnNew.addEventListener('click', () => alert('שלב הבא: modal הוספה/עריכה'));
+      btnEdit.addEventListener('click', () => {
+        if (!selectedId) return;
+        alert('שלב הבא: modal עריכת תלמיד');
+      });
+      btnDelete.addEventListener('click', async () => {
+        if (!selectedId || !IS_ADMIN) return;
+        if (!confirm('למחוק תלמיד?')) return;
+        const resp = await fetch('/api/students/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ student_id: parseInt(String(selectedId), 10) })
+        });
+        if (!resp.ok) {
+          const txt = await resp.text();
+          alert('שגיאה: ' + txt);
+          return;
+        }
+        selectedId = null;
+        setSelected(null);
+        await load();
+      });
+      btnQuick.addEventListener('click', () => openQuickModal());
+      if (qCancel) qCancel.addEventListener('click', () => closeQuickModal());
+      if (qRun) qRun.addEventListener('click', async () => {
+        try {
+          const opEl = document.getElementById('q_operation');
+          const ptsEl = document.getElementById('q_points');
+          const modeEl = document.getElementById('q_mode');
+
+          const operation = String(opEl ? opEl.value : 'add');
+          const points = parseInt(String(ptsEl ? ptsEl.value : '0'), 10);
+          const mode = String(modeEl ? modeEl.value : 'card');
+          if (Number.isNaN(points)) { alert('נקודות לא תקין'); return; }
+
+          const payload = { operation: operation, points: points, mode: mode };
+
+          if (mode === 'card') {
+            const cardEl = document.getElementById('q_card');
+            const card = String(cardEl ? cardEl.value : '').trim();
+            if (!card) { alert('חסר כרטיס'); return; }
+            payload.card_number = card;
+          } else if (mode === 'serial_range') {
+            const fEl = document.getElementById('q_serial_from');
+            const tEl = document.getElementById('q_serial_to');
+            const sf = parseInt(String(fEl ? fEl.value : ''), 10);
+            const st = parseInt(String(tEl ? tEl.value : ''), 10);
+            if (Number.isNaN(sf) || Number.isNaN(st) || sf <= 0 || st <= 0) { alert('טווח לא תקין'); return; }
+            payload.serial_from = sf;
+            payload.serial_to = st;
+          } else if (mode === 'class') {
+            const clsEl = document.getElementById('q_class_names');
+            const raw = String(clsEl ? clsEl.value : '').trim();
+            const arr = raw.split(',').map(s => String(s || '').trim()).filter(Boolean);
+            if (!arr.length) { alert('חסר כיתה'); return; }
+            payload.class_names = arr;
+          } else if (mode === 'students') {
+            const ids = getSelectedStudentIds();
+            if (!ids.length) { alert('לא נבחרו תלמידים (תיבות סימון)'); return; }
+            payload.student_ids = ids;
+          } else if (mode === 'all_school') {
+            if (IS_ADMIN !== 1) { alert('מנהל בלבד'); return; }
+          } else {
+            alert('מצב לא מוכר');
+            return;
+          }
+
+          qRun.style.opacity = '.7';
+          qRun.style.pointerEvents = 'none';
+          const resp = await fetch('/api/students/quick-update', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          qRun.style.opacity = '1';
+          qRun.style.pointerEvents = 'auto';
+          if (!resp.ok) {
+            const txt = await resp.text();
+            alert('שגיאה: ' + txt);
+            return;
+          }
+          closeQuickModal();
+          await load();
+        } catch (e) {
+          try { qRun.style.opacity = '1'; qRun.style.pointerEvents = 'auto'; } catch (e2) {}
+          alert('שגיאה');
+        }
+      });
+      if (qModal) {
+        qModal.addEventListener('click', (ev) => {
+          if (ev.target === qModal) closeQuickModal();
+        });
+      }
+      document.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Escape') closeQuickModal();
+      });
+      qEl.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(load, 250);
+      });
+      load();
+    </script>
+    """
+    return HTMLResponse(_basic_web_shell("ניהול תלמידים", body, request=request))
 
 
 @app.get('/web/spaces-test', response_class=HTMLResponse)
