@@ -2054,10 +2054,11 @@ def _web_current_teacher_permissions(request: Request) -> Dict[str, Any]:
         try:
             if USE_POSTGRES:
                 cols = set([c.lower() for c in _table_columns_postgres(conn, 'teachers')])
+                cur = conn.cursor()
                 if 'can_edit_student_card' not in cols:
-                    conn.execute('ALTER TABLE teachers ADD COLUMN can_edit_student_card INTEGER DEFAULT 1')
+                    cur.execute('ALTER TABLE teachers ADD COLUMN can_edit_student_card INTEGER DEFAULT 1')
                 if 'can_edit_student_photo' not in cols:
-                    conn.execute('ALTER TABLE teachers ADD COLUMN can_edit_student_photo INTEGER DEFAULT 1')
+                    cur.execute('ALTER TABLE teachers ADD COLUMN can_edit_student_photo INTEGER DEFAULT 1')
                 conn.commit()
             else:
                 cols = set([c.lower() for c in _table_columns(conn, 'teachers')])
@@ -2067,12 +2068,23 @@ def _web_current_teacher_permissions(request: Request) -> Dict[str, Any]:
                     conn.execute('ALTER TABLE teachers ADD COLUMN can_edit_student_photo INTEGER DEFAULT 1')
                 conn.commit()
         except Exception:
-            pass
+            cols = set()
+        if not cols:
+            try:
+                cols = set([c.lower() for c in (_table_columns_postgres(conn, 'teachers') if USE_POSTGRES else _table_columns(conn, 'teachers'))])
+            except Exception:
+                cols = set()
+        select_fields = [
+            'id',
+            'name',
+            'is_admin',
+            'can_edit_student_card' if 'can_edit_student_card' in cols else '0 as can_edit_student_card',
+            'can_edit_student_photo' if 'can_edit_student_photo' in cols else '0 as can_edit_student_photo',
+        ]
         cur = conn.cursor()
         cur.execute(
             _sql_placeholder(
-                'SELECT id, name, is_admin, can_edit_student_card, can_edit_student_photo '
-                'FROM teachers WHERE id = ? LIMIT 1'
+                'SELECT ' + ', '.join(select_fields) + ' FROM teachers WHERE id = ? LIMIT 1'
             ),
             (int(tid),)
         )
