@@ -41,7 +41,7 @@ app = FastAPI(title="SchoolPoints Sync")
 def root() -> Response:
     return RedirectResponse(url="/web", status_code=302)
 
-APP_BUILD_TAG = "2026-01-28-managed-postgres"
+APP_BUILD_TAG = "2026-01-31-web-ui-a25e6b4"
 
 
 @app.get("/health", include_in_schema=False)
@@ -2822,6 +2822,7 @@ def app_version() -> Dict[str, Any]:
     return {
         "build": APP_BUILD_TAG,
         "has_web_login": True,
+        "template_version": "web-ui-a25e6b4",
     }
 
 
