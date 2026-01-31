@@ -5743,7 +5743,14 @@ def web_students(request: Request):
     except Exception as exc:
         print('WEB_STUDENTS_ERROR', repr(exc))
         traceback.print_exc()
-        return HTMLResponse('Internal Server Error', status_code=500)
+        try:
+            tb = traceback.format_exc()
+            return HTMLResponse(
+                '<h3>Internal Server Error</h3><pre>' + html.escape(tb) + '</pre>',
+                status_code=500
+            )
+        except Exception:
+            return HTMLResponse('Internal Server Error', status_code=500)
 
 
 @app.get('/web/spaces-test', response_class=HTMLResponse)
