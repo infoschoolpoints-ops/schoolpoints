@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>תוכנת הנקודות - מדריך למשתמש</title>
+  <style>
+    :root {
+      --bg1: #0f172a;
+      --bg2: #1e293b;
+      --card: rgba(255, 255, 255, 0.06);
+      --card2: rgba(255, 255, 255, 0.08);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #e2e8f0;
+      --muted: #a3b2c7;
+      --accent: #38bdf8;
+      --accent2: #22c55e;
+      --warn: #f59e0b;
+      --danger: #fb7185;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 20% 10%, #1d4ed8 0%, rgba(29, 78, 216, 0) 55%),
+                  radial-gradient(900px 500px at 80% 20%, #7c3aed 0%, rgba(124, 58, 237, 0) 55%),
+                  linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+      color: var(--text);
+      direction: rtl;
+      scroll-behavior: smooth;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap { max-width: 1150px; margin: 0 auto; padding: 24px 18px 60px; }
+
+    .top {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+
+    .title { display:flex; flex-direction:column; gap:8px; }
+    h1 { margin: 0; font-size: 28px; letter-spacing: 0.2px; }
+
+    .section-title {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      text-align: center;
+      font-size: 34px;
+      font-weight: 900;
+      letter-spacing: 0.2px;
+    }
+
+    .section-icon {
+      width: 44px;
+      height: auto;
+      display: inline-block;
+      vertical-align: middle;
+      filter: drop-shadow(0 2px 8px rgba(0,0,0,0.35));
+    }
+
+    .sub { color: var(--muted); line-height: 1.7; font-size: 14px; max-width: 70ch; }
+
+    .badges { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-start; }
+
+    .badge {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .shot {
+      display: block;
+      width: auto;
+      max-width: 100%;
+      height: auto;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.18);
+      box-shadow: 0 18px 60px rgba(0,0,0,0.35);
+      margin-top: 10px;
+    }
+
+    .shot.float {
+      float: right;
+      margin: 10px 0 10px 14px;
+    }
+
+    .shot.float + .shot-caption {
+      float: right;
+      margin: 8px 0 10px 14px;
+      max-width: 100%;
+    }
+
+    .shot.small.float + .shot-caption { max-width: 680px; }
+    .shot.xsmall.float + .shot-caption { max-width: 420px; }
+
+    .shot.full {
+      float: none;
+      width: 100%;
+      max-width: 100%;
+    }
+
+    .shot.full + .shot-caption {
+      text-align: center;
+    }
+
+    .clear { clear: both; }
+
+    .shot.small {
+      max-width: 680px;
+    }
+
+    .shot.xsmall {
+      max-width: 420px;
+    }
+
+    @media (max-width: 760px) {
+      .shot.float {
+        float: none;
+        margin: 10px 0;
+      }
+
+      .shot.float + .shot-caption {
+        float: none;
+        margin: 8px 0 10px;
+      }
+    }
+
+    .shot-caption {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+
+    .card h3 {
+      margin-top: 22px;
+      padding-top: 14px;
+      border-top: 1px solid rgba(255,255,255,0.10);
+    }
+
+    .card h3:first-of-type {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: 0;
+    }
+
+    .shot-sep {
+      height: 1px;
+      background: rgba(255,255,255,0.10);
+      border-radius: 1px;
+      margin: 18px 0;
+    }
+
+    .icon-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    @media (min-width: 980px) {
+      .icon-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+
+    .icon-card {
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      border-radius: 14px;
+      padding: 10px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      text-align: center;
+    }
+
+    .icon-img {
+      width: 56px;
+      height: auto;
+      display: block;
+    }
+
+    .icon-title { font-weight: 800; font-size: 13px; color: var(--text); }
+    .icon-sub { font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; margin-top: 14px; }
+
+    .card {
+      grid-column: span 12;
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 20px 80px rgba(0,0,0,0.35);
+    }
+
+    @media (min-width: 980px) {
+      .card.span4 { grid-column: span 4; }
+      .card.span5 { grid-column: span 5; }
+      .card.span6 { grid-column: span 6; }
+      .card.span7 { grid-column: span 7; }
+      .card.span8 { grid-column: span 8; }
+    }
+
+    .card h2 { margin: 0 0 8px; font-size: 16px; }
+    .card h3 { margin: 18px 0 8px; font-size: 15px; }
+
+    .card p { margin: 0 0 10px; color: var(--muted); line-height: 1.7; font-size: 14px; }
+
+    .toc { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+    .toc a {
+      display: block;
+      padding: 9px 10px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.05);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .toc a small { display:block; font-weight: 500; color: var(--muted); margin-top:4px; font-size: 12px; }
+
+    .note {
+      border-right: 4px solid rgba(56,189,248,0.7);
+      background: rgba(56,189,248,0.08);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 14px;
+      margin-top: 10px;
+    }
+
+    .warn { border-right: 4px solid rgba(245,158,11,0.7); background: rgba(245,158,11,0.10); }
+    .danger { border-right: 4px solid rgba(251,113,133,0.75); background: rgba(251,113,133,0.10); }
+
+    .checklist { margin: 0; padding-right: 18px; color: var(--text); line-height: 1.85; font-size: 14px; }
+    .checklist li { margin: 6px 0; }
+
+    .kv {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      overflow: hidden;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+    }
+
+    .kv th, .kv td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,0.10);
+      text-align: right;
+      font-size: 13px;
+      vertical-align: top;
+    }
+
+    .kv th { width: 28%; color: var(--text); background: rgba(255,255,255,0.05); font-weight: 800; }
+    .kv td { color: var(--muted); }
+
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255,255,255,0.14);
+      padding: 2px 6px;
+      border-radius: 8px;
+      color: #e2e8f0;
+      white-space: nowrap;
+    }
+
+    .footer { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+
+    @media print {
+      * {
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      p, li {
+        orphans: 3;
+        widows: 3;
+      }
+
+      @page {
+        margin: 10mm;
+      }
+
+      body {
+        background: var(--bg1) !important;
+        color: var(--text) !important;
+      }
+
+      .wrap { max-width: none; padding: 0; }
+
+      .grid {
+        display: block !important;
+      }
+
+      .toc {
+        position: static !important;
+        display: none !important;
+      }
+
+      .card {
+        background: var(--card) !important;
+        border: 1px solid var(--border) !important;
+        box-shadow: none !important;
+        break-inside: auto;
+        page-break-inside: auto;
+        margin: 0 0 12px 0;
+      }
+
+      .card {
+        padding: 12px !important;
+      }
+
+      .keep-together {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+
+      .card p {
+        margin-bottom: 8px !important;
+      }
+
+      .checklist li {
+        margin: 4px 0 !important;
+      }
+
+      h2, h3 {
+        break-after: avoid;
+        page-break-after: avoid;
+      }
+
+      .note, .kv, .shot {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+
+      .shot {
+        box-shadow: none !important;
+        border: 1px solid var(--border) !important;
+        background: transparent !important;
+        max-width: 100% !important;
+        height: auto !important;
+        max-height: 240mm !important;
+        object-fit: contain;
+        break-inside: avoid;
+        page-break-inside: avoid;
+        break-after: avoid;
+        page-break-after: avoid;
+      }
+
+      img[src$="/33.png"],
+      img[src$="\\33.png"],
+      img[src$="33.png"] {
+        max-height: 165mm !important;
+      }
+
+      .shot-caption {
+        break-before: avoid;
+        page-break-before: avoid;
+      }
+
+      .shot.float {
+        float: none;
+        margin: 10px 0;
+      }
+
+      .clear { clear: both; }
+
+      .page-break {
+        break-before: auto;
+        page-break-before: auto;
+        height: 0 !important;
+        margin: 0 !important;
+        padding: 0 !important;
+        display: none !important;
+      }
+
+      .shot-sep {
+        display: none !important;
+      }
+
+      h2.section-title {
+        break-before: page;
+        page-break-before: always;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>תוכנת הנקודות - מדריך למשתמש</h1>
+        <div class="sub">
+          המדריך הזה מסודר לפי סעיפים, כדי שתוכל להתקדם שלב־שלב. הוא כתוב בשפה נעימה,
+          ומיועד גם למי שמתחיל וגם למי שרוצה להכיר את כל האפשרויות.
+        </div>
+      </div>
+      <div class="badges">
+        <span class="badge">RTL</span>
+        <span class="badge">מדריך מלא</span>
+        <span class="badge">תמונות: חלקית</span>
+        <span class="badge">גרסה 1.4.2</span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card span4">
+        <h2>ניווט מהיר</h2>
+        <p>לחץ על סעיף כדי לקפוץ אליו.</p>
+        <div class="toc">
+          <a href="#intro">התחלה מהירה<small>למי זה מתאים ומה צריך להכין מראש</small></a>
+          <a href="#shared-folder">תיקייה משותפת<small>הקמה נכונה + מה חייב להיות שם</small></a>
+          <a href="#first-run">הפעלה ראשונה<small>הגדרה ראשונית, מסד נתונים, כרטיס מאסטר</small></a>
+          <a href="#admin">עמדת ניהול<small>תלמידים, יבוא/יצוא, הודעות, בונוסים, רישוי</small></a>
+          <a href="#public">עמדה ציבורית<small>מה התלמיד רואה + כרטיסי מאסטר</small></a>
+          <a href="#messages">הודעות ופרסומות<small>סטטי/לפי נקודות/חדשות/פרסומות</small></a>
+          <a href="#bonuses">בונוסים ומצבים<small>זמנים, מורה, מיוחד</small></a>
+          <a href="#admin-colors">ניהול צלילים/צבעים/מטבעות<small>צלילים, צבעים, מטבעות ויעדים</small></a>
+          <a href="#recommended">סדר עבודה מומלץ<small>לא להפעיל הכל ביום הראשון</small></a>
+          <a href="#troubleshooting">תקלות נפוצות<small>טיפים מהירים לפתרון</small></a>
+          <a href="#cashier">עמדת קופה (ברשיון מיוחד)<small>מוצרים, רכישות והגדרות קופה</small></a>
+        </div>
+      </div>
+
+      <div class="card span8" id="intro">
+        <h2>התחלה מהירה</h2>
+        <p>
+          אם אתם מתחילים עכשיו – אלה הפעולות שיעזרו לכם לעלות לאוויר מהר, בלי פספוסים:
+        </p>
+        <ul class="checklist">
+          <li><strong>בחרו מחשב מרכזי קבוע</strong> – רצוי מחשב העמדה הציבורית או שרת יציב.</li>
+          <li><strong>הגדירו תיקייה משותפת אחת</strong> שכל העמדות יתחברו אליה (ניהול/מורה/ציבורית).</li>
+          <li><strong>וודאו הרשאות כתיבה</strong> לתיקייה המשותפת לכל המחשבים הרלוונטיים.</li>
+          <li><strong>התחילו פשוט</strong> – קודם יבוא תלמידים והצגת נקודות; רק אחרי זה מוסיפים מצגת/בונוסים/פרסומות.</li>
+        </ul>
+        <div class="note warn">
+          <strong>חשוב:</strong>
+          כמעט כל “בעיה מוזרה” בתחילת הדרך (לא רואים תלמידים / לא מסתנכרן / תצוגה שונה בין עמדות)
+          נובעת מזה שעמדה אחת מחוברת לתיקייה אחרת.
+        </div>
+        <div class="note">
+          <strong>טיפ:</strong>
+          הדפסה ל־PDF: <code>Ctrl+P</code> → Save as PDF. כדי שהרקע/צבעים יופיעו, הפעילו גם <strong>Background graphics</strong> (ב"הגדרות נוספות").
+        </div>
+
+        <div class="note">
+          <strong>התקנה:</strong>
+          <a href="https://drive.google.com/drive/folders/1jM8CpSPbO0avrmNLA3MBcCPXpdC0JGxc?usp=sharing" target="_blank" rel="noopener">להורדה כאן</a>.
+        </div>
+
+        <div class="note">
+          <strong>רשימת ציוד נדרש:</strong>
+          לרשימת ציוד נדרש ניתן לראות <a href="equipment_required.html" target="_blank" rel="noopener">כאן</a>.
+        </div>
+
+
+        <div class="note">
+          <strong>צור קשר:</strong>
+          <a href="mailto:info.schoolpoints@gmail.com">info.schoolpoints@gmail.com</a>
+        </div>
+
+        <h3>חלקי המערכת (איפה כל דבר נמצא?)</h3>
+        <div class="icon-row">
+          <a class="icon-card" href="#admin">
+            <img class="icon-img" src="תמונות/להוראות/admin.png" alt="אייקון עמדת ניהול" />
+            <div class="icon-title">עמדת ניהול</div>
+            <div class="icon-sub">ניהול תלמידים, הודעות, בונוסים, הגדרות ורישוי.</div>
+          </a>
+          <a class="icon-card" href="#public">
+            <img class="icon-img" src="תמונות/להוראות/public.png" alt="אייקון עמדה ציבורית" />
+            <div class="icon-title">עמדה ציבורית</div>
+            <div class="icon-sub">תיקוף תלמידים ותצוגת נקודות/הודעות.</div>
+          </a>
+          <a class="icon-card" href="#cashier">
+            <img class="icon-img" src="תמונות/להוראות/cashier.png" alt="אייקון עמדת קופה" />
+            <div class="icon-title">עמדת קופה (ברשיון מיוחד)</div>
+            <div class="icon-sub">מוצרים, רכישות, הדפסות והגדרות קופה.</div>
+          </a>
+          <a class="icon-card" href="#first-run">
+            <img class="icon-img" src="תמונות/להוראות/installer.png" alt="אייקון התקנה" />
+            <div class="icon-title">התקנה</div>
+            <div class="icon-sub">התקנה והגדרה ראשונית לתיקייה משותפת.</div>
+          </a>
+        </div>
+      </div>
+
+      <div class="card span12" id="shared-folder">
+        <h2>תיקייה משותפת</h2>
+        <p>
+          התיקייה המשותפת היא “נקודת האמת” של המערכת: שם נשמרים מסד הנתונים וההגדרות, ומשם כל העמדות קוראות וכותבות.
+          ברגע שכל העמדות מחוברות לאותה תיקייה – הנתונים מסונכרנים אוטומטית.
+        </p>
+
+        <h3>מה מומלץ לשים בתיקייה המשותפת?</h3>
+        <ul class="checklist">
+          <li><strong>מסד הנתונים</strong> וקבצי ההגדרות (נוצרים אוטומטית על ידי התוכנה).</li>
+          <li><strong>קובצי מדיה משותפים</strong>: לוגו, רקעים, מצגת תמונות, ואודיו (אם משתמשים).</li>
+          <li><strong>תמונות תלמידים</strong> – אם אתם מציגים תמונה בעמדה הציבורית, עדיף שכל העמדות יראו אותה מאותו מקום.</li>
+          <li><strong>תמונות מוצרים + לוגו לקבלה</strong> – בעמדת קופה, תמונות מוצרים והלוגו שמודפס על הקבלה צריכים להיות במיקום משותף, כדי שכל המחשבים יראו וידפיסו אותו דבר.</li>
+        </ul>
+
+        <div class="note warn">
+          <strong>המלצה:</strong>
+          גם אם חלק מהקבצים “יכולים” להיות מקומיים – עדיף להצמיד אותם לתיקייה המשותפת.
+          זה חוסך תקלות של “בעמדה אחת יש מצגת ובעמדה אחרת לא”.
+        </div>
+
+        <h3>דוגמאות לנתיבי רשת</h3>
+        <ul class="checklist">
+          <li><code>\\SERVER\נתוני תוכנת הנקודות</code></li>
+          <li><code>\\שם-מחשב\SchoolPoints$</code> (תיקייה מוסתרת – למתקדמים)</li>
+        </ul>
+      </div>
+
+      <div class="card span12" id="first-run">
+        <h2>הפעלה ראשונה (הגדרה ראשונית)</h2>
+        <p>
+          בהפעלה הראשונה התוכנה תפתח אשף קצר שמטרתו לחבר את העמדה לתיקייה המשותפת.
+          זה השלב שבו קובעים “איפה הנתונים יושבים”.
+        </p>
+
+        <img class="shot small float" src="תמונות/להוראות/35.png" alt="הגדרה ראשונית: בחירת תיקיית רשת משותפת" />
+        <div class="shot-caption">מסך בחירת תיקיית רשת משותפת (עמדת ניהול).</div>
+
+        <div class="clear"></div>
+
+        <img class="shot xsmall float" src="תמונות/להוראות/36.png" alt="יצירת מנהל ראשוני" />
+        <div class="shot-caption">יצירת מנהל ראשוני (בהפעלה הראשונה – מגדירים מנהל כדי להיכנס לעמדת ניהול).</div>
+
+        <div class="clear"></div>
+
+        <div class="note danger">
+          <strong>חשוב מאוד:</strong>
+          אם לאחר שכבר הוגדרה תיקייה משותפת, המערכת מציגה שוב מסך הגדרה/רישום – זה בדרך כלל סימן לכך שאין כרגע גישה
+          לתיקייה המשותפת (בעיה ברשת, במחשב המרכזי, בהרשאות או בנתיב).<br />
+          <strong>לא מומלץ ליצור תיקייה משותפת חדשה</strong> רק כדי “להמשיך הלאה”, כי זה עלול ליצור פיצול נתונים
+          (מערכת חדשה עם נתונים אחרים) ולשבש את העבודה בין עמדות.<br />
+          לפני כל שינוי, יש לבדוק: חיבור לרשת, שהמחשב המרכזי דולק, שהנתיב נכון, ושיש הרשאות כתיבה לתיקייה.
+        </div>
+
+        <h3>אפשרות 1 – כבר יש לכם תיקייה משותפת</h3>
+        <ul class="checklist">
+          <li>הדביקו את נתיב הרשת בשדה (לדוגמה: <code>\\SERVER\נתוני תוכנת הנקודות</code>).</li>
+          <li>אשרו והמשיכו. התוכנה תיצור את קובצי הנתונים הדרושים אם הם לא קיימים.</li>
+        </ul>
+
+        <h3>אפשרות 2 – התוכנה יוצרת תיקייה אוטומטית</h3>
+        <ul class="checklist">
+          <li>אם מופיעה אפשרות <strong>"הפעל מחדש כמנהל"</strong> – מומלץ להשתמש בה.</li>
+          <li>אחרי פתיחה מחדש, בחרו <strong>"צור תיקיית שיתוף אוטומטית"</strong>.</li>
+          <li>שמרו לעצמכם את נתיב התיקייה (Ctrl+C) – כך קל להגדיר עמדות נוספות.</li>
+        </ul>
+
+        <div class="note">
+          <strong>טיפ:</strong>
+          אם אתם מקימים כמה עמדות, הכי נוח להגדיר קודם את המחשב המרכזי (שמארח את התיקייה),
+          ורק לאחר מכן להגדיר את שאר העמדות על אותו נתיב.
+        </div>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="admin">
+        <h2 class="section-title"><img class="section-icon" src="תמונות/להוראות/admin.png" alt="אייקון עמדת ניהול" /> עמדת ניהול – הסבר מלא לפי מסכים</h2>
+        <p>
+          עמדת הניהול היא “הבקרה המרכזית” – כאן מנהלים תלמידים, נקודות, קבצים, הודעות, בונוסים ורישוי.
+        </p>
+
+        <img class="shot xsmall float" src="תמונות/להוראות/01.png" alt="מסך התחברות לעמדת ניהול" />
+        <div class="shot-caption">מסך התחברות (העברת כרטיס מורה/מנהל לפתיחת עמדת ניהול).</div>
+
+        <ul class="checklist">
+          <li><strong>כותרת מסך</strong> – מציגה שמדובר בכניסה לעמדת הניהול.</li>
+          <li><strong>הנחיה</strong> – “העבר את כרטיס המורה שלך”. הכוונה היא לכרטיס שמוגדר למורה/מנהל במערכת.</li>
+          <li><strong>אייקון מנעול</strong> – מציין שזהו מסך מוגן (כניסה מורשית בלבד).</li>
+          <li><strong>שדה המתנה</strong> – במצב רגיל לא מקלידים כאן; המערכת “ממתינה לכרטיס” מהקורא.</li>
+        </ul>
+
+        <div class="clear"></div>
+
+        <img class="shot full" src="תמונות/להוראות/02.png" alt="עמדת ניהול – מסך ראשי" />
+        <div class="shot-caption">עמדת ניהול – מסך ראשי וטבלת תלמידים.</div>
+
+        <ul class="checklist">
+          <li><strong>שורת כפתורים עליונה</strong> – קיצור דרך לחלונות מרכזיים (שדרוגים/הודעות/בונוסים/מורים/הגדרות/קופה וכו׳). מטרת הסרגל היא להגיע מהר לתפעול יום־יומי.</li>
+          <li><strong>טבלת תלמידים</strong> – הלב של עמדת הניהול. כאן רואים את התלמידים לפי שורות, ומבצעים עדכוני נקודות/חיפוש/בחירה.</li>
+          <li><strong>עמודות בטבלה</strong> – בדרך כלל כוללות פרטי זיהוי (מס׳/כיתה/שם), אמצעי זיהוי (מס׳ כרטיס), מצב/הודעה, ונקודות.</li>
+          <li><strong>בחירה של תלמיד</strong> – לחיצה על שורה מסמנת תלמיד לפעולות כמו עריכה/מחיקה/עדכון נקודות/הקצאת כרטיס.</li>
+          <li><strong>אזור פעולות תחתון</strong> – כולל פעולות מהירות (כמו הוספה/עריכה/מחיקה/ייצוא/סנכרון) וכן אזור סטטוס למעקב אחרי הפעולה האחרונה.</li>
+        </ul>
+
+        <h3 id="admin-display">הגדרות תצוגה</h3>
+        <img class="shot small" src="תמונות/להוראות/24.png" alt="הגדרות תצוגה – מסך מלא, כיוון, רקע ומצגת" />
+        <div class="shot-caption">הגדרות תצוגה בסיסיות (מסך מלא/כיוון/רקע/מצגת).</div>
+
+        <ul class="checklist">
+          <li><strong>מסך מלא</strong> – מפעיל/מכבה תצוגת מסך מלא בעמדה הציבורית (מומלץ כדי למנוע “בריחה” לחלונות אחרים).</li>
+          <li><strong>אורך/רוחב (כיוון)</strong> – קובע האם העמדה הציבורית מוצגת לאורך או לרוחב, בהתאם למסך ולמיקום הפיזי.</li>
+          <li><strong>רקע</strong> – בחירת תמונת רקע/רקע צבע לעמדה הציבורית (משפיע על תחושת “מבצע” ועל קריאות).</li>
+          <li><strong>מצגת</strong> – הפעלה/כיבוי של הצגת תמונות מתחלפות ברקע (אם מוגדר).</li>
+          <li><strong>טיפ תפעולי</strong> – אם אתם עובדים עם כמה עמדות, הגדירו את הרקע/מצגת כך שיפנו לקבצים מתוך <strong>התיקייה המשותפת</strong> בלבד.</li>
+        </ul>
+
+        <img class="shot small" src="תמונות/להוראות/25.png" alt="הגדרות תצוגה – תיקיית תמונות, פריסת רקע ומונטאז׳" />
+        <div class="shot-caption">הגדרות תצוגה מתקדמות (תיקיית תמונות, פריסת רקע, מונטאז׳).</div>
+
+        <ul class="checklist">
+          <li><strong>תיקיית תמונות למצגת</strong> – מאיפה התמונות נלקחות (מומלץ נתיב בתוך התיקייה המשותפת כדי שכל העמדות יראו אותה מצגת).</li>
+          <li><strong>פריסת רקע</strong> – התאמת אופן הצגת הרקע על המסך (למשל מתיחה/התאמה/מרכוז), לפי האפשרויות במסך.</li>
+          <li><strong>מונטאז׳</strong> – אם מופעל, מציג כמה תמונות יחד/ברצף כדי ליצור מסך “חי”.</li>
+          <li><strong>דגש חשוב</strong> – כל קובצי המדיה (רקעים/מצגת/אודיו/לוגו) מומלץ לשמור בתיקייה המשותפת. כך לא נוצר מצב שבעמדה אחת רואים משהו ובעמדה אחרת לא.</li>
+        </ul>
+
+        <h3 id="admin-system">הגדרות מערכת</h3>
+        <img class="shot small" src="תמונות/להוראות/20.png" alt="הגדרות מערכת – תיקייה משותפת, לוגו ותמונות תלמידים" />
+        <div class="shot-caption">הגדרות מערכת (תיקייה משותפת, לוגו, תיקיית תמונות תלמידים, סטטוס רישום).</div>
+
+        <ul class="checklist">
+          <li><strong>תיקייה משותפת</strong> – הנתיב שבו נשמרים הנתונים וקובצי ההגדרות. כל העמדות חייבות להתחבר לאותו נתיב.</li>
+          <li><strong>לוגו</strong> – הלוגו שמופיע במסכים (ובעבור עמדת קופה יכול לשמש גם להדפסות, לפי ההגדרה).</li>
+          <li><strong>תיקיית תמונות תלמידים</strong> – נתיב לתמונות תלמידים (מומלץ מאוד שיהיה בתיקייה משותפת).</li>
+          <li><strong>מקסימום נקודות</strong> – הגדרת תקרת נקודות במערכת (כללים לפי תאריך + אכיפה: אזהרה/חסימה).</li>
+          <li><strong>רישוי</strong> – איפה רואים סטטוס רישוי ואיפה מזינים קוד הפעלה במידת הצורך.</li>
+        </ul>
+
+        <img class="shot small" src="תמונות/להוראות/42.png" alt="הגדרות מקסימום נקודות" />
+        <div class="shot-caption">הגדרות “מקסימום נקודות” – תאריך התחלה, נקודות יומיות/שבועיות, ופעולת אכיפה.</div>
+
+        <img class="shot small" src="תמונות/להוראות/21.png" alt="לוח חופשות/חסימות (עמדה ציבורית)" />
+        <div class="shot-caption">לוח חופשות/חסימות בעמדה הציבורית (קביעת ימים/טווחי זמן).</div>
+
+        <ul class="checklist">
+          <li><strong>מטרה</strong> – להגדיר מתי העמדה הציבורית פעילה ומתי היא חסומה (למשל שבת/חגים/חופשות), כדי למנוע תיקופים בזמנים לא רצויים.</li>
+          <li><strong>מה בעצם מגדירים</strong> – ימים ושעות שבהם יש חסימה (או להפך: חלונות זמן מותרים), לפי ההגדרות במסך.</li>
+          <li><strong>צור תבנית חגים</strong> – יוצר לוח אוטומטי על בסיס תבנית חגים/שבתות, וחוסך הזנה ידנית של כל תאריך.</li>
+        </ul>
+
+        <img class="shot xsmall" src="תמונות/להוראות/41.png" alt="דוגמה ללוח חופשות בשבת" />
+        <div class="shot-caption">דוגמה קטנה: כך הלוח נראה בשבת (המחשה).</div>
+
+        <div class="keep-together">
+          <h3 id="admin-license">רישוי / רישום מערכת</h3>
+          <p>
+            רישום המערכת מתבצע בעמדת הניהול. במסך הרישוי רואים “קוד מערכת” ומזינים “קוד הפעלה”.
+            אם קיים רישיון פעיל, בדרך כלל יוצגו פרטי הרישיון, ובאפשרות “החלפת רישיון” ניתן להזין קוד חדש.
+            <br />
+            לביצוע רישום יש להיכנס <a href="https://forms.gle/hE6DAmyHabDxKnf48">כאן</a>.
+          </p>
+
+          <img class="shot small" src="תמונות/להוראות/37.png" alt="מסך רישום/הפעלת רישיון" />
+          <div class="shot-caption">מסך רישום/הפעלת רישיון (עמדת ניהול).</div>
+        </div>
+
+        <h3 id="admin-import">ייבוא תלמידים (Excel) – מבנה מומלץ</h3>
+        <p>כדי שהייבוא יעבוד חלק, מומלץ לשמור על מבנה עקבי בקובץ ה־Excel.</p>
+        <table class="kv">
+          <tr><th>עמודות חובה</th><td>מס' סידורי, שם משפחה, שם פרטי, כיתה</td></tr>
+          <tr><th>עמודות אופציונליות</th><td>נתיב תמונה, מס' כרטיס, מס' נקודות, הודעה פרטית</td></tr>
+          <tr><th>טיפ למס' כרטיס</th><td>לשמור את העמודה בפורמט “טקסט” כדי לשמר אפסים מובילים ומספרים ארוכים.</td></tr>
+        </table>
+
+        <img class="shot small" src="תמונות/להוראות/31.png" alt="הוספת תלמיד לטבלה הכללית" />
+        <div class="shot-caption">הוספת תלמיד לטבלה הכללית (חלופה ידנית לייבוא, או להוספות נקודתיות אחרי הייבוא).</div>
+
+        <ul class="checklist">
+          <li><strong>מתי משתמשים בזה</strong> – אחרי ייבוא ראשוני, להוספת תלמיד חדש שהצטרף באמצע השנה, או לתיקון נקודתי של תלמיד שלא נכנס לייבוא.</li>
+          <li><strong>שדות בסיסיים</strong> – מס' סידורי/כיתה/שם, ובהמשך ניתן להוסיף מס' כרטיס ותמונה (אם עובדים עם תצוגת תמונות).</li>
+          <li><strong>המלצה</strong> – אם מוסיפים הרבה תלמידים, עדיף לבצע שוב ייבוא/סינכרון מסודר. להוספה ידנית משתמשים בעיקר ליחידים.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <div class="note">
+          <strong>טיפ לזיהוי תלמידים:</strong>
+          אפשר להוסיף כוכביות סביב חלק מהשם (למשל <code>*דוד*</code>) כדי לסמן לצוות – והסימון לא יוצג בעמדה הציבורית.
+        </div>
+
+        <h3>כפתורי מסך עיקריים (מה כל כפתור עושה?)</h3>
+        <ul class="checklist">
+          <li><a href="#admin-import"><strong>ייבוא</strong></a> – טעינת תלמידים מקובץ Excel למערכת.</li>
+          <li><a href="#troubleshooting"><strong>ייצוא</strong></a> – יצירת דוחות (תלמידים, נוכחות לפי בונוסים, היסטוריית נקודות ועוד).</li>
+          <li><a href="#troubleshooting"><strong>סינכרון</strong></a> – מעדכן את האקסל מהמערכת בעמודות: כרטיס/נקודות/הודעה פרטית (ייצוא בלבד).</li>
+          <li><a href="#troubleshooting"><strong>רענון</strong></a> – טעינה מחדש מהמסד (שימושי כשהעמדה הציבורית עדכנה מידע).</li>
+          <li><a href="#admin-colors"><strong>שדרוגים</strong></a> – צבעי ניקוד, מטבעות/יהלומים, יעדים ופס התקדמות.</li>
+          <li><a href="#messages"><strong>הודעות כלליות</strong></a> – ניהול הודעות סטטיות/לפי נקודות/אישיות/חדשות/פרסומות.</li>
+          <li><a href="#bonuses"><strong>בונוס מיוחד</strong></a> – מצב בונוס חד־פעמי/מבצע.</li>
+          <li><a href="#bonuses"><strong>בונוס זמנים</strong></a> – בונוסים אוטומטיים לפי שעות (כולל שעות שונות לכיתות).</li>
+          <li><a href="#admin-teachers"><strong>ניהול מורים</strong></a> – מורים, הרשאות, שיוך כרטיס מורה, בונוס מורה.</li>
+          <li><a href="#admin-system"><strong>הגדרות מערכת</strong></a> – תיקייה משותפת, רישוי, לוגו/שם מבצע, רקעים, מצגת, סטטיסטיקות.</li>
+          <li><a href="#admin-display"><strong>הגדרות תצוגה</strong></a> – איך נראית העמדה הציבורית (כיוון, פנלים, רקע/מצגת).</li>
+        </ul>
+
+
+        <div class="keep-together">
+          <h3 id="admin-points">עדכון נקודות (כולל עדכון מהיר)</h3>
+          <ul class="checklist">
+            <li><strong>עדכון ידני</strong> – מוסיפים/מפחיתים נקודות לתלמיד בטבלה.</li>
+            <li><strong>עדכון מהיר (⚡)</strong> – פעולה אחת לקבוצה (לפי כרטיס בסריקה / טווח מס' סידורי / כל תלמידי כיתה / תלמידים נבחרים / כל תלמידי בית הספר).</li>
+            <li><strong>סוג פעולה</strong> – הוספה (+), הפחתה (-), או קביעה לערך מוחלט (=).</li>
+          </ul>
+
+          <img class="shot" src="תמונות/להוראות/38.png" alt="עדכון מהיר של נקודות" />
+          <div class="shot-caption">עדכון מהיר (⚡): בחירת סוג פעולה וכמות נקודות, בחירת יעד (כיתה / תלמידים נבחרים / מצב סריקה / כל בית הספר) ואישור הפעולה. בבחירת "תלמידים נבחרים" נפתח חלון בחירה עם תיבות סימון.</div>
+        </div>
+
+        <h3>תיקון זמן תיקוף / הגעה (ידני)</h3>
+        <ul class="checklist">
+          <li><strong>מטרה</strong> – לתקן רישום תיקוף/הגעה אחורה (לפי תאריך+שעה) כאשר יש צורך בתיקון נתונים.</li>
+          <li><strong>איך משתמשים</strong> – בוחרים תלמיד, פותחים את חלון הניהול שלו, ובוחרים תיקון זמן תיקוף לפי תאריך+שעה.</li>
+          <li><strong>מה זה משפיע</strong> – הרישום נשמר כאילו התיקוף בוצע בזמן שנבחר, כולל החלת כללי בונוס זמנים בהתאם.</li>
+        </ul>
+
+        <h3 id="admin-teachers">ניהול מורים והרשאות</h3>
+        <img class="shot small" src="תמונות/להוראות/18.png" alt="ניהול מורים והרשאות" />
+        <div class="shot-caption">ניהול מורים והרשאות.</div>
+
+        <ul class="checklist">
+          <li><strong>טבלת מורים</strong> – כל שורה היא מורה אחד במערכת.</li>
+          <li><strong>שם</strong> – שם המורה כפי שיוצג במערכת ובמסכי ניהול.</li>
+          <li><strong>כרטיס / סיסמה</strong> – אמצעי כניסה/זיהוי של המורה (לעתים מוצג במסך כנקודות/כוכביות מטעמי פרטיות).</li>
+          <li><strong>תפקיד</strong> – האם המשתמש הוא “מורה” רגיל או “מנהל”.</li>
+          <li><strong>כיתות</strong> – לאילו כיתות המורה משויך (א, ב, ג… או “אין כיתות” אם לא הוגדר).</li>
+          <li><strong>מקס' נק'</strong> – מגבלה של נקודות שהמורה יכול להעניק לתלמיד בסבב/בפעולה (לפי הגדרת המערכת).</li>
+          <li><strong>מקס' הפעלות</strong> – מגבלה על מספר פעולות שהמורה יכול לבצע (לפי הגדרה).</li>
+          <li><strong>הפעולות בונוס היום</strong> – כמה פעולות כבר נוצלו היום בהקשר של בונוס מורה/מנגנוני בונוס רלוונטיים.</li>
+          <li><strong>סה"כ נק' בונוס היום</strong> – כמה נקודות בונוס (לפי מורה) כבר חולקו היום.</li>
+          <li><strong>הוסף מורה</strong> – יצירת מורה חדש (שם, כרטיסים/סיסמה, הרשאות, כיתות).</li>
+          <li><strong>ערוך</strong> – עריכת המורה שנבחר (מעבר למסך “עריכת מורה”).</li>
+          <li><strong>מחק</strong> – מחיקת מורה (בזהירות, אם משתמשים בכרטיסים בעמדה הציבורית).</li>
+          <li><strong>סגור</strong> – יציאה מהחלון.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/19.png" alt="עריכת מורה" />
+        <div class="shot-caption">עריכת מורה (כרטיסים, הרשאות, כיתות, מגבלות).</div>
+
+        <ul class="checklist">
+          <li><strong>שם המורה</strong> – שם שיוצג בטבלאות ובדוחות.</li>
+          <li><strong>מספר כרטיס 1 / 2 / 3</strong> – אפשר להגדיר למורה כמה כרטיסים (למשל כרטיס עובד + תג חלופי). שדות ריקים פשוט לא בשימוש.</li>
+          <li><strong>סיסמה (אופציונלי)</strong> – מאפשרת כניסה/ניהול גם ממחשב שאין בו קורא כרטיסים, לפי מה שמוגדר במערכת.</li>
+          <li><strong>מנהל (הרשאות מלאות)</strong> – סימון משתמש כמנהל; מנהל יכול להיכנס לעמדת ניהול ולבצע פעולות נרחבות לפי ההרשאות במערכת.</li>
+          <li><strong>מורה יכול לשנות מס' כרטיס לתלמיד</strong> – אם מסומן, המורה יוכל לערוך מספר כרטיס של תלמיד (שימושי כשמחליפים כרטיס).</li>
+          <li><strong>מורה יכול לשנות תמונת תלמיד</strong> – אם מסומן, המורה יוכל לעדכן/להחליף תמונת תלמיד.</li>
+          <li><strong>כיתות</strong> – שיוך כיתות למורה. לחצן <strong>בחר...</strong> מאפשר לבחור כיתות מהרשימה.</li>
+          <li><strong>מקסימום נקודות לבונוס מורה</strong> – מגבלת נקודות לבונוס מורה (לכל תלמיד בסבב, או לפי ההגדרה שמופיעה בהערה).</li>
+          <li><strong>מקסימום מספר הפעלות בונוס למורה זה</strong> – מגבלת מספר הפעלות/פעולות לבונוס מורה עבור המורה הזה (אם משאירים ריק – ברירת מחדל/ללא מגבלה לפי המערכת).</li>
+          <li><strong>שמור</strong> – שמירת השינויים.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="bonuses">
+        <h2>בונוסים ומצבים מיוחדים</h2>
+        <p>
+          בונוסים מאפשרים לחלק נקודות בצורה חכמה (זמנים/מורה/מבצע מיוחד) ולבנות מוטיבציה לאורך זמן.
+        </p>
+
+        <ul class="checklist">
+          <li><a href="#bonuses-time"><strong>בונוס זמנים</strong></a> – בונוסים אוטומטיים לפי שעות (כולל שעות שונות לכיתות).</li>
+          <li><a href="#bonuses-teacher"><strong>בונוס מורה</strong></a> – בונוס ייעודי לפי מורה (מופעל בעמדה הציבורית).</li>
+          <li><a href="#bonuses-special"><strong>בונוס מיוחד</strong></a> – מצב “מבצע” חד־פעמי/כללי לכל תלמיד.</li>
+        </ul>
+
+        <h3 id="bonuses-time">בונוס זמנים</h3>
+        <ul class="checklist">
+          <li>אפשר להגדיר כמה כללים במקביל (כמה שורות).</li>
+          <li>אפשר להגדיר שעות שונות לכיתות שונות.</li>
+          <li>אפשר להגדיר בונוס עם <strong>0 נקודות</strong> כדי להשתמש בזה כדו"ח נוכחות: התיקוף הראשון נשמר, ובנוסף ניתן להגדיר שלא יוצג כלל רישום/הודעה בעמדה הציבורית.</li>
+        </ul>
+
+        <h3 id="bonuses-teacher">בונוס מורה</h3>
+        <ul class="checklist">
+          <li>לכל מורה אפשר להגדיר בונוס נפרד.</li>
+          <li>הפעלת הבונוס נעשית בעמדה הציבורית עם כרטיס מורה. ניתן להגדיר למורה כמה מספרי כרטיסים כדי לאפשר זיהוי בכרטיס/סיסמה לפי הצורך (במסכים שאינם ציבוריים).</li>
+          <li>כל תלמיד מקבל את הבונוס פעם אחת בסבב.</li>
+        </ul>
+
+        <h3 id="bonuses-special">בונוס מיוחד</h3>
+        <ul class="checklist">
+          <li>מצב “מבצע” שבו כל תלמיד מקבל תוספת חד־פעמית כשהמצב פעיל.</li>
+          <li>בדרך כלל מפעילים/מסיימים בעמדה הציבורית בעזרת כרטיס מאסטר 2 (לפי ההגדרה).</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <h3>בונוס זמנים</h3>
+
+        <img class="shot" src="תמונות/להוראות/16.png" alt="ניהול בונוס זמנים אוטומטי" />
+        <div class="shot-caption">ניהול בונוס זמנים אוטומטי (הוספה/עריכה/הפעלה).</div>
+
+        <ul class="checklist">
+          <li><strong>טבלת כללים</strong> – כל שורה היא כלל אחד שמעניק נקודות בטווח זמן מוגדר (אפשר כמה כללים במקביל).</li>
+          <li><strong>שם</strong> – שם הכלל/הקבוצה (מומלץ שם קצר וברור, למשל “בוקר טוב”, “ערב טוב”).</li>
+          <li><strong>שעת התחלה / שעת סיום</strong> – חלון הזמן שבו הכלל פעיל (בדרך כלל לפי שעות היום).</li>
+          <li><strong>נקודות</strong> – כמה נקודות הכלל מעניק לתלמיד בעת תיקוף שעומד בתנאים.</li>
+          <li><strong>פעיל</strong> – האם הכלל מופעל כרגע (✓ פעיל, X כבוי).</li>
+          <li><strong>כללי</strong> – האם הכלל מוגדר ככלל “כללי” (ברמת מערכת/לכולם) או כלל מיוחד לפי שיוך (לפי ההגדרות בעמודה “כיתות”).</li>
+          <li><strong>כיתות</strong> – לאילו כיתות הכלל חל. יכול להיות “כל” או רשימה של כיתות (למשל א,ב,ג...).</li>
+          <li><strong>ימים</strong> – לאילו ימים בשבוע הכלל חל. יכול להיות “כל” או יום מסוים/סט ימים.</li>
+          <li><strong>מוצג</strong> – האם ההודעה/הרישום יוצגו בעמדה הציבורית בעת תיקוף לפי כלל זה (✓ מוצג, X מוסתר). שימושי במיוחד כשנקודות=0 ורוצים “נוכחות שקטה”, ועדיין לקבל רישום מלא שמופיע בייצוא דו"ח נוכחות.</li>
+          <li><strong>הוסף בונוס</strong> – יצירת כלל חדש.</li>
+          <li><strong>עריכת קבוצה</strong> – עריכה מרוכזת של כלל/קבוצת כללים (למשל אותו שם עם כמה שורות זמן).</li>
+          <li><strong>פעיל/כבוי</strong> – שינוי מצב הכלל שנבחר (בלי למחוק אותו).</li>
+          <li><strong>מחק</strong> – מחיקת הכלל שנבחר.</li>
+          <li><strong>סגור</strong> – יציאה מהחלון.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot" src="תמונות/להוראות/17.png" alt="עריכת בונוס זמנים" />
+        <div class="shot-caption">עריכת בונוס זמנים (שעות, כיתות, נקודות, מצב).</div>
+
+        <ul class="checklist">
+          <li><strong>בונוס</strong> – שם הבונוס/הקבוצה. כל השורות בחלון שייכות לאותו שם (למשל “בוקר טוב”).</li>
+          <li><strong>משעה / עד שעה</strong> – זמן התחלה וזמן סיום לכל שורה. כל שורה היא “חלון זמן” נפרד.</li>
+          <li><strong>נקודות בונוס</strong> – כמות הנקודות שמוענקת בתיקוף שעומד בתנאים של השורה.</li>
+          <li><strong>כללי</strong> – סימון אם השורה היא כלל כללי (חל בלי שיוך מיוחד), לעומת כלל מותנה כיתות/ימים.</li>
+          <li><strong>כיתות</strong> – לחצן <strong>בחר...</strong> לבחירת כיתות ספציפיות. אפשר להשאיר ריק/ברירת מחדל כדי שיחול על כולם (בהתאם לשורה ולכללי המערכת).</li>
+          <li><strong>ימים</strong> – לחצן <strong>בחר...</strong> לבחירת ימים בשבוע (למשל א,ב,ג,ד,ה) או “כל”.</li>
+          <li><strong>מוצג</strong> – האם התלמיד יראה הודעה/רישום בעמדה הציבורית עבור הבונוס הזה (סימון ✓) או שהפעולה תהיה “שקטה”.</li>
+          <li><strong>מחיקה (כפתור אדום “מחק”)</strong> – מחיקת שורה ספציפית מתוך הקבוצה.</li>
+          <li><strong>שכפול (כפתור עם חץ)</strong> – העתקת שורה קיימת כדי ליצור וריאציה דומה (למשל אותה הגדרה עם שינוי שעה/כיתות).</li>
+          <li><strong>בחירת כיתה מהירה (רשימה נפתחת)</strong> – קיצור דרך להזין סט כיתות נפוץ בשורה (אם מוגדר במערכת).</li>
+          <li><strong>הוסף שורה</strong> – הוספת חלון זמן חדש לאותו בונוס.</li>
+          <li><strong>שמור</strong> – שמירת כל השורות והחלת השינוי.</li>
+          <li><strong>ביטול</strong> – יציאה בלי לשמור שינויים.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/15.png" alt="בונוס מיוחד" />
+        <div class="shot-caption">הפעלת בונוס מיוחד (כמות נקודות לכל תלמיד בזמן שהבונוס פעיל).</div>
+
+        <ul class="checklist">
+          <li><strong>שדה מספר (כמות נקודות)</strong> – כמה נקודות יקבל כל תלמיד בעת תיקוף בזמן שהבונוס המיוחד פעיל.</li>
+          <li><strong>הפעל בונוס מיוחד</strong> – מפעיל את מצב ה“מבצע”. מרגע ההפעלה, כל תלמיד שיתקף יקבל את התוספת החד־פעמית לפי ההגדרה.</li>
+          <li><strong>הערת עזרה</strong> – ההסבר במסך מזכיר שהפעלה/כיבוי נעשים מהעמדה הציבורית (לרוב באמצעות כרטיס מאסטר 2 לפי ההגדרה).</li>
+        </ul>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="admin-colors">
+        <h2>ניהול צלילים/צבעים/מטבעות</h2>
+
+        <img class="shot small" src="תמונות/להוראות/03.png" alt="עורך צלילים וצבעים – טווחי נקודות" />
+        <div class="shot-caption">הגדרת צלילים וצבעים לפי טווח נקודות.</div>
+
+        <ul class="checklist">
+          <li><strong>שורת טווח</strong> – כל שורה מייצגת טווח נקודות (מינימום–מקסימום) עם צבע וצליל.</li>
+          <li><strong>מינימום / מקסימום</strong> – קובעים באיזה ניקוד התלמיד יקבל את הצבע/הצליל הזה.</li>
+          <li><strong>שם</strong> – תיאור קצר לטווח (למשל “אפור/כחול/ירוק”).</li>
+          <li><strong>צבע</strong> – צבע התצוגה בעמדה הציבורית עבור תלמידים בטווח הזה.</li>
+          <li><strong>צליל</strong> – בחירה מרשימה של צליל מובנה או מותאם, שינוגן בעת תיקוף בטווח הזה.</li>
+          <li><strong>PLAY</strong> – בדיקת הצליל במקום.</li>
+          <li><strong>אייקון תיקייה</strong> – בחירת קובץ צליל חיצוני (מותאם אישית).</li>
+          <li><strong>אייקון מחיקה</strong> – הסרת שורה/טווח מהרשימה.</li>
+          <li><strong>הוסף טווח</strong> – מוסיף שורה חדשה לטווח נקודות נוסף.</li>
+          <li><strong>שמור / סגור ללא שמירה</strong> – שמירת ההגדרות או יציאה בלי לשנות.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <h3>מטבעות ויהלומים</h3>
+        <p>
+          מטרת המטבעות/יהלומים היא להוסיף “שכבה” לתצוגה בעמדה הציבורית, כדי שתלמיד לא יגיע למצב של אלפי נקודות
+          ויאבד עניין במספרים גבוהים. במקום להסתכל רק על נקודות, אפשר להציג המרה/סיווג ויזואלי (מטבע/יהלום, צבע וסוג).
+        </p>
+
+        <img class="shot small" src="תמונות/להוראות/04.png" alt="עורך מטבעות ויהלומים" />
+        <div class="shot-caption">המרת נקודות למטבעות/יהלומים לפי סוג וצבע (תצוגה ויזואלית ומדורגת לתלמיד).</div>
+
+        <ul class="checklist">
+          <li><strong>סוג</strong> – בחירה אם הפריט הוא מטבע או יהלום (סוג הבונוס הווירטואלי).</li>
+          <li><strong>ערך</strong> – כמה נקודות כל מטבע/יהלום “שווה” (למשל: יהלום כחול = 1000 נקודות, מטבע זהב = 500 נקודות).</li>
+          <li><strong>דוגמה</strong> – אם לתלמיד יש 1700 נקודות, הוא יכול לראות: יהלום כחול + מטבע זהב + 200 נקודות.</li>
+          <li><strong>שם</strong> – כותרת שמוצגת לתלמיד (למשל “זהב”, “יהלום”).</li>
+          <li><strong>צבע</strong> – צבע שמייצג את המטבע/היהלום בתצוגה.</li>
+          <li><strong>הוסף מטבע</strong> – מוסיף שורה חדשה.</li>
+          <li><strong>שמור / סגור ללא שמירה</strong> – שמירת ההגדרות או ביטול.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/05.png" alt="יעד נקודות (פס התקדמות)" />
+        <div class="shot-caption">הגדרת יעד נקודות (פס התקדמות לתלמיד).</div>
+
+        <ul class="checklist">
+          <li><strong>הפעל פס יעד</strong> – הפעלה/כיבוי של פס התקדמות בעמדה הציבורית.</li>
+          <li><strong>סוג יעד</strong> – בחירה אם היעד מחושב בצורה מוחלטת (מס׳ נקודות) או יחסית (אחוזים).</li>
+          <li><strong>יעד מוחלט (נקודות)</strong> – כמה נקודות צריך כדי להגיע ל־100%.</li>
+          <li><strong>יעד יחסי (% מקסימום נקודות)</strong> – אם עובדים ביחס למקסימום/מסגרת מוגדרת, אפשר לקבוע את האחוז.</li>
+          <li><strong>הצג טקסט אחוזים על הפס</strong> – מציג לתלמיד מספר/אחוז התקדמות על גבי הפס עצמו.</li>
+          <li><strong>צבע מלא / צבע ריק / צבע מסגרת</strong> – התאמת צבעים כדי שהפס ייראה ברור על הרקע.</li>
+          <li><strong>שמור</strong> – שמירת ההגדרה לכל העמדות שמחוברות לאותה תיקייה משותפת.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/06.png" alt="צלילי אירועים בעמדה הציבורית" />
+        <div class="shot-caption">הגדרת צלילי אירועים (מוזיקה/צלילים לפי אירוע).</div>
+
+        <ul class="checklist">
+          <li><strong>רשימת אירועים</strong> – בצד ימין מופיעים אירועים במערכת (למשל תיקוף רגיל, כרטיס לא מזוהה, בונוסים וכו׳).</li>
+          <li><strong>בחירת צליל</strong> – לכל אירוע יש רשימה נפתחת של צלילים מובנים.</li>
+          <li><strong>אייקון תיקייה</strong> – בחירת קובץ אודיו חיצוני לאירוע הספציפי.</li>
+          <li><strong>PLAY</strong> – בדיקה מיידית של הצליל כדי לוודא שהוא מתאים ולא חזק מדי.</li>
+          <li><strong>הערה שימושית</strong> – אם לא מגדירים צליל לאירוע, המערכת תשתמש בברירת מחדל.</li>
+          <li><strong>שמור / סגור ללא שמירה</strong> – שמירת כל הצלילים או יציאה בלי לשנות.</li>
+        </ul>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="public">
+        <h2 class="section-title"><img class="section-icon" src="תמונות/להוראות/public.png" alt="אייקון עמדה ציבורית" /> עמדה ציבורית – מה קורה שם?</h2>
+        <p>
+          העמדה הציבורית מיועדת לתלמידים: סורקים כרטיס ורואים נקודות, הודעות והתקדמות.
+          היא גם המקום שבו מפעילים/מסיימים מצבים מסוימים עם כרטיסי מאסטר.
+        </p>
+
+        <h3>מה התלמיד רואה בסריקה</h3>
+        <ul class="checklist">
+          <li><strong>נקודות</strong> – בצבע לפי טווח (בהגדרת שדרוגים).</li>
+          <li><strong>הודעות</strong> – כללית / לפי נקודות / אישית.</li>
+          <li><strong>תמונה</strong> – אם קיימת ומופעלת בהגדרות.</li>
+          <li><strong>טיקר חדשות</strong> – אם הוגדר בחלון “חדשות”.</li>
+        </ul>
+
+        <h3>כרטיסי מאסטר</h3>
+        <table class="kv">
+          <tr><th>כרטיס מאסטר 1</th><td>יציאה/תפריט מפעיל בעמדה הציבורית.</td></tr>
+          <tr><th>כרטיס מאסטר 2</th><td>הפעלה/סיום של מצבים מסוימים (כפי שהוגדר במערכת).</td></tr>
+        </table>
+
+        <img class="shot full" src="תמונות/להוראות/34.png" alt="דוגמה למסך העמדה הציבורית" />
+        <div class="shot-caption">מסך העמדה הציבורית – תצוגת תלמיד בסריקה.</div>
+
+        <img class="shot small" src="תמונות/להוראות/33.png" alt="מסך העמדה הציבורית – דוגמה נוספת" />
+        <div class="shot-caption">דוגמה נוספת למסך העמדה הציבורית (רקע/פריסה משתנים לפי הגדרות).</div>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="messages">
+        <h2>הודעות, חדשות ופרסומות</h2>
+        <p>
+          חלון ההודעות מאפשר לשלב מסרים מעודדים, מידע לתלמידים, והצגה מתקדמת (טיקר/פרסומות).
+        </p>
+
+        <h3>סוגי הודעות – איך בוחרים?</h3>
+        <table class="kv">
+          <tr><th>הודעות כלליות</th><td>לכולם. אפשר “תמיד” או “רק בסריקה”.</td></tr>
+          <tr><th>הודעות לפי נקודות</th><td>המערכת בוחרת לפי טווח הניקוד של התלמיד.</td></tr>
+          <tr><th>הודעות אישיות</th><td>לתלמיד ספציפי (מתוך הניהול או מהאקסל).</td></tr>
+          <tr><th>חדשות</th><td>טקסטים מתחלפים ברצועה התחתונה.</td></tr>
+          <tr><th>פרסומות</th><td>חלון קופץ עם טקסט/תמונה, שמופיע לפי הגדרה או אחרי זמן ללא תיקופים.</td></tr>
+        </table>
+
+        <div class="note warn">
+          <strong>המלצה חשובה:</strong>
+          בתחילת המבצע אל תפעילו בבת אחת את כל האפשרויות (פרסומות, מצגת, בונוסים, מטבעות, חדשות ועוד).
+          תתחילו עם בסיס, ורק אחרי שהכל יציב – מוסיפים שכבה־שכבה, כדי לשמור בכל שלב על תחושת חידוש ו"באזז".
+        </div>
+
+        <h3>הודעות כלליות</h3>
+        <img class="shot small" src="תמונות/להוראות/07.png" alt="ניהול הודעות כלליות" />
+        <div class="shot-caption">ניהול הודעות כלליות.</div>
+
+        <ul class="checklist">
+          <li><strong>טאבים עליונים</strong> – מעבר בין סוגי הודעות (כלליות/לפי נקודות/חדשות/בונוסים/פרסומות).</li>
+          <li><strong>טבלת הודעות</strong> – כל שורה היא הודעה אחת.</li>
+          <li><strong>עמודת “מתי”</strong> – קובעת אם ההודעה מופיעה תמיד, או רק בעת הצגת כרטיס/סריקה.</li>
+          <li><strong>סטטוס</strong> – האם ההודעה פעילה כרגע.</li>
+          <li><strong>הוסף הודעה</strong> – יצירת הודעה חדשה.</li>
+          <li><strong>ערוך</strong> – שינוי ההודעה/תוכן/הגדרות.</li>
+          <li><strong>הפעל/בטל</strong> – מאפשר להשאיר הודעה במערכת אבל לא להציג אותה.</li>
+          <li><strong>מחק</strong> – הסרת הודעה.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <h3>הודעות לפי טווח נקודות</h3>
+
+        <img class="shot small" src="תמונות/להוראות/08.png" alt="הודעות לפי טווח נקודות" />
+        <div class="shot-caption">הודעות לפי טווח נקודות.</div>
+
+        <ul class="checklist">
+          <li><strong>טווח נקודות</strong> – לכל שורה מגדירים “מ־X עד Y”.</li>
+          <li><strong>הודעה</strong> – הטקסט שיוצג לתלמיד אם הוא נמצא בטווח הזה.</li>
+          <li><strong>סטטוס</strong> – האם שורת ההודעה פעילה.</li>
+          <li><strong>הוסף טווח</strong> – יצירת טווח חדש עם הודעה מתאימה.</li>
+          <li><strong>ערוך / הפעל/בטל / מחק</strong> – ניהול השורה שנבחרה.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <h3>חדשות (טיקר)</h3>
+        <img class="shot" src="תמונות/להוראות/09.png" alt="ניהול חדשות בעמדה הציבורית" />
+        <div class="shot-caption">ניהול חדשות (טיקר) – הפעלה/כיבוי, מהירות וסינונים.</div>
+
+        <ul class="checklist">
+          <li><strong>מתגים עליונים</strong> – בחירת “מקורות”/סוגי חדשות שיופיעו בטיקר (למשל ימי השבוע, תאריך ייחודי, חגים וכו׳).</li>
+          <li><strong>מהירות טיקר</strong> – בחירה מרשימה (איטי/רגיל/מהיר) כדי להתאים את הקריאות לתלמידים.</li>
+          <li><strong>טבלת חדשות</strong> – כל שורה היא פריט חדשות אחד.</li>
+          <li><strong>תאריך תזמון</strong> – אם מוגדר, הפריט יופיע רק בטווח התאריכים הרלוונטי.</li>
+          <li><strong>סטטוס</strong> – האם הפריט פעיל או כבוי.</li>
+          <li><strong>הוסף חדשות</strong> – יצירת פריט חדש.</li>
+          <li><strong>ערוך / מחק</strong> – ניהול הפריט שנבחר.</li>
+          <li><strong>כבה/הפעל</strong> – השבתה/הפעלה של פריט בלי למחוק אותו.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot" src="תמונות/להוראות/10.png" alt="עריכת פריט חדשות" />
+        <div class="shot-caption">עריכת פריט חדשות – טקסט + תזמון (אופציונלי).</div>
+
+        <ul class="checklist">
+          <li><strong>טקסט חדשות</strong> – הטקסט שיופיע ברצועת הטיקר.</li>
+          <li><strong>תזמון חדשות (אופציונלי)</strong> – אם ממלאים תאריכים, הפריט יוצג רק בין התאריך התחלה לתאריך סיום.</li>
+          <li><strong>תאריך התחלה / תאריך סיום</strong> – פורמט תאריך כפי שמופיע בשדה (DD.MM.YYYY).</li>
+          <li><strong>השאר ריק</strong> – אם לא רוצים תזמון, משאירים את אזור התאריכים ריק/ברירת מחדל לפי ההנחיה במסך.</li>
+          <li><strong>שמור</strong> – שמירת הפריט וחזרה לרשימת החדשות.</li>
+        </ul>
+
+        <h3>הודעת "הגעת ראשון להיום"</h3>
+        <img class="shot" src="תמונות/להוראות/11.png" alt="הגדרת הודעת הגעת ראשון להיום" />
+        <div class="shot-caption">הגדרת הודעת “הגעת ראשון להיום”.</div>
+
+        <ul class="checklist">
+          <li><strong>הפעל הודעה</strong> – הפעלה/כיבוי של הפיצ'ר. כשהוא פעיל, יופיע מסר לתלמידים הראשונים לפי הכללים.</li>
+          <li><strong>מצב</strong> – בחירה של “למי ההודעה תפעל”: למשל ראשון בכיתה, ראשונים במערכת, או “X ראשונים” (בהתאם לתצורה).</li>
+          <li><strong>כמה ראשונים (למצב 'X ראשונים')</strong> – מספר התלמידים הראשונים שיקבלו את ההודעה באותו יום.</li>
+          <li><strong>טקסט ההודעה</strong> – ההודעה שתוצג בעמדה הציבורית (אפשר לשנות ניסוח, ולהשתמש בסימני הדגשה/כוכביות לפי השיטה שלכם).</li>
+          <li><strong>בחירת מצב</strong> – ההערה בתחתית מזכירה שניתן לבחור “ראשון לכל כיתה” או “ראשון בכלל המערכת”, כדי להתאים את התמריץ לגודל בית הספר.</li>
+          <li><strong>שמור</strong> – שמירת ההגדרה והחלתה על העמדות שמחוברות לאותה תיקייה משותפת.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <h3>פרסומות</h3>
+        <img class="shot" src="תמונות/להוראות/12.png" alt="ניהול פרסומות" />
+        <div class="shot-caption">ניהול פרסומות (מופיעות לאחר זמן ללא תיקופים).</div>
+
+        <ul class="checklist">
+          <li><strong>טבלת פרסומות</strong> – כל שורה היא פרסומת אחת (טקסט, תזמון, סטטוס).</li>
+          <li><strong>טקסט פרסומת</strong> – הטקסט שיופיע בחלון הקופץ בעמדה הציבורית.</li>
+          <li><strong>תאריך תזמון</strong> – אם מופיע “קבוע”, הפרסומת פעילה תמיד; אם מוגדר טווח תאריכים היא תופיע רק בו.</li>
+          <li><strong>סטטוס</strong> – האם הפרסומת פעילה כרגע.</li>
+          <li><strong>הוסף פרסומת</strong> – יצירת פרסומת חדשה.</li>
+          <li><strong>ערוך</strong> – שינוי טקסט/תמונה/תזמון של הפרסומת שנבחרה.</li>
+          <li><strong>מחק</strong> – הסרת הפרסומת.</li>
+          <li><strong>כבה/הפעל</strong> – השבתה/הפעלה של פרסומת בלי למחוק אותה.</li>
+          <li><strong>למעלה/למטה</strong> – שינוי סדר הפרסומות (משפיע על סדר ההופעה כשיש כמה פרסומות).</li>
+          <li><strong>הגדרות הצגה אוטומטית</strong> – מעבר למסך שמגדיר אחרי כמה זמן ללא תיקופים להציג פרסומת, משך הצגה, ותדירות.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot" src="תמונות/להוראות/13.png" alt="עריכת פרסומת" />
+        <div class="shot-caption">עריכת פרסומת – טקסט + תמונה + תזמון (אופציונלי).</div>
+
+        <ul class="checklist">
+          <li><strong>טקסט פרסומת</strong> – תוכן שיוצג בחלון הפרסומת (אפשר משפט קצר/כמה שורות).</li>
+          <li><strong>תמונה (אופציונלי)</strong> – ניתן לצרף תמונה שתופיע לצד/מעל הטקסט (לפי תבנית הפרסומת בעמדה הציבורית).</li>
+          <li><strong>כפתור “בחר”</strong> – בחירת קובץ תמונה מהמחשב/תיקייה משותפת.</li>
+          <li><strong>כפתור “נקה”</strong> – הסרת התמונה המצורפת מהפרסומת.</li>
+          <li><strong>תזמון פרסומת (אופציונלי)</strong> – אם ממלאים תאריכי התחלה/סיום, הפרסומת תוצג רק בטווח הזה.</li>
+          <li><strong>תאריך התחלה / תאריך סיום</strong> – פורמט תאריך כפי שמופיע בשדה (DD.MM.YYYY).</li>
+          <li><strong>שמור</strong> – שמירה וחזרה לרשימת הפרסומות.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/14.png" alt="הגדרות הצגה אוטומטית לפרסומות" />
+        <div class="shot-caption">הגדרות הצגה אוטומטית לפרסומות.</div>
+
+        <ul class="checklist">
+          <li><strong>אפשר הצגת פרסומות בעמדה הציבורית</strong> – מתג ראשי להפעלה/כיבוי של הצגת פרסומות.</li>
+          <li><strong>הצג אחרי X שניות ללא פעולות</strong> – כמה זמן של “שקט” (ללא תיקופים) צריך לעבור כדי לקפוץ פרסומת.</li>
+          <li><strong>הצג פרסומת למשך X שניות</strong> – כמה זמן הפרסומת תישאר על המסך לפני שתיעלם (אם אין תיקוף שמסתיר אותה קודם).</li>
+          <li><strong>זמן קפיצה בין פרסומות (שניות)</strong> – אם יש כמה פרסומות, זה הפער בין פרסומת לפרסומת.</li>
+          <li><strong>מסגרת סביב חלון הפרסומת</strong> – הדגשת גבולות חלון הפרסומת (עוזר לראות שזה “חלון” ולא חלק מהרקע).</li>
+          <li><strong>שמור</strong> – שמירת ההגדרות.</li>
+          <li><strong>ביטול</strong> – סגירת החלון בלי לשמור.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="recommended">
+        <h2>סדר עבודה מומלץ (כדי שהמערכת תרגיש “כמו מבצע” לאורך זמן)</h2>
+        <div class="note">
+          <strong>שימו לב:</strong>
+          זהו סדר לדוגמה בלבד. כל בית ספר יכול (וכדאי) להתאים את הסדר לפי האופי שלו, הנהלים והקצב שמתאים לצוות.
+        </div>
+        <ul class="checklist">
+          <li><strong>שבוע ראשון</strong>: יבוא תלמידים, כרטיסים, נקודות, הודעה כללית אחת פשוטה.</li>
+          <li><strong>אחרי שהכל יציב</strong>: צבעי ניקוד + יעד/פס התקדמות.</li>
+          <li><strong>אחר כך</strong>: חדשות (טיקר) – טקסטים קצרים ומעודדים.</li>
+          <li><strong>בהדרגה</strong>: בונוס זמנים / בונוס מורה / פרסומות / מצגת.</li>
+        </ul>
+        <div class="note">
+          <strong>למה זה חשוב?</strong>
+          אם מפעילים הכל ביום הראשון, קשה לייצר “משהו חדש” בהמשך. הוספה הדרגתית שומרת עניין ומוטיבציה.
+        </div>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="troubleshooting">
+        <h2>תקלות נפוצות (פתרון מהיר)</h2>
+        <h3>עמדה לא רואה תלמידים / הנתונים שונים בין עמדות</h3>
+        <ul class="checklist">
+          <li>בדקו שכל העמדות מחוברות לאותו <strong>נתיב תיקייה משותפת</strong>.</li>
+          <li>בעמדת ניהול לחצו <strong>רענון</strong>.</li>
+        </ul>
+
+        <h3>אין הרשאות כתיבה לתיקייה המשותפת</h3>
+        <ul class="checklist">
+          <li>בדקו הרשאות שיתוף והרשאות NTFS.</li>
+          <li>במידת הצורך, הגדירו יצירה אוטומטית של תיקייה עם “הפעל מחדש כמנהל”.</li>
+        </ul>
+
+        <h3>שיבוש בתצוגה (גדלים לא נכונים / טקסט חתוך / כפתורים “בורחים”)</h3>
+        <ul class="checklist">
+          <li>ב־Windows: היכנסו ל־<strong>הגדרות &gt; מערכת &gt; תצוגה</strong> והגדירו <strong>קנה מידה (Scaling)</strong> ל־<strong>100%</strong>.</li>
+          <li>ודאו שה־<strong>רזולוציה</strong> מוגדרת ל־<strong>מומלץ</strong> (Recommended).</li>
+        </ul>
+
+        <h3>תצוגה שונה (לוגו/רקע/מצגת/אודיו) בין עמדות</h3>
+        <ul class="checklist">
+          <li>שימו את כל הקבצים בתיקייה המשותפת (או תיקיות משנה) והפנו אליהם משם.</li>
+        </ul>
+
+        <div class="note warn">
+          <strong>טיפ:</strong>
+          אם יש הודעת שגיאה ספציפית (כולל צילום מסך), מומלץ לשמור אותה כדי שניתן יהיה לאבחן מהר את מקור הבעיה.
+        </div>
+
+        <h3>חסימות אנטי־ספאם (לעמדות עם חוקים)</h3>
+        <img class="shot" src="תמונות/להוראות/22.png" alt="ניהול חסימות אנטי-ספאם" />
+        <div class="shot-caption">ניהול חסימות אנטי־ספאם (אזהרות וחסימות לפי מספר תיקופים וזמן).</div>
+
+        <img class="shot small" src="תמונות/להוראות/23.png" alt="הוספת כלל אנטי-ספאם" />
+        <div class="shot-caption">הוספת כלל אנטי־ספאם (סוג, מספר תיקופים, דקות, הודעה, צליל).</div>
+      </div>
+
+      <div class="page-break"></div>
+
+      <div class="card span12" id="cashier">
+        <h2 class="section-title"><img class="section-icon" src="תמונות/להוראות/cashier.png" alt="אייקון עמדת קופה" /> עמדת קופה (ברשיון מיוחד)</h2>
+        <p>
+          עמדת קופה מיועדת למימוש נקודות לרכישות, ניהול מוצרים וקטגוריות, והפעלת מנגנוני מכירה/הדפסות לפי ההגדרות.
+        </p>
+
+        <img class="shot" src="תמונות/להוראות/39.png" alt="עמדת קופה – מסך ראשי" />
+        <div class="shot-caption">עמדת קופה – כניסה/מסך ראשי (משתנה לפי ההגדרה: כניסה ע"י מורה, ע"י תלמיד אחראי, או שירות עצמי).</div>
+
+        <ul class="checklist">
+          <li><strong>מטרת המסך</strong> – לפתוח “סשן קופה” מאובטח לפני שמבצעים רכישות/מימוש נקודות.</li>
+          <li><strong>כניסה באמצעות מורה</strong> – מאפשרת קופה תחת אחריות צוות (בדרך כלל לפי כרטיס מורה/מנהל).</li>
+          <li><strong>כניסה באמצעות תלמיד אחראי</strong> – מאפשרת לייעד תלמידים מורשים להפעלת הקופה, לפי הרשאות שהוגדרו בעמדת ניהול.</li>
+          <li><strong>שירות עצמי</strong> – מאפשר לתלמידים לבצע רכישה/מימוש לפי כללי הקופה שהוגדרו (מומלץ רק כשיש מדיניות ברורה ופיקוח מתאים).</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot" src="תמונות/להוראות/40.png" alt="עמדת קופה – חלון מוצרים" />
+        <div class="shot-caption">עמדת קופה – חלון מוצרים/רכישה: בחירת מוצרים, רכישה, שיבוץ אוטומטי באתגרים, הדפסת קבלה + שובר לכל קנייה/אתגר.</div>
+
+        <ul class="checklist">
+          <li><strong>רשימת/כרטיסי מוצרים</strong> – המוצרים המוצגים לפי קטגוריות והגדרות הקופה (כולל תמונות/מחיר בנקודות).</li>
+          <li><strong>בחירת מוצר ורכישה</strong> – ביצוע מימוש נקודות בפועל עבור הפריט שנבחר, בהתאם ליתרת התלמיד ולמגבלות המוצר.</li>
+          <li><strong>שיבוץ אוטומטי באתגרים</strong> – לפי הגדרת הקופה/המוצר: רכישה יכולה ליצור אתגר למימוש או שיוך אוטומטי לזרימת מימוש.</li>
+          <li><strong>הדפסה אוטומטית</strong> – אפשרות להדפיס <strong>קבלה</strong> וכן <strong>שובר</strong> לכל קנייה / לכל אתגר למימוש, לפי ההגדרות בקופה.</li>
+          <li><strong>הדפסה חוזרת</strong> – במידת הצורך, אפשר להדפיס שוב קבלה/שובר עבור העסקה האחרונה או עסקה שנבחרה (לפי האפשרויות במסך).</li>
+          <li><strong>ביטול קנייה</strong> – ביטול רכישה/עסקה כאשר נבחר פריט בטעות או לפי מדיניות הקופה (לרוב כולל החזרת נקודות, בהתאם להגדרות).</li>
+        </ul>
+
+        <div class="note">
+          <strong>חשוב:</strong>
+          את <strong>כל הגדרות הקופה</strong> מבצעים בעמדת <strong>הניהול</strong>.
+          בנוסף, <strong>תמונות המוצרים</strong> וה־<strong>לוגו שמודפס על הקבלה</strong> צריכים להיות שמורים במיקום משותף (תיקייה משותפת), כדי שכל המחשבים יראו וידפיסו אותו דבר.
+        </div>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot" src="תמונות/להוראות/26.png" alt="ניהול קופה" />
+        <div class="shot-caption">ניהול קופה: הוספת קטגוריות ומוצרים, וניהול הגדרות הקופה.</div>
+
+        <ul class="checklist">
+          <li><strong>מטרת החלון</strong> – ניהול “הקטלוג” של הקופה: קטגוריות, מוצרים, אתגרים מתוזמנים והגדרות הדפסה/התנהגות.</li>
+          <li><strong>רשימת קטגוריות</strong> – מגדירה איך המוצרים מסודרים לתצוגה (למשל “ממתקים”, “הפתעות”, “כרטיסים”).</li>
+          <li><strong>רשימת מוצרים</strong> – כל מוצר כולל שם, מחיר בנקודות, תמונה, ומגבלות (לפי מה שהוגדר במוצר).</li>
+          <li><strong>הוסף/ערוך/מחק</strong> – פעולות ניהול בסיסיות לקטגוריות ומוצרים (מומלץ למחוק בזהירות כדי לא לפגוע בהיסטוריית רכישות/מימושים).</li>
+          <li><strong>הגדרות קופה</strong> – מעבר למסך ההגדרות (תמונה 29) שבו מגדירים הדפסה/אישורים/לוגו ועוד.</li>
+          <li><strong>תלמידים אחראיים</strong> – מעבר למסך הרשאות להפעלת הקופה ע"י תלמידים אחראיים (תמונה 30).</li>
+          <li><strong>שמירה</strong> – בסוף כל שינוי, ודאו שהשינויים נשמרו ומגיעים לכל העמדות דרך התיקייה המשותפת.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/27.png" alt="עריכת מוצר" />
+        <div class="shot-caption">עריכת מוצר: שם, קטגוריה, תמונה, מחיר בנקודות, ומגבלות.</div>
+
+        <ul class="checklist">
+          <li><strong>שם מוצר</strong> – השם שמופיע במסך המוצרים בקופה (כדאי שיהיה קצר וברור).</li>
+          <li><strong>קטגוריה</strong> – קובע באיזו קבוצה המוצר יופיע (משפיע על הניווט במסך הקופה).</li>
+          <li><strong>תמונה</strong> – תמונת המוצר לתצוגה בקופה (מומלץ לשמור בתיקייה משותפת כדי שלא “ייעלם” בעמדות אחרות).</li>
+          <li><strong>מחיר (נקודות)</strong> – כמה נקודות יורדות לתלמיד בעת רכישה.</li>
+          <li><strong>מגבלות</strong> – לפי ההגדרה במערכת: למשל הגבלת כמות ליום/לתלמיד/לתקופת מבצע, או מגבלות נוספות שמופיעות במסך.</li>
+          <li><strong>שיוך לאתגר/מימוש</strong> – אם המוצר מוגדר כך, רכישה יכולה ליצור אתגר/שובר למימוש במקום/בזמן מוגדר.</li>
+          <li><strong>שמור / ביטול</strong> – שמירה תחיל את השינוי לכל העמדות; ביטול יוצא בלי לשמור.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/28.png" alt="הגדרת אתגר מתוזמן" />
+        <div class="shot-caption">הגדרת אתגר מתוזמן: שם, תמונה, משך, שעות/תאריכים ומגבלות.</div>
+
+        <ul class="checklist">
+          <li><strong>מטרה</strong> – להגדיר אתגר/מימוש שמופיע בתקופת זמן מסוימת או יוצר תהליך מימוש מסודר לרכישות.</li>
+          <li><strong>שם + תמונה</strong> – איך האתגר מוצג לתלמיד (ובתדפיסים אם מוגדר).</li>
+          <li><strong>משך</strong> – כמה זמן האתגר פעיל או באיזה חלון זמן ניתן לממש (בהתאם להגדרה במסך).</li>
+          <li><strong>שעות/תאריכים</strong> – מגבילים את זמינות האתגר (למשל רק בשעות מסוימות/רק בימים מסוימים/בתאריכים מסוימים).</li>
+          <li><strong>מגבלות</strong> – כמה פעמים מותר לממש/לרכוש, ולמי (לפי מה שמופיע במסך).</li>
+          <li><strong>שימוש בשילוב מוצרים</strong> – מוצרים יכולים להיות מוגדרים כך שרכישה “משובצת” אוטומטית לאתגר הזה.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot small" src="תמונות/להוראות/29.png" alt="הגדרות קופה" />
+        <div class="shot-caption">הגדרות קופה: אישור תשלום, הדפסות, לוגו ותזמון אוטומטי.</div>
+
+        <ul class="checklist">
+          <li><strong>אישור תשלום</strong> – האם לפני הורדת נקודות יש שלב אישור (מקטין טעויות בקופה).</li>
+          <li><strong>הדפסות</strong> – הגדרות קבלה/שובר: מה מדפיסים, מתי מדפיסים, ומה מופיע על הנייר.</li>
+          <li><strong>לוגו להדפסה</strong> – הלוגו שמופיע על הקבלה/שובר (מומלץ לשמור בתיקייה משותפת).</li>
+          <li><strong>הדפסה חוזרת</strong> – אם קיימת אפשרות במסך, ניתן לאפשר/להגדיר הדפסה חוזרת של קבלה/שובר.</li>
+          <li><strong>תזמון אוטומטי</strong> – אפשרויות תזמון/איפוס/חלונות זמן (אם קיימים במסך) שמכוונים את התנהגות הקופה לאורך היום.</li>
+          <li><strong>שמור</strong> – שמירת ההגדרות מחילה אותן על העמדה, ובדרך כלל גם על עמדות נוספות שמחוברות לאותה תיקייה משותפת.</li>
+        </ul>
+
+        <div class="shot-sep"></div>
+
+        <img class="shot xsmall" src="תמונות/להוראות/30.png" alt="תלמידים אחראיים" />
+        <div class="shot-caption">תלמידים אחראיים: רשימת אחראים להגדרות/מכירה לפי הרשאות.</div>
+
+        <ul class="checklist">
+          <li><strong>מה זה “תלמיד אחראי”</strong> – תלמיד שמוגדר כמורשה להפעיל את עמדת הקופה (במקום כניסה של מורה), לפי המדיניות בבית הספר.</li>
+          <li><strong>רשימת אחראים</strong> – בחירה/ניהול של מי נמצא ברשימה (לרוב לפי תלמידים קיימים במערכת).</li>
+          <li><strong>תוקף הרשאה</strong> – אם קיימים שדות זמן/תאריכים, ניתן להגביל את ההרשאה לתקופה.</li>
+          <li><strong>המלצה תפעולית</strong> – מומלץ להשתמש בזה רק אם יש פיקוח, נהלים ברורים, והדפסה/לוגים פעילים.</li>
+        </ul>
+
+      </div>
+    </div>
+
+    <div class="footer">
+      המסמך מיועד לשימוש כללי במערכת.<br />
+      <span style="font-weight:900; font-size:16px; color: var(--text);">בהצלחה רבה, ותיהנו מהמערכת!</span>
+    </div>
+  </div>
+</body>
+</html>

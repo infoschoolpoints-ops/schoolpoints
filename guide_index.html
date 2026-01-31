@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SchoolPoints – מדריך והוראות</title>
+  <style>
+    :root {
+      --bg1: #0f172a;
+      --bg2: #1e293b;
+      --card: rgba(255, 255, 255, 0.06);
+      --card2: rgba(255, 255, 255, 0.08);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #e2e8f0;
+      --muted: #a3b2c7;
+      --accent: #38bdf8;
+      --accent2: #22c55e;
+      --warn: #f59e0b;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+      background: radial-gradient(1200px 600px at 20% 10%, #1d4ed8 0%, rgba(29, 78, 216, 0) 55%),
+                  radial-gradient(900px 500px at 80% 20%, #7c3aed 0%, rgba(124, 58, 237, 0) 55%),
+                  linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 100%);
+      color: var(--text);
+      direction: rtl;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px 18px 42px;
+    }
+
+    .top {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+
+    .title {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0.2px;
+    }
+
+    .sub {
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .badges {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-start;
+    }
+
+    .badge {
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+      padding: 7px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .card {
+      grid-column: span 12;
+      border: 1px solid var(--border);
+      background: var(--card);
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 20px 80px rgba(0,0,0,0.35);
+    }
+
+    @media (min-width: 900px) {
+      .card.span6 { grid-column: span 6; }
+      .card.span4 { grid-column: span 4; }
+      .card.span8 { grid-column: span 8; }
+    }
+
+    .card h2 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+
+    .card p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .links {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+    }
+
+    a.btn {
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--card2);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    a.btn.primary {
+      border-color: rgba(56, 189, 248, 0.45);
+      background: rgba(56, 189, 248, 0.12);
+    }
+
+    a.btn.good {
+      border-color: rgba(34, 197, 94, 0.45);
+      background: rgba(34, 197, 94, 0.12);
+    }
+
+    a.btn.warn {
+      border-color: rgba(245, 158, 11, 0.45);
+      background: rgba(245, 158, 11, 0.12);
+    }
+
+    .checklist {
+      margin: 0;
+      padding-right: 18px;
+      color: var(--text);
+      line-height: 1.8;
+      font-size: 14px;
+    }
+
+    .checklist li {
+      margin: 6px 0;
+      color: var(--text);
+    }
+
+    .hint {
+      margin-top: 10px;
+      border-right: 4px solid rgba(56,189,248,0.7);
+      background: rgba(56,189,248,0.08);
+      border-radius: 12px;
+      padding: 12px 14px;
+      color: var(--text);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+
+    .footer {
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 12px;
+      background: rgba(0, 0, 0, 0.25);
+      border: 1px solid rgba(255,255,255,0.14);
+      padding: 2px 6px;
+      border-radius: 8px;
+      color: #e2e8f0;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <div class="title">
+        <h1>SchoolPoints – מדריך והוראות</h1>
+        <div class="sub">
+          דף זה מרכז את כל ההוראות במקום אחד.
+          אפשר לפתוח כל מדריך בנפרד, ולהדפיס ל־PDF לפי הצורך.
+        </div>
+      </div>
+      <div class="badges">
+        <span class="badge">RTL</span>
+        <span class="badge">מדריך בסיס</span>
+        <span class="badge">תמונות: בהמשך</span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card span6">
+        <h2>מדריך למנהל מערכת (עמדת ניהול)</h2>
+        <p>
+          הגדרה ראשונית, יבוא/יצוא, הודעות, בונוסים, כרטיסי מאסטר ורישוי.
+        </p>
+        <div class="links">
+          <a class="btn primary" href="guide_user.html">📘 פתיחה</a>
+          <a class="btn" href="guide_admin_backup_2026-01-09.html">🗂️ גיבוי</a>
+        </div>
+      </div>
+
+      <div class="card span6">
+        <h2>מדריך למורה</h2>
+        <p>
+          עבודה שוטפת עם תלמידים, עדכון נקודות, הודעות, ובונוס מורה.
+        </p>
+        <div class="links">
+          <a class="btn good" href="guide_teacher.html">👨‍🏫 פתיחה</a>
+        </div>
+      </div>
+
+      <div class="card span12">
+        <h2>התקנה ראשונית (מדריך בסיס)</h2>
+        <p>
+          מתאים להפעלה הראשונה: בחירת תיקיית נתונים, התקנת עמדות, והגדרות התחלה.
+        </p>
+        <div class="links">
+          <a class="btn warn" href="הוראות התקנה ראשוניות.html">⬇️ פתיחה</a>
+        </div>
+        <div class="hint">
+          <strong>טיפ:</strong>
+          אם רוצים לשמור כ־PDF: פתח בדפדפן → הדפסה (<code>Ctrl+P</code>) → “Save as PDF”.
+        </div>
+      </div>
+
+      <div class="card span8">
+        <h2>צ’ק-ליסט לצילומי מסך (נוסיף בהמשך)</h2>
+        <p>
+          כשנגיע לשלב התמונות, תצלם את המסכים הבאים (אפשר לפי הסדר):
+        </p>
+        <ul class="checklist">
+          <li>מסך כניסה / זיהוי מנהל בעמדת ניהול</li>
+          <li>הגדרות מערכת: תיקיית רשת משותפת + רישום מערכת/רישיון</li>
+          <li>מסך תלמידים בעמדת ניהול: כפתורי יבוא/יצוא/סינכרון</li>
+          <li>חלון הודעות: סטטי / לפי נקודות / חדשות / פרסומות</li>
+          <li>עמדה ציבורית: מסך ראשי במצב רגיל + דוגמת בונוס זמנים</li>
+          <li>ניהול קופה: טאב מוצרים + טאב הגדרות קופה</li>
+        </ul>
+      </div>
+
+      <div class="card span4">
+        <h2>הערות מהירות</h2>
+        <ul class="checklist">
+          <li>לפתיחה מתוך התוכנה: כפתור <strong>❓ הוראות</strong></li>
+          <li>קבצים נמצאים בתיקיית התוכנה ליד ה־EXE</li>
+          <li>תמונות נוסיף כקבצים בתיקייה ונקשר מהדף</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      קובץ זה הוא “בסיס מדריך” – נרחיב עם תמונות, חיצים והסברים מדויקים אחרי שתצלם את הצילומים.
+    </div>
+  </div>
+</body>
+</html>
