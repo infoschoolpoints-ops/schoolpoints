@@ -18,6 +18,7 @@ import hmac
 import shutil
 import urllib.parse
 import datetime
+import traceback
 
 try:
     import psycopg2
@@ -5429,19 +5430,20 @@ def web_admin(request: Request):
 
 @app.get("/web/students", response_class=HTMLResponse)
 def web_students(request: Request):
-    guard = _web_require_teacher(request)
-    if guard:
-        return guard
+    try:
+        guard = _web_require_teacher(request)
+        if guard:
+            return guard
 
-    tenant_id = _web_tenant_from_cookie(request)
-    if not tenant_id:
-        return RedirectResponse(url='/web/signin', status_code=302)
+        tenant_id = _web_tenant_from_cookie(request)
+        if not tenant_id:
+            return RedirectResponse(url='/web/signin', status_code=302)
 
-    teacher = _web_current_teacher_permissions(request)
-    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
-    can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
+        teacher = _web_current_teacher_permissions(request)
+        is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+        can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
 
-    body = """
+        body = """
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
       <input id="q" placeholder="חיפוש" style="padding:10px 12px; border:1px solid var(--line); border-radius:10px; min-width:220px;" />
       <span id="st" style="opacity:.85;">טוען...</span>
@@ -5735,9 +5737,13 @@ def web_students(request: Request):
     </script>
     """
 
-    body = body.replace('__IS_ADMIN__', '1' if is_admin else '0')
-    body = body.replace('__CAN_EDIT_CARD__', '1' if can_edit_card else '0')
-    return HTMLResponse(_basic_web_shell("ניהול תלמידים", body, request=request))
+        body = body.replace('__IS_ADMIN__', '1' if is_admin else '0')
+        body = body.replace('__CAN_EDIT_CARD__', '1' if can_edit_card else '0')
+        return HTMLResponse(_basic_web_shell("ניהול תלמידים", body, request=request))
+    except Exception as exc:
+        print('WEB_STUDENTS_ERROR', repr(exc))
+        traceback.print_exc()
+        return HTMLResponse('Internal Server Error', status_code=500)
 
 
 @app.get('/web/spaces-test', response_class=HTMLResponse)
