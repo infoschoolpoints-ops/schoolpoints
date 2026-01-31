@@ -2050,6 +2050,16 @@ def _web_current_teacher_permissions(request: Request) -> Dict[str, Any]:
 
     conn = _tenant_school_db(str(tenant_id))
     try:
+        try:
+            if not USE_POSTGRES:
+                cols = set([c.lower() for c in _table_columns(conn, 'teachers')])
+                if 'can_edit_student_card' not in cols:
+                    conn.execute('ALTER TABLE teachers ADD COLUMN can_edit_student_card INTEGER DEFAULT 1')
+                if 'can_edit_student_photo' not in cols:
+                    conn.execute('ALTER TABLE teachers ADD COLUMN can_edit_student_photo INTEGER DEFAULT 1')
+                conn.commit()
+        except Exception:
+            pass
         cur = conn.cursor()
         cur.execute(
             _sql_placeholder(
