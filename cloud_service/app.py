@@ -5431,7 +5431,7 @@ def web_students(request: Request):
     is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
     can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
 
-    body = f"""
+    body = """
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
       <input id="q" placeholder="חיפוש" style="padding:10px 12px; border:1px solid var(--line); border-radius:10px; min-width:220px;" />
       <span id="st" style="opacity:.85;">טוען...</span>
@@ -5484,8 +5484,8 @@ def web_students(request: Request):
       const qBody = document.getElementById('q_body');
       const qRun = document.getElementById('q_run');
       const qCancel = document.getElementById('q_cancel');
-      const IS_ADMIN = {1 if is_admin else 0};
-      const CAN_EDIT_CARD = {1 if can_edit_card else 0};
+      const IS_ADMIN = __IS_ADMIN__;
+      const CAN_EDIT_CARD = __CAN_EDIT_CARD__;
       let selectedId = null;
       let timer = null;
 
@@ -5724,6 +5724,9 @@ def web_students(request: Request):
       load();
     </script>
     """
+
+    body = body.replace('__IS_ADMIN__', '1' if is_admin else '0')
+    body = body.replace('__CAN_EDIT_CARD__', '1' if can_edit_card else '0')
     return HTMLResponse(_basic_web_shell("ניהול תלמידים", body, request=request))
 
 
