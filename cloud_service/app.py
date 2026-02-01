@@ -2442,6 +2442,70 @@ def _persist_ads_media(request: Request, tenant_id: str, upload: UploadFile) -> 
     return key
 
 
+def _ads_media_url(request: Request, tenant_id: str, image_path: str) -> str:
+    p = str(image_path or '').strip()
+    if not p:
+        return ''
+    lower = p.lower()
+    if lower.startswith('http://') or lower.startswith('https://'):
+        return p
+    if p.startswith('tenants/') and SPACES_CDN_BASE_URL:
+        base = str(SPACES_CDN_BASE_URL or '').strip().rstrip('/')
+        return base + '/' + urllib.parse.quote(p)
+    if p.startswith('tenants/') and SPACES_ENDPOINT and SPACES_BUCKET:
+        base = str(SPACES_ENDPOINT or '').strip().rstrip('/')
+        return f"{base}/{SPACES_BUCKET}/" + urllib.parse.quote(p)
+    rel = p.replace('\\', '/').lstrip('/')
+    base = _public_base_url(request)
+    try:
+        quoted = urllib.parse.quote(rel)
+    except Exception:
+        quoted = rel
+    return f"{base}/web/ads-media-file/{quoted}"
+
+
+def _record_message_event(
+    *,
+    tenant_id: str,
+    entity_type: str,
+    action_type: str,
+    payload: Dict[str, Any] | None,
+    entity_id: Any = None,
+) -> None:
+    try:
+        pid = entity_id
+        if pid is None and isinstance(payload, dict):
+            pid = payload.get('id')
+        created_at = None
+        if isinstance(payload, dict):
+            created_at = payload.get('created_at')
+        _record_sync_event(
+            tenant_id=str(tenant_id or ''),
+            station_id='web',
+            entity_type=str(entity_type or '').strip(),
+            entity_id=(str(pid) if pid is not None else None),
+            action_type=str(action_type or '').strip(),
+            payload=(payload or {}),
+            created_at=(str(created_at) if created_at else None),
+        )
+    except Exception:
+        pass
+
+
+def _fetch_message_row(conn, table: str, row_id: int) -> Dict[str, Any] | None:
+    cur = conn.cursor()
+    cur.execute(_sql_placeholder(f'SELECT * FROM {table} WHERE id = ? LIMIT 1'), (int(row_id),))
+    row = cur.fetchone()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return dict(row)
+    try:
+        return {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
+    except Exception:
+        return None
+
+
 def _web_current_teacher(request: Request) -> Dict[str, Any] | None:
     tenant_id = _web_tenant_from_cookie(request)
     teacher_id = _web_teacher_from_cookie(request)
