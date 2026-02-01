@@ -10,6 +10,7 @@ import sys
 import sqlite3
 import csv
 import io
+import re
 import json
 import html
 import secrets
@@ -19,6 +20,7 @@ import shutil
 import urllib.parse
 import datetime
 import traceback
+import uuid
 
 try:
     import psycopg2
@@ -26,7 +28,7 @@ try:
 except Exception:
     psycopg2 = None  # type: ignore[assignment]
     psycopg2_extras = None  # type: ignore[assignment]
-from fastapi import FastAPI, Header, HTTPException, Form, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Form, Query, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse
 from pydantic import BaseModel
 
@@ -804,6 +806,55 @@ def _read_text_file(path: str) -> str:
         return ""
 
 
+def _guide_image_sort_key(name: str) -> tuple:
+    stem = os.path.splitext(name)[0]
+    if stem.isdigit():
+        return (0, int(stem))
+    return (1, stem.lower())
+
+
+def _replace_guide_base64_images(html_text: str) -> str:
+    images_dir = os.path.join(ROOT_DIR, 'תמונות', 'להוראות')
+    if not os.path.isdir(images_dir):
+        return html_text
+
+    icon_names = ['admin.png', 'public.png', 'cashier.png', 'installer.png']
+    replacements: List[str] = []
+    for icon in icon_names:
+        icon_path = os.path.join(images_dir, icon)
+        if os.path.isfile(icon_path):
+            replacements.append(f'/web/assets/guide_images/{icon}')
+        else:
+            fallback = os.path.join(ROOT_DIR, 'icons', icon)
+            if os.path.isfile(fallback):
+                replacements.append(f'/web/assets/icons/{icon}')
+
+    other_files: List[str] = []
+    for name in os.listdir(images_dir):
+        if name in icon_names:
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp'):
+            other_files.append(name)
+    other_files.sort(key=_guide_image_sort_key)
+    replacements.extend(f'/web/assets/guide_images/{name}' for name in other_files)
+    if not replacements:
+        return html_text
+
+    pattern = re.compile(r'(<img[^>]+src=["\"])(data:image[^"\"]+)(["\"][^>]*>)', re.IGNORECASE)
+    index = 0
+
+    def repl(match: re.Match) -> str:
+        nonlocal index
+        if index >= len(replacements):
+            return match.group(0)
+        new_src = replacements[index]
+        index += 1
+        return f"{match.group(1)}{new_src}{match.group(3)}"
+
+    return pattern.sub(repl, html_text)
+
+
 @app.get('/web/assets/{asset_path:path}', include_in_schema=False)
 def web_assets(asset_path: str) -> Response:
     rel = str(asset_path or '').replace('\\', '/').lstrip('/')
@@ -815,9 +866,12 @@ def web_assets(asset_path: str) -> Response:
     if rel_l.startswith('icons/'):
         base = os.path.join(ROOT_DIR, 'icons')
         rel = rel[len('icons/'):]
+    elif rel_l.startswith('guide_images/'):
+        base = os.path.join(ROOT_DIR, 'תמונות', 'להוראות')
+        rel = rel[len('guide_images/'):]
     elif rel_l.startswith('equipment_required_files/'):
         base = os.path.join(ROOT_DIR, 'equipment_required_files')
-        rel = rel[len('equipment_required_files/'):]
+        rel = rel[len('equipment_required_files/'):] 
 
     path = os.path.abspath(os.path.join(base, rel))
     base_abs = os.path.abspath(base)
@@ -1729,6 +1783,67 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
                 )
                 '''
             )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".static_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    message TEXT NOT NULL,
+                    show_always INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".threshold_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    min_points INTEGER NOT NULL,
+                    max_points INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".news_items (
+                    id BIGSERIAL PRIMARY KEY,
+                    text TEXT NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    sort_order INTEGER,
+                    start_date TEXT,
+                    end_date TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".ads_items (
+                    id BIGSERIAL PRIMARY KEY,
+                    text TEXT NOT NULL,
+                    image_path TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    sort_order INTEGER,
+                    start_date TEXT,
+                    end_date TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".student_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    student_id BIGINT NOT NULL,
+                    message TEXT NOT NULL,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
             conn.commit()
             return schema
         except Exception as e:
@@ -1803,6 +1918,67 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
             photo_number TEXT,
             private_message TEXT,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS static_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            message TEXT NOT NULL,
+            show_always INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS threshold_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            min_points INTEGER NOT NULL,
+            max_points INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS news_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
+            sort_order INTEGER,
+            start_date TEXT,
+            end_date TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS ads_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            text TEXT NOT NULL,
+            image_path TEXT,
+            is_active INTEGER DEFAULT 1,
+            sort_order INTEGER,
+            start_date TEXT,
+            end_date TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS student_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            message TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         '''
@@ -1985,6 +2161,86 @@ class TeacherClassesPayload(BaseModel):
     classes: List[str] = []
 
 
+class StaticMessagePayload(BaseModel):
+    message_id: int | None = None
+    message: str | None = None
+    show_always: int | None = None
+
+
+class StaticMessageTogglePayload(BaseModel):
+    message_id: int
+
+
+class ThresholdMessagePayload(BaseModel):
+    message_id: int | None = None
+    min_points: int | None = None
+    max_points: int | None = None
+    message: str | None = None
+
+
+class ThresholdMessageTogglePayload(BaseModel):
+    message_id: int
+
+
+class NewsItemPayload(BaseModel):
+    news_id: int | None = None
+    text: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+class NewsItemTogglePayload(BaseModel):
+    news_id: int
+
+
+class NewsReorderPayload(BaseModel):
+    news_id: int
+    direction: str
+
+
+class AdsItemPayload(BaseModel):
+    ads_id: int | None = None
+    text: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    image_path: str | None = None
+
+
+class AdsItemTogglePayload(BaseModel):
+    ads_id: int
+
+
+class AdsReorderPayload(BaseModel):
+    ads_id: int
+    direction: str
+
+
+class StudentMessagePayload(BaseModel):
+    message_id: int | None = None
+    student_id: int | None = None
+    message: str | None = None
+
+
+class StudentMessageTogglePayload(BaseModel):
+    message_id: int
+
+
+class NewsSettingsPayload(BaseModel):
+    show_weekday: int | None = None
+    show_hebrew_date: int | None = None
+    show_parsha: int | None = None
+    show_holidays: int | None = None
+    ticker_speed: str | None = None
+
+
+class AdsSettingsPayload(BaseModel):
+    popup_enabled: int | None = None
+    popup_idle_sec: int | None = None
+    popup_show_sec: float | None = None
+    popup_gap_sec: float | None = None
+    popup_border: int | None = None
+
+
 def _safe_int(v: Any, default: int = 0) -> int:
     try:
         return int(v)
@@ -1997,6 +2253,193 @@ def _safe_str(v: Any) -> str:
         return str(v)
     except Exception:
         return ''
+
+
+def _safe_float(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+
+def _bool_int(v: Any, default: int = 0) -> int:
+    if v is None:
+        return int(default)
+    if isinstance(v, bool):
+        return 1 if v else 0
+    if isinstance(v, (int, float)):
+        return 1 if int(v) != 0 else 0
+    s = str(v).strip().lower()
+    if s in ('1', 'true', 'yes', 'on'):
+        return 1
+    if s in ('0', 'false', 'no', 'off'):
+        return 0
+    return int(default)
+
+
+def _normalize_date(value: Any) -> str | None:
+    s = _safe_str(value).strip()
+    if not s:
+        return None
+    if '.' in s:
+        parts = s.split('.')
+        if len(parts) == 3:
+            return f"{parts[2].zfill(4)}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+    if len(s) >= 10 and s[4:5] == '-' and s[7:8] == '-':
+        return s[:10]
+    return s
+
+
+def _row_value(row: Any, key: str, index: int = 0) -> Any:
+    try:
+        return row[key]
+    except Exception:
+        try:
+            return row.get(key)
+        except Exception:
+            try:
+                return row[index]
+            except Exception:
+                return None
+
+
+def _get_setting_value(conn, key: str, default: str = '') -> str:
+    cur = conn.cursor()
+    cur.execute(_sql_placeholder('SELECT value FROM settings WHERE "key" = ? LIMIT 1'), (str(key or '').strip(),))
+    row = cur.fetchone()
+    if not row:
+        return default
+    val = _row_value(row, 'value', 0)
+    s = str(val) if val is not None else ''
+    return s if s else default
+
+
+def _set_setting_value(conn, key: str, value: Any) -> None:
+    cur = conn.cursor()
+    cur.execute(
+        _sql_placeholder(
+            'INSERT INTO settings ("key", value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
+            'ON CONFLICT("key") DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP'
+        ),
+        (str(key or '').strip(), str(value if value is not None else '').strip())
+    )
+
+
+def _get_system_settings(tenant_id: str) -> Dict[str, Any]:
+    if not tenant_id:
+        return {}
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'system_settings', '{}')
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    try:
+        return json.loads(value_json) if value_json else {}
+    except Exception:
+        return {}
+
+
+def _get_shared_folder_for_tenant(tenant_id: str) -> str:
+    cfg = _get_system_settings(tenant_id)
+    try:
+        shared = str(cfg.get('shared_folder') or cfg.get('network_root') or '').strip()
+    except Exception:
+        shared = ''
+    if not shared:
+        return ''
+    try:
+        if os.path.isdir(shared):
+            return shared
+    except Exception:
+        return ''
+    return ''
+
+
+def _reset_sort_order(conn, table: str) -> None:
+    cur = conn.cursor()
+    cur.execute(f'SELECT id FROM {table} ORDER BY created_at DESC')
+    rows = cur.fetchall() or []
+    order = 1
+    for row in rows:
+        rid = _safe_int(_row_value(row, 'id', 0), 0)
+        if rid <= 0:
+            continue
+        cur.execute(_sql_placeholder(f'UPDATE {table} SET sort_order = ? WHERE id = ?'), (order, rid))
+        order += 1
+
+
+def _swap_sort_order(conn, table: str, first_id: int, second_id: int) -> bool:
+    if first_id == second_id:
+        return False
+    cur = conn.cursor()
+    cur.execute(_sql_placeholder(f'SELECT id, sort_order FROM {table} WHERE id IN (?, ?)'), (int(first_id), int(second_id)))
+    rows = cur.fetchall() or []
+    if len(rows) != 2:
+        return False
+    orders: Dict[int, Any] = {}
+    for row in rows:
+        rid = _safe_int(_row_value(row, 'id', 0), 0)
+        orders[rid] = _row_value(row, 'sort_order', 1)
+    order1 = orders.get(int(first_id))
+    order2 = orders.get(int(second_id))
+    if order1 is None or order2 is None:
+        _reset_sort_order(conn, table)
+        cur.execute(_sql_placeholder(f'SELECT id, sort_order FROM {table} WHERE id IN (?, ?)'), (int(first_id), int(second_id)))
+        rows = cur.fetchall() or []
+        orders = {}
+        for row in rows:
+            rid = _safe_int(_row_value(row, 'id', 0), 0)
+            orders[rid] = _row_value(row, 'sort_order', 1)
+        order1 = orders.get(int(first_id))
+        order2 = orders.get(int(second_id))
+    if order1 is None or order2 is None:
+        return False
+    cur.execute(_sql_placeholder(f'UPDATE {table} SET sort_order = ? WHERE id = ?'), (order2, int(first_id)))
+    cur.execute(_sql_placeholder(f'UPDATE {table} SET sort_order = ? WHERE id = ?'), (order1, int(second_id)))
+    return True
+
+
+def _persist_ads_media(request: Request, tenant_id: str, upload: UploadFile) -> str:
+    if not upload:
+        return ''
+    ext = ''
+    try:
+        ext = os.path.splitext(str(upload.filename or ''))[1].lower()
+    except Exception:
+        ext = ''
+    if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'):
+        ext = '.png'
+    data = upload.file.read()
+    if not data:
+        return ''
+
+    media_rel = os.path.join('ads_media', f"{uuid.uuid4().hex}{ext}")
+    shared_folder = _get_shared_folder_for_tenant(tenant_id)
+    if shared_folder:
+        try:
+            dst_abs = os.path.join(shared_folder, media_rel)
+            os.makedirs(os.path.dirname(dst_abs), exist_ok=True)
+            with open(dst_abs, 'wb') as f:
+                f.write(data)
+            return media_rel
+        except Exception:
+            return ''
+
+    s3 = _spaces_client()
+    if s3 is None:
+        return ''
+    key = f"tenants/{tenant_id}/{media_rel.replace('\\', '/')}"
+    try:
+        s3.put_object(Bucket=SPACES_BUCKET, Key=key, Body=data, ContentType=upload.content_type or 'application/octet-stream')
+    except Exception:
+        return ''
+    base = str(SPACES_CDN_BASE_URL or '').strip().rstrip('/')
+    if base:
+        return base + '/' + urllib.parse.quote(key)
+    return key
 
 
 def _web_current_teacher(request: Request) -> Dict[str, Any] | None:
@@ -2967,12 +3410,19 @@ def web_equipment_required_content() -> str:
 
 @app.get('/web/guide', response_class=HTMLResponse)
 def web_guide() -> str:
-    path = os.path.join(ROOT_DIR, 'guide_index.html')
+    path = os.path.join(ROOT_DIR, 'guide_user_embedded.html')
     html = _read_text_file(path)
+    if not html:
+        path = os.path.join(ROOT_DIR, 'guide_index.html')
+        html = _read_text_file(path)
     if not html:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
         return _public_web_shell('מדריך', body)
     html = str(html)
+    html = html.replace('file:///C:/ProgramData/SchoolPoints/equipment_required.html', '/web/equipment-required')
+    html = html.replace('file:///C:/%D7%9E%D7%99%D7%A6%D7%93/SchoolPoints/equipment_required.html', '/web/equipment-required')
+    html = html.replace('equipment_required.html', '/web/equipment-required')
+    html = _replace_guide_base64_images(html)
     if '</head>' in html:
         html = html.replace('</head>', '<link rel="icon" href="/web/assets/icons/public.png" /></head>')
     return html
@@ -5463,6 +5913,19 @@ def web_students(request: Request):
         can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
 
         body = """
+    <style>
+      .q-modal { display:none; position:fixed; inset:0; z-index:9999; align-items:center; justify-content:center; padding:16px; background:rgba(8,14,22,.68); backdrop-filter:blur(6px); }
+      .q-card { width:min(820px, 100%); max-height:calc(100vh - 32px); overflow:auto; background:rgba(24,34,52,.96); border:1px solid rgba(255,255,255,.18); border-radius:18px; padding:16px; color:rgba(255,255,255,.95); box-shadow:0 24px 50px rgba(0,0,0,.38); }
+      .q-title { font-weight:950; font-size:18px; margin-bottom:12px; }
+      .q-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-start; margin-top:12px; }
+      .q-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:10px 14px; border-radius:12px; font-weight:900; text-decoration:none; border:1px solid rgba(255,255,255,.18); color:#fff; }
+      .q-btn.blue { background: linear-gradient(135deg, #3498db, #2f80ed); }
+      .q-btn.gray { background: linear-gradient(135deg, #95a5a6, #7f8c8d); }
+      #q_body { color: rgba(255,255,255,.92); }
+      #q_body input, #q_body select { padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.2); background:rgba(8,12,20,.55); color:rgba(255,255,255,.95); }
+      #q_body input::placeholder { color: rgba(255,255,255,.6); }
+    </style>
+
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
       <input id="q" placeholder="חיפוש" style="padding:10px 12px; border:1px solid var(--line); border-radius:10px; min-width:220px;" />
       <span id="st" style="opacity:.85;">טוען...</span>
@@ -5492,13 +5955,13 @@ def web_students(request: Request):
       </table>
     </div>
 
-    <div id="q_modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); align-items:center; justify-content:center; z-index:50;">
-      <div style="width:min(820px, calc(100vw - 24px)); max-height:calc(100vh - 24px); overflow:auto; background:rgba(20,30,40,.92); border:1px solid rgba(255,255,255,.16); border-radius:16px; padding:14px; color:rgba(255,255,255,.92);">
-        <div style="font-weight:950; font-size:18px; margin-bottom:10px;">עדכון מהיר</div>
+    <div id="q_modal" class="q-modal">
+      <div class="q-card">
+        <div class="q-title">עדכון מהיר</div>
         <div id="q_body"></div>
-        <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-start; margin-top:12px;">
-          <a id="q_run" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">בצע</a>
-          <a id="q_cancel" class="gray" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">ביטול</a>
+        <div class="q-actions">
+          <a id="q_run" class="q-btn blue" href="javascript:void(0)">בצע</a>
+          <a id="q_cancel" class="q-btn gray" href="javascript:void(0)">ביטול</a>
         </div>
       </div>
     </div>
@@ -5585,11 +6048,13 @@ def web_students(request: Request):
         if (!qModal) return;
         renderQuickForm();
         qModal.style.display = 'flex';
+        try { document.body.style.overflow = 'hidden'; } catch (e) {}
       }
 
       function closeQuickModal() {
         if (!qModal) return;
         qModal.style.display = 'none';
+        try { document.body.style.overflow = ''; } catch (e) {}
       }
 
       function getSelectedStudentIds() {
