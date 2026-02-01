@@ -5393,6 +5393,54 @@ def web_display_settings(request: Request):
     def _v(k, default=''):
         return html.escape(str(data.get(k, default)))
 
+    style_block = """
+    <style>
+        .form-group { margin-bottom:15px; }
+        .form-group label { display:block; font-weight:600; margin-bottom:5px; }
+        .form-control { width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }
+        .ck { display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }
+        .ck:hover { background:#e9ecef; }
+        .btn { padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }
+        .green { background:#2ecc71; color:white; }
+        .gray { background:#95a5a6; color:white; }
+        .actionbar { display:flex; gap:10px; }
+    </style>
+    """
+
+    script_block = """
+    <script>
+      async function saveSettings() {
+        const payload = {
+            title_text: document.getElementById('p_title').value,
+            subtitle_text: document.getElementById('p_subtitle').value,
+            logo_url: document.getElementById('p_logo').value,
+            background_url: document.getElementById('p_bg').value,
+            refresh_interval: parseInt(document.getElementById('p_refresh').value) || 60,
+            font_size: parseInt(document.getElementById('p_fontsize').value) || 16,
+            enabled: document.getElementById('p_enabled').checked,
+            dark_mode: document.getElementById('p_dark').checked,
+            show_clock: document.getElementById('p_clock').checked,
+            show_qr: document.getElementById('p_qr').checked
+        };
+
+        try {
+            const res = await fetch('/api/settings/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ key: 'display_settings', value: payload })
+            });
+            if (res.ok) {
+                alert('נשמר בהצלחה');
+            } else {
+                alert('שגיאה בשמירה');
+            }
+        } catch (e) {
+            alert('שגיאה: ' + e);
+        }
+      }
+    </script>
+    """
+
     html_content = f"""
     <div style="max-width:800px; margin:0 auto;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
@@ -5447,49 +5495,8 @@ def web_display_settings(request: Request):
         </div>
       </div>
     </div>
-
-    <script>
-      async function saveSettings() {
-        const payload = {
-            title_text: document.getElementById('p_title').value,
-            subtitle_text: document.getElementById('p_subtitle').value,
-            logo_url: document.getElementById('p_logo').value,
-            background_url: document.getElementById('p_bg').value,
-            refresh_interval: parseInt(document.getElementById('p_refresh').value) || 60,
-            font_size: parseInt(document.getElementById('p_fontsize').value) || 16,
-            enabled: document.getElementById('p_enabled').checked,
-            dark_mode: document.getElementById('p_dark').checked,
-            show_clock: document.getElementById('p_clock').checked,
-            show_qr: document.getElementById('p_qr').checked
-        };
-
-        try {
-            const res = await fetch('/api/settings/save', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ key: 'display_settings', value: payload })
-            });
-            if (res.ok) {
-                alert('נשמר בהצלחה');
-            } else {
-                alert('שגיאה בשמירה');
-            }
-        } catch (e) {
-            alert('שגיאה: ' + e);
-        }
-      }
-    </script>
-    <style>
-        .form-group { margin-bottom:15px; }
-        .form-group label { display:block; font-weight:600; margin-bottom:5px; }
-        .form-control { width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }
-        .ck { display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }
-        .ck:hover { background:#e9ecef; }
-        .btn { padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }
-        .green { background:#2ecc71; color:white; }
-        .gray { background:#95a5a6; color:white; }
-        .actionbar { display:flex; gap:10px; }
-    </style>
+    {script_block}
+    {style_block}
     """
     return _basic_web_shell("הגדרות תצוגה", html_content, request=request)
 
@@ -7635,6 +7642,14 @@ def web_logs(request: Request):
       }
 
       loadLogs();
+    </script>
+    """
+    return _basic_web_shell("לוגים", html_content, request=request)
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_index(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
     if guard:
         return guard  # type: ignore[return-value]
     conn = _db()
@@ -8760,6 +8775,12 @@ def web_admin(request: Request):
     
     <h2>לוח בקרה</h2>
     <div class="dashboard-grid">
+      {tiles_html}
+    </div>
+    """
+    return _basic_web_shell("לוח בקרה", body, request=request)
+
+
 def web_students(request: Request):
     try:
         guard = _web_require_teacher(request)
@@ -9289,195 +9310,6 @@ def view_changes(tenant_id: str, api_key: str) -> str:
     cur.execute(
         _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
         (tenant_id, api_key)
-    )
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return "<h3>Unauthorized</h3>"
-    cur.execute(
-        _sql_placeholder(
-            '''
-            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
-            FROM changes
-            WHERE tenant_id = ?
-            ORDER BY id DESC
-            LIMIT 200
-            '''
-        ),
-        (tenant_id,)
-    )
-    rows = cur.fetchall() or []
-    conn.close()
-    items = "".join(
-        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
-        for r in rows
-    )
-    return f"""
-    <html><body>
-    <h2>Recent Changes</h2>
-    <table border="1" cellpadding="6">
-    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
-    {items}
-    </table>
-    </body></html>
-    """
-    )
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return "<h3>Unauthorized</h3>"
-    cur.execute(
-        _sql_placeholder(
-            '''
-            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
-            FROM changes
-            WHERE tenant_id = ?
-            ORDER BY id DESC
-            LIMIT 200
-            '''
-        ),
-        (tenant_id,)
-    )
-    rows = cur.fetchall() or []
-    conn.close()
-    items = "".join(
-        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
-        for r in rows
-    )
-    return f"""
-    <html><body>
-    <h2>Recent Changes</h2>
-    <table border="1" cellpadding="6">
-    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
-    {items}
-    </table>
-    </body></html>
-    """
-              <div style=\"margin-top:10px;\">
-                <div style=\"margin-bottom:6px;\"><b>Presigned URL (10 דקות)</b></div>
-                <div><a href=\"{presigned}\" target=\"_blank\">{presigned or 'N/A'}</a></div>
-              </div>
-              <div style=\"margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;\">
-                <form method=\"post\" action=\"/web/spaces-test\">
-                  <button class=\"btn btn-primary\" type=\"submit\">בדיקה נוספת</button>
-                </form>
-                <a class=\"btn\" href=\"/web/admin\">חזרה לניהול</a>
-              </div>
-            </div>
-          </div>
-        </body>
-        </html>
-        """
-    )
-
-
-@app.post("/admin/setup", response_class=HTMLResponse)
-def admin_setup_submit(
-    request: Request,
-    name: str = Form(...),
-    tenant_id: str = Form(...),
-    institution_password: str = Form(...),
-    api_key: str = Form(default=''),
-    admin_key: str = ''
-) -> str:
-    guard = _admin_require(request, admin_key)
-    if guard:
-        return guard  # type: ignore[return-value]
-    conn = _db()
-    cur = conn.cursor()
-    api_key = api_key.strip() or secrets.token_urlsafe(16)
-    pw_hash = _pbkdf2_hash(institution_password.strip())
-    try:
-        cur.execute(
-            _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)'),
-            (tenant_id.strip(), name.strip(), api_key, pw_hash)
-        )
-        conn.commit()
-        _ensure_tenant_db_exists(tenant_id.strip())
-        return f"<h3>Institution created.</h3><p>API Key: <b>{api_key}</b></p><p>עדכן ב־config.json: sync_api_key, sync_tenant_id</p>"
-    except _integrity_errors():
-        return "<h3>Tenant ID already exists.</h3>"
-    finally:
-        conn.close()
-
-
-@app.get("/view/changes", response_class=HTMLResponse)
-def view_changes(tenant_id: str, api_key: str) -> str:
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute(
-        _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
-        (tenant_id, api_key)
-    )
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return "<h3>Unauthorized</h3>"
-    cur.execute(
-        _sql_placeholder(
-            '''
-            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
-            FROM changes
-            WHERE tenant_id = ?
-            ORDER BY id DESC
-            LIMIT 200
-            '''
-        ),
-        (tenant_id,)
-    )
-    rows = cur.fetchall() or []
-    conn.close()
-    items = "".join(
-        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
-        for r in rows
-    )
-    return f"""
-    <html><body>
-    <h2>Recent Changes</h2>
-    <table border="1" cellpadding="6">
-    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
-    {items}
-    </table>
-    </body></html>
-    """
-    )
-    row = cur.fetchone()
-    if not row:
-        conn.close()
-        return "<h3>Unauthorized</h3>"
-    cur.execute(
-        _sql_placeholder(
-            '''
-            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
-            FROM changes
-            WHERE tenant_id = ?
-            ORDER BY id DESC
-            LIMIT 200
-            '''
-        ),
-        (tenant_id,)
-    )
-    rows = cur.fetchall() or []
-    conn.close()
-    items = "".join(
-        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
-        for r in rows
-    )
-    return f"""
-    <html><body>
-    <h2>Recent Changes</h2>
-    <table border="1" cellpadding="6">
-    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
-    {items}
-    </table>
-    </body></html>
-    """
-    <table border="1" cellpadding="6">
-    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
-    {items}
-    </table>
-    </body></html>
-    """
     )
     row = cur.fetchone()
     if not row:
