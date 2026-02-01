@@ -111,6 +111,63 @@ def _spaces_client():
         return None
 
 
+def _ensure_teacher_columns(conn) -> None:
+    cols: set[str] = set()
+    try:
+        if USE_POSTGRES:
+            cols = set([c.lower() for c in _table_columns_postgres(conn, 'teachers')])
+        else:
+            cols = set([c.lower() for c in _table_columns(conn, 'teachers')])
+    except Exception:
+        cols = set()
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        for ddl in (
+            'card_number2 TEXT',
+            'card_number3 TEXT',
+            'can_edit_student_card INTEGER DEFAULT 1',
+            'can_edit_student_photo INTEGER DEFAULT 1',
+            'bonus_max_points_per_student INTEGER',
+            'bonus_max_total_runs INTEGER',
+            'bonus_runs_used INTEGER DEFAULT 0',
+            'bonus_runs_reset_date DATE',
+            'bonus_points_used INTEGER DEFAULT 0',
+            'bonus_points_reset_date DATE',
+        ):
+            try:
+                cur.execute(f'ALTER TABLE teachers ADD COLUMN IF NOT EXISTS {ddl}')
+            except Exception:
+                pass
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        return
+
+    def _add_if_missing(col: str, ddl: str) -> None:
+        if col in cols:
+            return
+        try:
+            cur.execute(f'ALTER TABLE teachers ADD COLUMN {ddl}')
+        except Exception:
+            pass
+
+    _add_if_missing('card_number2', 'card_number2 TEXT')
+    _add_if_missing('card_number3', 'card_number3 TEXT')
+    _add_if_missing('can_edit_student_card', 'can_edit_student_card INTEGER DEFAULT 1')
+    _add_if_missing('can_edit_student_photo', 'can_edit_student_photo INTEGER DEFAULT 1')
+    _add_if_missing('bonus_max_points_per_student', 'bonus_max_points_per_student INTEGER')
+    _add_if_missing('bonus_max_total_runs', 'bonus_max_total_runs INTEGER')
+    _add_if_missing('bonus_runs_used', 'bonus_runs_used INTEGER DEFAULT 0')
+    _add_if_missing('bonus_runs_reset_date', 'bonus_runs_reset_date TEXT')
+    _add_if_missing('bonus_points_used', 'bonus_points_used INTEGER DEFAULT 0')
+    _add_if_missing('bonus_points_reset_date', 'bonus_points_reset_date TEXT')
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+
 def _public_base_url(request: Request) -> str:
     try:
         proto = str(request.headers.get('x-forwarded-proto') or '').strip() or str(getattr(request.url, 'scheme', '') or '').strip() or 'https'
@@ -740,6 +797,7 @@ def web_teacher_login_submit(
 
     conn = _tenant_school_db(tenant_id)
     try:
+        _ensure_teacher_columns(conn)
         cur = conn.cursor()
         cur.execute(
             _sql_placeholder(
@@ -2461,6 +2519,12 @@ def _ads_media_url(request: Request, tenant_id: str, image_path: str) -> str:
         quoted = urllib.parse.quote(rel)
     except Exception:
         quoted = rel
+    if tenant_id:
+        try:
+            tid_q = urllib.parse.quote(str(tenant_id))
+        except Exception:
+            tid_q = str(tenant_id)
+        return f"{base}/web/ads-media-file/{quoted}?tenant_id={tid_q}"
     return f"{base}/web/ads-media-file/{quoted}"
 
 
@@ -4191,6 +4255,7 @@ def api_teachers(
     tenant_id = _web_tenant_from_cookie(request)
     conn = _tenant_school_db(tenant_id)
     try:
+        _ensure_teacher_columns(conn)
         cur = conn.cursor()
         query = """
             SELECT
@@ -4291,6 +4356,7 @@ def api_teacher_get(request: Request, teacher_id: int) -> Dict[str, Any]:
     tenant_id = _web_tenant_from_cookie(request)
     conn = _tenant_school_db(tenant_id)
     try:
+        _ensure_teacher_columns(conn)
         cur = conn.cursor()
         cur.execute(
             _sql_placeholder(
@@ -4358,6 +4424,7 @@ def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str
         raise HTTPException(status_code=401, detail='missing tenant')
     conn = _tenant_school_db(tenant_id)
     try:
+        _ensure_teacher_columns(conn)
         cur = conn.cursor()
         tid = payload.teacher_id
         if tid is None or int(tid or 0) <= 0:
