@@ -1673,49 +1673,6 @@ def _set_web_setting_json(conn, key: str, value_json: str) -> None:
     conn.commit()
 
 
-def _web_json_editor(title: str, key: str, value_json: str, hint: str, back_href: str = '/web/admin') -> str:
-    safe_key = str(key or '').strip()
-    safe_hint = str(hint or '').strip()
-    safe_val = str(value_json or '').strip() or '{}'
-    return f"""
-    <style>
-      textarea {{ width:100%; min-height: 240px; padding:12px; border:1px solid var(--line); border-radius:10px; font-size:13px; font-family: Consolas, monospace; direction:ltr; }}
-      .hint {{ color:#637381; font-size:13px; line-height:1.8; margin: 8px 0 10px; }}
-      .row {{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }}
-      .row a {{ text-decoration:none; }}
-      .btn {{
-        padding:10px 16px;
-        border-radius:12px;
-        border:1px solid rgba(255,255,255,.18);
-        font-weight:900;
-        cursor:pointer;
-        color:#fff;
-        box-shadow:0 10px 22px rgba(0,0,0,.12);
-        transition: transform .08s ease, filter .15s ease, box-shadow .15s ease, opacity .15s ease;
-        opacity: .95;
-        backdrop-filter: blur(8px);
-        -webkit-backdrop-filter: blur(8px);
-      }}
-      .btn:hover {{ filter: brightness(1.03); opacity: 1; box-shadow:0 14px 26px rgba(0,0,0,.16); }}
-      .btn:active {{ transform: translateY(1px) scale(.99); box-shadow:0 8px 16px rgba(0,0,0,.12); }}
-      .btn-save {{ background: linear-gradient(135deg, #22c55e, #16a34a); }}
-      .btn-back {{ background: linear-gradient(135deg, #94a3b8, #64748b); }}
-      .btn-link {{ display:inline-flex; align-items:center; gap:8px; }}
-    </style>
-    <h2>{title}</h2>
-    <div class="hint">{safe_hint}</div>
-    <form method="post" action="/web/settings/save">
-      <input type="hidden" name="setting_key" value="{safe_key}" />
-      <input type="hidden" name="redirect_to" value="{back_href}" />
-      <textarea name="value_json">{safe_val}</textarea>
-      <div class="actionbar" style="justify-content:flex-end; gap:12px;">
-        <button class="btn btn-save" type="submit">💾 שמירה</button>
-        <a class="btn btn-back btn-link" href="{back_href}">↩️ חזרה</a>
-      </div>
-    </form>
-    """
-
-
 def _pbkdf2_hash(password: str, salt: bytes | None = None) -> str:
     if salt is None:
         salt = secrets.token_bytes(16)
@@ -2141,6 +2098,11 @@ class SnapshotPayload(BaseModel):
     station_id: str | None = None
     teachers: List[Dict[str, Any]] = []
     students: List[Dict[str, Any]] = []
+    static_messages: List[Dict[str, Any]] = []
+    threshold_messages: List[Dict[str, Any]] = []
+    news_items: List[Dict[str, Any]] = []
+    ads_items: List[Dict[str, Any]] = []
+    student_messages: List[Dict[str, Any]] = []
 
 
 def _fetch_table_rows(conn: sqlite3.Connection, table: str) -> List[Dict[str, Any]]:
@@ -2297,6 +2259,11 @@ class AdsSettingsPayload(BaseModel):
     popup_show_sec: float | None = None
     popup_gap_sec: float | None = None
     popup_border: int | None = None
+
+
+class GenericSettingPayload(BaseModel):
+    key: str
+    value: Dict[str, Any]
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -2457,7 +2424,39 @@ def _swap_sort_order(conn, table: str, first_id: int, second_id: int) -> bool:
         return False
     cur.execute(_sql_placeholder(f'UPDATE {table} SET sort_order = ? WHERE id = ?'), (order2, int(first_id)))
     cur.execute(_sql_placeholder(f'UPDATE {table} SET sort_order = ? WHERE id = ?'), (order1, int(second_id)))
+    conn.commit()
     return True
+
+
+def _record_tenant_change(tenant_id: str, entity_type: str, entity_id: str | int, action_type: str, payload: Dict[str, Any] | None) -> None:
+    if not tenant_id:
+        return
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                '''
+                INSERT INTO changes (tenant_id, station_id, entity_type, entity_id, action_type, payload_json, created_at)
+                VALUES (?, 'web', ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                '''
+            ),
+            (
+                str(tenant_id),
+                str(entity_type),
+                str(entity_id),
+                str(action_type),
+                json.dumps(payload or {}, ensure_ascii=False)
+            )
+        )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def _persist_ads_media(request: Request, tenant_id: str, upload: UploadFile) -> str:
@@ -2488,7 +2487,16 @@ def _persist_ads_media(request: Request, tenant_id: str, upload: UploadFile) -> 
 
     s3 = _spaces_client()
     if s3 is None:
-        return ''
+        # Local fallback if no S3 and no shared folder
+        assets_dir = os.path.join(DATA_DIR, 'tenants_assets', tenant_id)
+        os.makedirs(assets_dir, exist_ok=True)
+        # Use simple name
+        name = os.path.basename(media_rel)
+        path = os.path.join(assets_dir, name)
+        with open(path, 'wb') as f:
+            f.write(data)
+        return name
+
     key = f"tenants/{tenant_id}/{media_rel.replace('\\', '/')}"
     try:
         s3.put_object(Bucket=SPACES_BUCKET, Key=key, Body=data, ContentType=upload.content_type or 'application/octet-stream')
@@ -2498,6 +2506,26 @@ def _persist_ads_media(request: Request, tenant_id: str, upload: UploadFile) -> 
     if base:
         return base + '/' + urllib.parse.quote(key)
     return key
+
+
+@app.get("/assets/{tenant_id}/{filename}")
+def get_tenant_asset(tenant_id: str, filename: str):
+    # Serve tenant assets (if local)
+    # This covers both 'ads_media' from legacy and new assets
+    # check legacy ads_media first if needed or just shared folder
+    shared = _get_shared_folder_for_tenant(tenant_id)
+    if shared:
+        path = os.path.join(shared, 'ads_media', filename)
+        if os.path.isfile(path):
+            return FileResponse(path)
+    
+    # check local data dir tenants_assets
+    assets_dir = os.path.join(DATA_DIR, 'tenants_assets', tenant_id)
+    path = os.path.join(assets_dir, filename)
+    if os.path.isfile(path):
+        return FileResponse(path)
+        
+    return Response(status_code=404)
 
 
 def _ads_media_url(request: Request, tenant_id: str, image_path: str) -> str:
@@ -2517,15 +2545,663 @@ def _ads_media_url(request: Request, tenant_id: str, image_path: str) -> str:
     base = _public_base_url(request)
     try:
         quoted = urllib.parse.quote(rel)
+        return f"{base}/assets/{tenant_id}/{quoted}"
     except Exception:
-        quoted = rel
-    if tenant_id:
+        return p
+
+
+# --- MESSAGES API ---
+
+@app.get('/api/messages/static')
+def api_messages_static(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return {'items': []}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        items = _fetch_table_rows(conn, 'static_messages')
+        # Sort: ID desc
+        items.sort(key=lambda x: _safe_int(x.get('id'), 0), reverse=True)
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/static/save')
+def api_messages_static_save(request: Request, payload: StaticMessagePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        mid = payload.message_id
+        msg = str(payload.message or '').strip()
+        if not msg:
+            raise HTTPException(status_code=400, detail="Empty message")
+        show_always = 1 if payload.show_always else 0
+        
+        if mid and int(mid) > 0:
+            cur.execute(
+                _sql_placeholder('UPDATE static_messages SET message=?, show_always=? WHERE id=?'),
+                (msg, show_always, int(mid))
+            )
+            act = 'update'
+            rid = int(mid)
+        else:
+            cur.execute(
+                _sql_placeholder('INSERT INTO static_messages (message, show_always, is_active) VALUES (?, ?, 1)'),
+                (msg, show_always)
+            )
+            rid = cur.lastrowid
+            act = 'create'
+            
+        conn.commit()
+        _record_tenant_change(tenant_id, 'static_message', rid, act, payload.dict())
+        return {'ok': True, 'id': rid}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/static/delete')
+def api_messages_static_delete(request: Request, payload: StaticMessageTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM static_messages WHERE id=?'), (int(payload.message_id),))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'static_message', payload.message_id, 'delete', None)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/static/toggle')
+def api_messages_static_toggle(request: Request, payload: StaticMessageTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT is_active FROM static_messages WHERE id=?'), (int(payload.message_id),))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        curr = _safe_int(_row_value(row, 'is_active'), 1)
+        new_val = 0 if curr == 1 else 1
+        cur.execute(_sql_placeholder('UPDATE static_messages SET is_active=? WHERE id=?'), (new_val, int(payload.message_id)))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'static_message', payload.message_id, 'update', {'is_active': new_val})
+        return {'ok': True, 'is_active': new_val}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get('/api/messages/threshold')
+def api_messages_threshold(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return {'items': []}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        items = _fetch_table_rows(conn, 'threshold_messages')
+        # Sort by min_points desc
+        items.sort(key=lambda x: _safe_int(x.get('min_points'), 0), reverse=True)
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/threshold/save')
+def api_messages_threshold_save(request: Request, payload: ThresholdMessagePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        mid = payload.message_id
+        msg = str(payload.message or '').strip()
+        min_p = int(payload.min_points or 0)
+        max_p = int(payload.max_points or 0)
+        if not msg:
+            raise HTTPException(status_code=400, detail="Empty message")
+        
+        if mid and int(mid) > 0:
+            cur.execute(
+                _sql_placeholder('UPDATE threshold_messages SET message=?, min_points=?, max_points=? WHERE id=?'),
+                (msg, min_p, max_p, int(mid))
+            )
+            act = 'update'
+            rid = int(mid)
+        else:
+            cur.execute(
+                _sql_placeholder('INSERT INTO threshold_messages (message, min_points, max_points, is_active) VALUES (?, ?, ?, 1)'),
+                (msg, min_p, max_p)
+            )
+            rid = cur.lastrowid
+            act = 'create'
+            
+        conn.commit()
+        _record_tenant_change(tenant_id, 'threshold_message', rid, act, payload.dict())
+        return {'ok': True, 'id': rid}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/threshold/delete')
+def api_messages_threshold_delete(request: Request, payload: ThresholdMessageTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM threshold_messages WHERE id=?'), (int(payload.message_id),))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'threshold_message', payload.message_id, 'delete', None)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/threshold/toggle')
+def api_messages_threshold_toggle(request: Request, payload: ThresholdMessageTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT is_active FROM threshold_messages WHERE id=?'), (int(payload.message_id),))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        curr = _safe_int(_row_value(row, 'is_active'), 1)
+        new_val = 0 if curr == 1 else 1
+        cur.execute(_sql_placeholder('UPDATE threshold_messages SET is_active=? WHERE id=?'), (new_val, int(payload.message_id)))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'threshold_message', payload.message_id, 'update', {'is_active': new_val})
+        return {'ok': True, 'is_active': new_val}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get('/api/messages/news')
+def api_messages_news(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return {'items': []}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        items = _fetch_table_rows(conn, 'news_items')
+        # Sort by sort_order
+        items.sort(key=lambda x: _safe_int(x.get('sort_order'), 9999))
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/news/save')
+def api_messages_news_save(request: Request, payload: NewsItemPayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        nid = payload.news_id
+        txt = str(payload.text or '').strip()
+        if not txt:
+            raise HTTPException(status_code=400, detail="Empty text")
+        start_dt = _normalize_date(payload.start_date)
+        end_dt = _normalize_date(payload.end_date)
+        
+        if nid and int(nid) > 0:
+            cur.execute(
+                _sql_placeholder('UPDATE news_items SET text=?, start_date=?, end_date=? WHERE id=?'),
+                (txt, start_dt, end_dt, int(nid))
+            )
+            act = 'update'
+            rid = int(nid)
+        else:
+            # Get max sort order
+            cur.execute('SELECT MAX(sort_order) FROM news_items')
+            row = cur.fetchone()
+            max_so = 0
+            if row:
+                max_so = _safe_int(row[0] if not isinstance(row, dict) else row.get('MAX(sort_order)'), 0)
+            
+            cur.execute(
+                _sql_placeholder('INSERT INTO news_items (text, start_date, end_date, is_active, sort_order) VALUES (?, ?, ?, 1, ?)'),
+                (txt, start_dt, end_dt, max_so + 1)
+            )
+            rid = cur.lastrowid
+            act = 'create'
+            
+        conn.commit()
+        _record_tenant_change(tenant_id, 'news_item', rid, act, payload.dict())
+        return {'ok': True, 'id': rid}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/news/delete')
+def api_messages_news_delete(request: Request, payload: NewsItemTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM news_items WHERE id=?'), (int(payload.news_id),))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'news_item', payload.news_id, 'delete', None)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/news/toggle')
+def api_messages_news_toggle(request: Request, payload: NewsItemTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT is_active FROM news_items WHERE id=?'), (int(payload.news_id),))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        curr = _safe_int(_row_value(row, 'is_active'), 1)
+        new_val = 0 if curr == 1 else 1
+        cur.execute(_sql_placeholder('UPDATE news_items SET is_active=? WHERE id=?'), (new_val, int(payload.news_id)))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'news_item', payload.news_id, 'update', {'is_active': new_val})
+        return {'ok': True, 'is_active': new_val}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/news/reorder')
+def api_messages_news_reorder(request: Request, payload: NewsReorderPayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        items = _fetch_table_rows(conn, 'news_items')
+        items.sort(key=lambda x: _safe_int(x.get('sort_order'), 9999))
+        
+        # find current index
+        idx = -1
+        for i, item in enumerate(items):
+            if _safe_int(item.get('id')) == int(payload.news_id):
+                idx = i
+                break
+        
+        if idx == -1:
+            return {'ok': False}
+            
+        swap_idx = -1
+        if payload.direction == 'up' and idx > 0:
+            swap_idx = idx - 1
+        elif payload.direction == 'down' and idx < len(items) - 1:
+            swap_idx = idx + 1
+            
+        if swap_idx != -1:
+            other_id = _safe_int(items[swap_idx].get('id'))
+            if _swap_sort_order(conn, 'news_items', int(payload.news_id), other_id):
+                _record_tenant_change(tenant_id, 'news_item', payload.news_id, 'update', {'reorder': True})
+                _record_tenant_change(tenant_id, 'news_item', other_id, 'update', {'reorder': True})
+                return {'ok': True}
+        
+        return {'ok': False}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get('/api/messages/news/settings')
+def api_messages_news_settings(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return {}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        val = _get_setting_value(conn, 'news_settings', '{}')
         try:
-            tid_q = urllib.parse.quote(str(tenant_id))
-        except Exception:
-            tid_q = str(tenant_id)
-        return f"{base}/web/ads-media-file/{quoted}?tenant_id={tid_q}"
-    return f"{base}/web/ads-media-file/{quoted}"
+            return json.loads(val)
+        except:
+            return {}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/news/settings')
+def api_messages_news_settings_save(request: Request, payload: NewsSettingsPayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        current_raw = _get_setting_value(conn, 'news_settings', '{}')
+        try:
+            current = json.loads(current_raw)
+        except:
+            current = {}
+        
+        updates = payload.dict(exclude_unset=True)
+        current.update(updates)
+        
+        _set_setting_value(conn, 'news_settings', json.dumps(current))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'settings', 'news_settings', 'update', current)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get('/api/messages/ads')
+def api_messages_ads(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return {'items': []}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        items = _fetch_table_rows(conn, 'ads_items')
+        items.sort(key=lambda x: _safe_int(x.get('sort_order'), 9999))
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/ads/save')
+async def api_messages_ads_save(
+    request: Request,
+    ads_id: str = Form(default=''),
+    text: str = Form(default=''),
+    start_date: str = Form(default=''),
+    end_date: str = Form(default=''),
+    image: UploadFile | None = File(None)
+) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=401)
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        aid = int(ads_id) if ads_id and ads_id.isdigit() else 0
+        txt = str(text or '').strip()
+        s_dt = _normalize_date(start_date)
+        e_dt = _normalize_date(end_date)
+        
+        image_path = None
+        if image and image.filename:
+            file_bytes = await image.read()
+            if file_bytes:
+                image_path = _save_uploaded_file(tenant_id, file_bytes, image.filename)
+        
+        if aid > 0:
+            if image_path:
+                cur.execute(
+                    _sql_placeholder('UPDATE ads_items SET text=?, start_date=?, end_date=?, image_path=? WHERE id=?'),
+                    (txt, s_dt, e_dt, image_path, aid)
+                )
+            else:
+                cur.execute(
+                    _sql_placeholder('UPDATE ads_items SET text=?, start_date=?, end_date=? WHERE id=?'),
+                    (txt, s_dt, e_dt, aid)
+                )
+            act = 'update'
+            rid = aid
+        else:
+            # Max sort order
+            cur.execute('SELECT MAX(sort_order) FROM ads_items')
+            row = cur.fetchone()
+            max_so = 0
+            if row:
+                max_so = _safe_int(row[0] if not isinstance(row, dict) else row.get('MAX(sort_order)'), 0)
+            
+            cur.execute(
+                _sql_placeholder('INSERT INTO ads_items (text, image_path, start_date, end_date, is_active, sort_order) VALUES (?, ?, ?, ?, 1, ?)'),
+                (txt, image_path, s_dt, e_dt, max_so + 1)
+            )
+            rid = cur.lastrowid
+            act = 'create'
+            
+        conn.commit()
+        _record_tenant_change(tenant_id, 'ads_item', rid, act, {'text': txt, 'image_path': image_path})
+        return {'ok': True, 'id': rid, 'image_path': image_path}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/ads/delete')
+def api_messages_ads_delete(request: Request, payload: AdsItemTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM ads_items WHERE id=?'), (int(payload.ads_id),))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'ads_item', payload.ads_id, 'delete', None)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/ads/toggle')
+def api_messages_ads_toggle(request: Request, payload: AdsItemTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT is_active FROM ads_items WHERE id=?'), (int(payload.ads_id),))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        curr = _safe_int(_row_value(row, 'is_active'), 1)
+        new_val = 0 if curr == 1 else 1
+        cur.execute(_sql_placeholder('UPDATE ads_items SET is_active=? WHERE id=?'), (new_val, int(payload.ads_id)))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'ads_item', payload.ads_id, 'update', {'is_active': new_val})
+        return {'ok': True, 'is_active': new_val}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/ads/reorder')
+def api_messages_ads_reorder(request: Request, payload: AdsReorderPayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        items = _fetch_table_rows(conn, 'ads_items')
+        items.sort(key=lambda x: _safe_int(x.get('sort_order'), 9999))
+        
+        idx = -1
+        for i, item in enumerate(items):
+            if _safe_int(item.get('id')) == int(payload.ads_id):
+                idx = i
+                break
+        
+        if idx == -1:
+            return {'ok': False}
+            
+        swap_idx = -1
+        if payload.direction == 'up' and idx > 0:
+            swap_idx = idx - 1
+        elif payload.direction == 'down' and idx < len(items) - 1:
+            swap_idx = idx + 1
+            
+        if swap_idx != -1:
+            other_id = _safe_int(items[swap_idx].get('id'))
+            if _swap_sort_order(conn, 'ads_items', int(payload.ads_id), other_id):
+                _record_tenant_change(tenant_id, 'ads_item', payload.ads_id, 'update', {'reorder': True})
+                _record_tenant_change(tenant_id, 'ads_item', other_id, 'update', {'reorder': True})
+                return {'ok': True}
+        
+        return {'ok': False}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get('/api/messages/student')
+def api_messages_student(request: Request) -> Dict[str, Any]:
+    # Returns all student messages, enriched with student name/class
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return {'items': []}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        # Need to join with students to get names
+        cur = conn.cursor()
+        query = """
+            SELECT m.id, m.student_id, m.message, m.is_active, m.created_at,
+                   s.first_name, s.last_name, s.class_name, s.card_number
+            FROM student_messages m
+            LEFT JOIN students s ON m.student_id = s.id
+            ORDER BY m.id DESC
+            LIMIT 1000
+        """
+        cur.execute(_sql_placeholder(query))
+        rows = cur.fetchall() or []
+        items = []
+        for r in rows:
+            items.append({
+                'id': _row_value(r, 'id'),
+                'student_id': _row_value(r, 'student_id'),
+                'message': _row_value(r, 'message'),
+                'is_active': _row_value(r, 'is_active'),
+                'created_at': _row_value(r, 'created_at'),
+                'first_name': _row_value(r, 'first_name'),
+                'last_name': _row_value(r, 'last_name'),
+                'class_name': _row_value(r, 'class_name'),
+                'card_number': _row_value(r, 'card_number'),
+            })
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/student/save')
+def api_messages_student_save(request: Request, payload: StudentMessagePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        mid = payload.message_id
+        sid = payload.student_id
+        msg = str(payload.message or '').strip()
+        if not msg:
+            raise HTTPException(status_code=400, detail="Empty message")
+        
+        if mid and int(mid) > 0:
+            cur.execute(
+                _sql_placeholder('UPDATE student_messages SET message=? WHERE id=?'),
+                (msg, int(mid))
+            )
+            act = 'update'
+            rid = int(mid)
+            # fetch student_id if not provided
+            if not sid:
+                cur.execute(_sql_placeholder('SELECT student_id FROM student_messages WHERE id=?'), (rid,))
+                row = cur.fetchone()
+                if row:
+                    sid = _safe_int(_row_value(row, 'student_id'))
+        else:
+            if not sid or int(sid) <= 0:
+                 raise HTTPException(status_code=400, detail="Missing student_id")
+            cur.execute(
+                _sql_placeholder('INSERT INTO student_messages (student_id, message, is_active) VALUES (?, ?, 1)'),
+                (int(sid), msg)
+            )
+            rid = cur.lastrowid
+            act = 'create'
+            
+        conn.commit()
+        _record_tenant_change(tenant_id, 'student_message', rid, act, payload.dict())
+        return {'ok': True, 'id': rid}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/student/delete')
+def api_messages_student_delete(request: Request, payload: StudentMessageTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM student_messages WHERE id=?'), (int(payload.message_id),))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'student_message', payload.message_id, 'delete', None)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/messages/student/toggle')
+def api_messages_student_toggle(request: Request, payload: StudentMessageTogglePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT is_active FROM student_messages WHERE id=?'), (int(payload.message_id),))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404)
+        curr = _safe_int(_row_value(row, 'is_active'), 1)
+        new_val = 0 if curr == 1 else 1
+        cur.execute(_sql_placeholder('UPDATE student_messages SET is_active=? WHERE id=?'), (new_val, int(payload.message_id)))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'student_message', payload.message_id, 'update', {'is_active': new_val})
+        return {'ok': True, 'is_active': new_val}
+    finally:
+        try: conn.close()
+        except: pass
 
 
 def _record_message_event(
@@ -3264,6 +3940,11 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
         'station_id': payload.station_id,
         'teachers': teachers_n,
         'students': students_n,
+        'static_messages': static_n,
+        'threshold_messages': threshold_n,
+        'news_items': news_n,
+        'ads_items': ads_n,
+        'student_messages': student_msg_n,
     }
 
 
@@ -3302,6 +3983,11 @@ def sync_snapshot_get(
             'teachers',
             'students',
             'messages',
+            'static_messages',
+            'threshold_messages',
+            'news_items',
+            'ads_items',
+            'student_messages',
             'settings',
             'product_categories',
             'products',
@@ -3454,52 +4140,36 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
 def admin_setup_form(request: Request, admin_key: str = '') -> str:
     guard = _admin_require(request, admin_key)
     if guard:
-        return guard  # type: ignore[return-value]
-    return """
-    <!doctype html>
-    <html lang="he">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>רישום מוסד - SchoolPoints</title>
-      <style>
-        body { margin:0; font-family: Arial, sans-serif; background:#f2f5f6; color:#1f2d3a; direction: rtl; }
-        .wrap { max-width: 720px; margin: 30px auto; padding: 0 16px; }
-        .card { background:#fff; border-radius:14px; padding:20px; border:1px solid #e1e8ee; }
-        label { display:block; margin:10px 0 6px; font-weight:600; }
-        input { width:100%; padding:10px; border:1px solid #d9e2ec; border-radius:8px; }
-        button { margin-top:14px; padding:10px 16px; border:none; border-radius:8px; background:#1abc9c; color:#fff; font-weight:600; cursor:pointer; }
-        .links { margin-top:16px; font-size:13px; }
-        .links a { color:#1f2d3a; text-decoration:none; margin-left:10px; }
-      </style>
-    </head>
-    <body>
-      <div class="wrap">
-        <div class="card">
-          """ + _admin_status_bar() + """
-          <h2>רישום מוסד חדש</h2>
-          <form method="post">
-            <label>שם מוסד</label>
-            <input name="name" required />
-            <label>Tenant ID</label>
-            <input name="tenant_id" required />
-            <label>סיסמת מוסד</label>
-            <input name="institution_password" type="password" required />
-            <label>API Key (אופציונלי - יווצר אוטומטית)</label>
-            <input name="api_key" placeholder="השאר ריק ליצירה אוטומטית" />
-            <button type="submit">צור מוסד</button>
-          </form>
-          <div class="links">
-            <a href="/admin/setup">רישום מוסד חדש</a>
-            <a href="/admin/sync-status">סטטוס סינכרון</a>
-            <a href="/admin/changes">שינויים אחרונים</a>
-            <a href="/admin/logout">יציאה</a>
-          </div>
+        return guard
+    
+    body = """
+    <h2>הקמת מוסד חדש</h2>
+    <div class="card" style="max-width:600px;">
+      <form method="post">
+        <div class="form-group">
+          <label>שם מוסד</label>
+          <input name="name" required placeholder="לדוגמה: ישיבת אור החיים" />
         </div>
-      </div>
-    </body>
-    </html>
+        <div class="form-group">
+          <label>Tenant ID (מזהה ייחודי באנגלית)</label>
+          <input name="tenant_id" required placeholder="לדוגמה: or_hachaim" pattern="[a-zA-Z0-9_-]+" />
+        </div>
+        <div class="form-group">
+          <label>סיסמת מוסד (לכניסת מנהל)</label>
+          <input name="institution_password" type="password" required />
+        </div>
+        <div class="form-group">
+          <label>API Key (אופציונלי - יווצר אוטומטית אם ריק)</label>
+          <input name="api_key" placeholder="השאר ריק ליצירה אוטומטית" />
+        </div>
+        <div style="margin-top:24px;">
+          <button type="submit" class="btn-green">צור מוסד</button>
+          <a href="/admin/institutions" style="margin-right:10px; color:#7f8c8d; text-decoration:none;">ביטול</a>
+        </div>
+      </form>
+    </div>
     """
+    return _super_admin_shell("הקמת מוסד", body, request)
 
 
 @app.get("/__version")
@@ -3621,6 +4291,125 @@ def web_download() -> str:
     return _public_web_shell("הורדה", body)
 
 
+@app.get('/api/settings/{key}')
+def api_settings_get(request: Request, key: str) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return {}
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        val = _get_setting_value(conn, key, '{}')
+        try:
+            return json.loads(val)
+        except:
+            return {}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.post('/api/settings/save')
+def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        # validate key to prevent overwriting critical non-settings
+        if not payload.key or not re.match(r'^[a-z0-9_]+$', payload.key):
+             raise HTTPException(status_code=400, detail="Invalid key")
+             
+        val_str = json.dumps(payload.value, ensure_ascii=False)
+        _set_setting_value(conn, payload.key, val_str)
+        conn.commit()
+        _record_tenant_change(tenant_id, 'settings', payload.key, 'update', payload.value)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.get("/web/settings", response_class=HTMLResponse)
+def web_settings(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'admin_settings', '{\n  "enabled": true\n}')
+    finally:
+        try: conn.close()
+        except: pass
+    
+    import json
+    try:
+        data = json.loads(value_json)
+    except:
+        data = {}
+
+    def _v(k, default=''):
+        return html.escape(str(data.get(k, default)))
+
+    html_content = f"""
+    <div style="max-width:800px; margin:0 auto;">
+      <h2>הגדרות עמדת ניהול</h2>
+      <div class="card" style="padding:24px;">
+        <div class="form-group">
+            <label>שם העמדה (לזיהוי)</label>
+            <input id="as_name" class="form-control" value="{_v('station_name', 'Admin Station')}" />
+        </div>
+        
+        <div style="margin-top:20px;">
+            <label class="ck"><input type="checkbox" id="as_enabled" {'checked' if data.get('enabled', True) else ''}> עמדה פעילה</label>
+        </div>
+
+        <div style="margin-top:30px; border-top:1px solid #eee; padding-top:20px; text-align:left;">
+            <button class="green" onclick="saveAdminSettings()">💾 שמור הגדרות</button>
+            <a class="gray btn" href="/web/admin">חזרה</a>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      async function saveAdminSettings() {{
+        const payload = {{
+            station_name: document.getElementById('as_name').value,
+            enabled: document.getElementById('as_enabled').checked
+        }};
+
+        try {{
+            const res = await fetch('/api/settings/save', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ key: 'admin_settings', value: payload }})
+            }});
+            if (res.ok) {{
+                alert('נשמר בהצלחה');
+            }} else {{
+                alert('שגיאה בשמירה');
+            }}
+        }} catch (e) {{
+            alert('שגיאה: ' + e);
+        }}
+      }}
+    </script>
+    <style>
+        .form-group {{ margin-bottom:15px; }}
+        .form-group label {{ display:block; font-weight:600; margin-bottom:5px; }}
+        .form-control {{ width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }}
+        .ck {{ display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }}
+        .ck:hover {{ background:#e9ecef; }}
+        .btn {{ padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }}
+        .green {{ background:#2ecc71; color:white; }}
+        .gray {{ background:#95a5a6; color:white; }}
+    </style>
+    """
+    return _basic_web_shell("הגדרות עמדת ניהול", html_content, request=request)
+
+
 @app.post("/web/settings/save")
 def web_settings_save(
     request: Request,
@@ -3641,7 +4430,7 @@ def web_settings_save(
         return RedirectResponse(url=str(redirect_to or '/web/admin'), status_code=302)
     # validate json (best effort)
     try:
-        json.loads(v or '{}')
+        val = json.loads(v or '{}')
     except Exception:
         body = f"""
         <h2>שגיאה</h2>
@@ -3649,22 +4438,19 @@ def web_settings_save(
         <div class=\"actionbar\"><a class=\"gray\" href=\"{redirect_to or '/web/admin'}\">חזרה</a></div>
         """
         return HTMLResponse(_public_web_shell("שגיאה", body), status_code=400)
+    
     conn = _tenant_school_db(tenant_id)
     try:
-        value_json = _get_web_setting_json(conn, 'admin_settings', '{\n  "enabled": true\n}')
+        _set_setting_value(conn, k, v)
+        conn.commit()
+        _record_tenant_change(tenant_id, 'settings', k, 'update', val)
     finally:
         try:
             conn.close()
         except Exception:
             pass
-    body = _web_json_editor(
-        "עמדת ניהול",
-        'admin_settings',
-        value_json,
-        'הגדרות עמדת ניהול.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("עמדת ניהול", body, request=request)
+    
+    return RedirectResponse(url=str(redirect_to or '/web/admin'), status_code=302)
 
 
 @app.get('/web/students/edit', response_class=HTMLResponse)
@@ -4526,23 +5312,61 @@ def web_system_settings(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'system_settings', '{\n  "deployment_mode": "hybrid",\n  "shared_folder": "",\n  "logo_path": ""\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "הגדרות מערכת",
-        'system_settings',
-        value_json,
-        'הגדרות מערכת כלליות.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("הגדרות מערכת", body, request=request)
+    
+    html_content = """
+    <h2>הגדרות מערכת</h2>
+    
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">מצב פריסה</label>
+        <select id="sys-mode" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+          <option value="local">מקומי (Local)</option>
+          <option value="cloud">ענן (Cloud)</option>
+          <option value="hybrid">משולב (Hybrid)</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">תיקייה משותפת (נתיב)</label>
+        <input id="sys-shared" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">נתיב לוגו (אופציונלי)</label>
+        <input id="sys-logo" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
+      </div>
+      <div>
+        <button class="green" onclick="saveSystem()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
+      </div>
+    </div>
+
+    <script>
+      async function loadSystem() {
+        try {
+          const res = await fetch('/api/settings/system_settings');
+          const data = await res.json();
+          document.getElementById('sys-mode').value = data.deployment_mode || 'hybrid';
+          document.getElementById('sys-shared').value = data.shared_folder || '';
+          document.getElementById('sys-logo').value = data.logo_path || '';
+        } catch(e) {}
+      }
+
+      async function saveSystem() {
+        const payload = {
+            deployment_mode: document.getElementById('sys-mode').value,
+            shared_folder: document.getElementById('sys-shared').value,
+            logo_path: document.getElementById('sys-logo').value
+        };
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'system_settings', value: payload })
+        });
+        alert('נשמר בהצלחה');
+      }
+
+      loadSystem();
+    </script>
+    """
+    return _basic_web_shell("הגדרות מערכת", html_content, request=request)
 
 
 @app.get("/web/display-settings", response_class=HTMLResponse)
@@ -4559,22 +5383,115 @@ def web_display_settings(request: Request):
             conn.close()
         except Exception:
             pass
-    editor = _web_json_editor(
-        "הגדרות תצוגה",
-        'display_settings',
-        value_json,
-        'הגדרות תצוגה כלליות (JSON). לעריכה של צבעים/צלילים/מטבעות/חגים השתמש בכפתורים למטה.',
-        back_href='/web/admin',
-    )
-    body = editor + """
-    <div class=\"actionbar\">
-      <a class=\"blue\" href=\"/web/colors\">🎨 צבעים</a>
-      <a class=\"blue\" href=\"/web/sounds\">🔊 צלילים</a>
-      <a class=\"blue\" href=\"/web/coins\">🪙 מטבעות</a>
-      <a class=\"blue\" href=\"/web/holidays\">📅 חגים/חופשות</a>
+
+    import json
+    try:
+        data = json.loads(value_json)
+    except:
+        data = {}
+
+    def _v(k, default=''):
+        return html.escape(str(data.get(k, default)))
+
+    html_content = f"""
+    <div style="max-width:800px; margin:0 auto;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <h2>הגדרות תצוגה</h2>
+        <div class="actionbar">
+          <a class="blue" href="/web/colors">🎨 צבעים</a>
+          <a class="blue" href="/web/sounds">🔊 צלילים</a>
+          <a class="blue" href="/web/coins">🪙 מטבעות</a>
+          <a class="blue" href="/web/holidays">📅 חגים</a>
+        </div>
+      </div>
+
+      <div class="card" style="padding:24px;">
+        <div class="form-group">
+            <label>כותרת ראשית (שם המוסד)</label>
+            <input id="p_title" class="form-control" value="{_v('title_text', 'ברוכים הבאים')}" />
+        </div>
+        <div class="form-group">
+            <label>כותרת משנית</label>
+            <input id="p_subtitle" class="form-control" value="{_v('subtitle_text', '')}" />
+        </div>
+        <div class="form-group">
+            <label>קישור ללוגו (URL)</label>
+            <input id="p_logo" class="form-control" value="{_v('logo_url', '')}" dir="ltr" />
+        </div>
+        <div class="form-group">
+            <label>תמונת רקע (URL)</label>
+            <input id="p_bg" class="form-control" value="{_v('background_url', '')}" dir="ltr" />
+        </div>
+        
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:15px;">
+            <div class="form-group">
+                <label>זמן רענון (שניות)</label>
+                <input id="p_refresh" type="number" class="form-control" value="{data.get('refresh_interval', 60)}" />
+            </div>
+            <div class="form-group">
+                <label>גודל גופן בסיסי (px)</label>
+                <input id="p_fontsize" type="number" class="form-control" value="{data.get('font_size', 16)}" />
+            </div>
+        </div>
+
+        <div style="margin-top:20px; display:flex; gap:20px; flex-wrap:wrap;">
+            <label class="ck"><input type="checkbox" id="p_enabled" {'checked' if data.get('enabled', True) else ''}> פעיל</label>
+            <label class="ck"><input type="checkbox" id="p_dark" {'checked' if data.get('dark_mode', False) else ''}> מצב כהה</label>
+            <label class="ck"><input type="checkbox" id="p_clock" {'checked' if data.get('show_clock', True) else ''}> הצג שעון</label>
+            <label class="ck"><input type="checkbox" id="p_qr" {'checked' if data.get('show_qr', False) else ''}> הצג QR לסריקה</label>
+        </div>
+
+        <div style="margin-top:30px; border-top:1px solid #eee; padding-top:20px; text-align:left;">
+            <button class="green" onclick="saveSettings()">💾 שמור הגדרות</button>
+            <a class="gray btn" href="/web/admin">חזרה</a>
+        </div>
+      </div>
     </div>
+
+    <script>
+      async function saveSettings() {
+        const payload = {
+            title_text: document.getElementById('p_title').value,
+            subtitle_text: document.getElementById('p_subtitle').value,
+            logo_url: document.getElementById('p_logo').value,
+            background_url: document.getElementById('p_bg').value,
+            refresh_interval: parseInt(document.getElementById('p_refresh').value) || 60,
+            font_size: parseInt(document.getElementById('p_fontsize').value) || 16,
+            enabled: document.getElementById('p_enabled').checked,
+            dark_mode: document.getElementById('p_dark').checked,
+            show_clock: document.getElementById('p_clock').checked,
+            show_qr: document.getElementById('p_qr').checked
+        };
+
+        try {
+            const res = await fetch('/api/settings/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ key: 'display_settings', value: payload })
+            });
+            if (res.ok) {
+                alert('נשמר בהצלחה');
+            } else {
+                alert('שגיאה בשמירה');
+            }
+        } catch (e) {
+            alert('שגיאה: ' + e);
+        }
+      }
+    </script>
+    <style>
+        .form-group { margin-bottom:15px; }
+        .form-group label { display:block; font-weight:600; margin-bottom:5px; }
+        .form-control { width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }
+        .ck { display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }
+        .ck:hover { background:#e9ecef; }
+        .btn { padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }
+        .green { background:#2ecc71; color:white; }
+        .gray { background:#95a5a6; color:white; }
+        .actionbar { display:flex; gap:10px; }
+    </style>
     """
-    return _basic_web_shell("הגדרות תצוגה", body, request=request)
+    return _basic_web_shell("הגדרות תצוגה", html_content, request=request)
 
 
 @app.get("/web/colors", response_class=HTMLResponse)
@@ -4582,23 +5499,137 @@ def web_colors(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'color_settings', '{\n  "ranges": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "צבעים",
-        'color_settings',
-        value_json,
-        'טווחי נקודות/צבעים.',
-        back_href='/web/display-settings',
-    )
-    return _basic_web_shell("צבעים", body, request=request)
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>צבעים לפי ניקוד</h2>
+      <button class="green" onclick="openRangeModal()">+ טווח חדש</button>
+    </div>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">מינימום נקודות</th>
+            <th style="padding:12px; text-align:right;">צבע</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="ranges-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-range" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">טווח צבע</h3>
+        <input type="hidden" id="range-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">מינימום נקודות</label>
+          <input type="number" id="range-min" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">צבע</label>
+          <input type="color" id="range-color" style="width:100%; height:40px; padding:2px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeRangeModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveRange()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let ranges = [];
+
+      async function loadRanges() {
+        try {
+          const res = await fetch('/api/settings/color_settings');
+          const data = await res.json();
+          ranges = Array.isArray(data.ranges) ? data.ranges : [];
+          ranges.sort((a, b) => (a.min || 0) - (b.min || 0));
+          renderRanges();
+        } catch(e) {}
+      }
+
+      function renderRanges() {
+        const tbody = document.getElementById('ranges-list');
+        if (ranges.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#888;">אין טווחים מוגדרים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = ranges.map((r, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${r.min || 0}</td>
+            <td style="padding:12px;"><span style="display:inline-block; width:20px; height:20px; background:${r.color}; vertical-align:middle; border:1px solid #ccc; border-radius:4px;"></span> ${r.color}</td>
+            <td style="padding:12px;">
+              <button onclick="editRange(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteRange(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openRangeModal() {
+        document.getElementById('range-index').value = '-1';
+        document.getElementById('range-min').value = '0';
+        document.getElementById('range-color').value = '#000000';
+        document.getElementById('modal-title').textContent = 'הוספת טווח';
+        document.getElementById('modal-range').style.display = 'flex';
+      }
+
+      function closeRangeModal() {
+        document.getElementById('modal-range').style.display = 'none';
+      }
+
+      function editRange(idx) {
+        const r = ranges[idx];
+        document.getElementById('range-index').value = idx;
+        document.getElementById('range-min').value = r.min || 0;
+        document.getElementById('range-color').value = r.color || '#000000';
+        document.getElementById('modal-title').textContent = 'עריכת טווח';
+        document.getElementById('modal-range').style.display = 'flex';
+      }
+
+      async function saveRange() {
+        const idx = parseInt(document.getElementById('range-index').value);
+        const min = parseInt(document.getElementById('range-min').value) || 0;
+        const color = document.getElementById('range-color').value;
+        
+        const newRange = { min, color };
+        
+        if (idx >= 0) {
+            ranges[idx] = newRange;
+        } else {
+            ranges.push(newRange);
+        }
+        
+        ranges.sort((a, b) => (a.min || 0) - (b.min || 0));
+        
+        await saveToServer();
+        closeRangeModal();
+        renderRanges();
+      }
+
+      async function deleteRange(idx) {
+        if (!confirm('למחוק?')) return;
+        ranges.splice(idx, 1);
+        await saveToServer();
+        renderRanges();
+      }
+
+      async function saveToServer() {
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'color_settings', value: { ranges: ranges } })
+        });
+      }
+
+      loadRanges();
+    </script>
+    """
+    return _basic_web_shell("צבעים", html_content, request=request)
 
 
 @app.get("/web/sounds", response_class=HTMLResponse)
@@ -4606,105 +5637,161 @@ def web_sounds(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'sound_settings', '{\n  "enabled": true,\n  "items": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "צלילים",
-        'sound_settings',
-        value_json,
-        'הגדרות צלילים.',
-        back_href='/web/display-settings',
-    )
-    return _basic_web_shell("צלילים", body, request=request)
-
-
-@app.get("/web/coins", response_class=HTMLResponse)
-def web_coins(request: Request):
-    guard = _web_require_admin_teacher(request)
-    if guard:
-        return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'coins_settings', '{\n  "coins": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "מטבעות ויעדים",
-        'coins_settings',
-        value_json,
-        'הגדרות מטבעות/יעדים.',
-        back_href='/web/display-settings',
-    )
-    return _basic_web_shell("מטבעות", body, request=request)
-
-
-@app.get("/web/messages", response_class=HTMLResponse)
-def web_messages(request: Request):
-    guard = _web_require_admin_teacher(request)
-    if guard:
-        return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'messages', '{\n  "items": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    editor = _web_json_editor(
-        "הודעות כלליות",
-        'messages',
-        value_json,
-        'רשימת הודעות להצגה בעמדות.',
-        back_href='/web/admin',
-    )
-    body = editor + """
-    <div class=\"actionbar\">
-      <a class=\"purple\" href=\"/web/ads-media\">🖼️ מדיה / פרסומות</a>
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>הגדרות צלילים</h2>
+      <button class="green" onclick="openSoundModal()">+ צליל חדש</button>
     </div>
-    """
-    return _basic_web_shell("הודעות", body, request=request)
-
-
-@app.get("/web/ads-media", response_class=HTMLResponse)
-def web_ads_media(request: Request):
-    guard = _web_require_admin_teacher(request)
-    if guard:
-        return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'ads_media', '{\n  "items": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    editor = _web_json_editor(
-        "מדיה / פרסומות",
-        'ads_media',
-        value_json,
-        'רשימת מדיה/פרסומות להצגה בעמדות.',
-        back_href='/web/messages',
-    )
-    body = editor + """
-    <div class=\"actionbar\">
-      <a class=\"blue\" href=\"/web/messages\">↩️ למסך הודעות</a>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">אירוע</th>
+            <th style="padding:12px; text-align:right;">קובץ / URL</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="sounds-list"></tbody>
+      </table>
     </div>
+
+    <!-- Modal -->
+    <div id="modal-sound" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">הגדרת צליל</h3>
+        <input type="hidden" id="sound-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">אירוע</label>
+          <select id="sound-event" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+            <option value="scan_success">סריקה מוצלחת (scan_success)</option>
+            <option value="scan_error">שגיאת סריקה (scan_error)</option>
+            <option value="bonus_success">קבלת בונוס (bonus_success)</option>
+            <option value="shop_purchase">רכישה בקופה (shop_purchase)</option>
+            <option value="level_up">עליית רמה (level_up)</option>
+            <option value="custom">אחר (מותאם אישית)</option>
+          </select>
+          <input id="sound-event-custom" placeholder="שם אירוע..." style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; margin-top:5px; display:none;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">קובץ / URL</label>
+          <input id="sound-file" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeSoundModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveSound()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let sounds = [];
+
+      async function loadSounds() {
+        try {
+          const res = await fetch('/api/settings/sound_settings');
+          const data = await res.json();
+          sounds = Array.isArray(data.sounds) ? data.sounds : [];
+          renderSounds();
+        } catch(e) {}
+      }
+
+      function renderSounds() {
+        const tbody = document.getElementById('sounds-list');
+        if (sounds.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#888;">אין צלילים מוגדרים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = sounds.map((s, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${esc(s.event)}</td>
+            <td style="padding:12px; direction:ltr; text-align:left;">${esc(s.file)}</td>
+            <td style="padding:12px;">
+              <button onclick="editSound(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteSound(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      const evtSelect = document.getElementById('sound-event');
+      const evtCustom = document.getElementById('sound-event-custom');
+      
+      evtSelect.addEventListener('change', () => {
+        evtCustom.style.display = evtSelect.value === 'custom' ? 'block' : 'none';
+      });
+
+      function openSoundModal() {
+        document.getElementById('sound-index').value = '-1';
+        evtSelect.value = 'scan_success';
+        evtCustom.style.display = 'none';
+        evtCustom.value = '';
+        document.getElementById('sound-file').value = '';
+        document.getElementById('modal-title').textContent = 'הוספת צליל';
+        document.getElementById('modal-sound').style.display = 'flex';
+      }
+
+      function closeSoundModal() {
+        document.getElementById('modal-sound').style.display = 'none';
+      }
+
+      function editSound(idx) {
+        const s = sounds[idx];
+        document.getElementById('sound-index').value = idx;
+        const standard = ['scan_success','scan_error','bonus_success','shop_purchase','level_up'].includes(s.event);
+        evtSelect.value = standard ? s.event : 'custom';
+        evtCustom.style.display = standard ? 'none' : 'block';
+        evtCustom.value = standard ? '' : s.event;
+        document.getElementById('sound-file').value = s.file || '';
+        document.getElementById('modal-title').textContent = 'עריכת צליל';
+        document.getElementById('modal-sound').style.display = 'flex';
+      }
+
+      async function saveSound() {
+        const idx = parseInt(document.getElementById('sound-index').value);
+        let event = evtSelect.value;
+        if (event === 'custom') event = evtCustom.value.trim();
+        const file = document.getElementById('sound-file').value.trim();
+        
+        if (!event || !file) return alert('נא להזין אירוע וקובץ');
+
+        const newSound = { event, file };
+        
+        if (idx >= 0) {
+            sounds[idx] = newSound;
+        } else {
+            sounds.push(newSound);
+        }
+        
+        await saveToServer();
+        closeSoundModal();
+        renderSounds();
+      }
+
+      async function deleteSound(idx) {
+        if (!confirm('למחוק?')) return;
+        sounds.splice(idx, 1);
+        await saveToServer();
+        renderSounds();
+      }
+
+      async function saveToServer() {
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'sound_settings', value: { sounds: sounds } })
+        });
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadSounds();
+    </script>
     """
-    return _basic_web_shell("מדיה", body, request=request)
+    return _basic_web_shell("צלילים", html_content, request=request)
 
 
 @app.get("/web/bonuses", response_class=HTMLResponse)
@@ -4712,23 +5799,1081 @@ def web_bonuses(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'bonus_settings', '{\n  "bonuses": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "בונוסים",
-        'bonus_settings',
-        value_json,
-        'הגדרות בונוסים.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("בונוסים", body, request=request)
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>בונוסים</h2>
+      <button class="green" onclick="openBonusModal()">+ בונוס חדש</button>
+    </div>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">שם</th>
+            <th style="padding:12px; text-align:right;">ניקוד</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="bonuses-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-bonus" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">בונוס</h3>
+        <input type="hidden" id="bonus-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">שם הבונוס</label>
+          <input id="bonus-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">ניקוד</label>
+          <input type="number" id="bonus-points" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeBonusModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveBonus()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let bonuses = [];
+
+      async function loadBonuses() {
+        try {
+          const res = await fetch('/api/settings/bonuses_settings');
+          const data = await res.json();
+          bonuses = Array.isArray(data.items) ? data.items : [];
+          renderBonuses();
+        } catch(e) {}
+      }
+
+      function renderBonuses() {
+        const tbody = document.getElementById('bonuses-list');
+        if (bonuses.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#888;">אין בונוסים מוגדרים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = bonuses.map((b, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${esc(b.name)}</td>
+            <td style="padding:12px;">${b.points}</td>
+            <td style="padding:12px;">
+              <button onclick="editBonus(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteBonus(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openBonusModal() {
+        document.getElementById('bonus-index').value = '-1';
+        document.getElementById('bonus-name').value = '';
+        document.getElementById('bonus-points').value = '';
+        document.getElementById('modal-title').textContent = 'הוספת בונוס';
+        document.getElementById('modal-bonus').style.display = 'flex';
+      }
+
+      function closeBonusModal() {
+        document.getElementById('modal-bonus').style.display = 'none';
+      }
+
+      function editBonus(idx) {
+        const b = bonuses[idx];
+        document.getElementById('bonus-index').value = idx;
+        document.getElementById('bonus-name').value = b.name || '';
+        document.getElementById('bonus-points').value = b.points || 0;
+        document.getElementById('modal-title').textContent = 'עריכת בונוס';
+        document.getElementById('modal-bonus').style.display = 'flex';
+      }
+
+      async function saveBonus() {
+        const idx = parseInt(document.getElementById('bonus-index').value);
+        const name = document.getElementById('bonus-name').value.trim();
+        const points = parseInt(document.getElementById('bonus-points').value) || 0;
+        
+        if (!name) return alert('נא להזין שם');
+
+        const newBonus = { name, points };
+        
+        if (idx >= 0) {
+            bonuses[idx] = newBonus;
+        } else {
+            bonuses.push(newBonus);
+        }
+        
+        await saveToServer();
+        closeBonusModal();
+        renderBonuses();
+      }
+
+      async function deleteBonus(idx) {
+        if (!confirm('למחוק?')) return;
+        bonuses.splice(idx, 1);
+        await saveToServer();
+        renderBonuses();
+      }
+
+      async function saveToServer() {
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'bonuses_settings', value: { items: bonuses } })
+        });
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadBonuses();
+    </script>
+    """
+    return _basic_web_shell("בונוסים", html_content, request=request)
+    if guard:
+        return guard
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>מטבעות ויעדים</h2>
+      <button class="green" onclick="openCoinModal()">+ מטבע/יעד חדש</button>
+    </div>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">שם</th>
+            <th style="padding:12px; text-align:right;">שווי (נקודות)</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="coins-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-coin" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">מטבע / יעד</h3>
+        <input type="hidden" id="coin-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">שם המטבע/יעד</label>
+          <input id="coin-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">שווי בנקודות</label>
+          <input type="number" id="coin-value" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeCoinModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveCoin()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let coins = [];
+
+      async function loadCoins() {
+        try {
+          const res = await fetch('/api/settings/coins_settings');
+          const data = await res.json();
+          coins = Array.isArray(data.coins) ? data.coins : [];
+          renderCoins();
+        } catch(e) {}
+      }
+
+      function renderCoins() {
+        const tbody = document.getElementById('coins-list');
+        if (coins.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#888;">אין מטבעות מוגדרים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = coins.map((c, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${esc(c.name)}</td>
+            <td style="padding:12px;">${c.value || 0}</td>
+            <td style="padding:12px;">
+              <button onclick="editCoin(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteCoin(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openCoinModal() {
+        document.getElementById('coin-index').value = '-1';
+        document.getElementById('coin-name').value = '';
+        document.getElementById('coin-value').value = '';
+        document.getElementById('modal-title').textContent = 'הוספת מטבע';
+        document.getElementById('modal-coin').style.display = 'flex';
+      }
+
+      function closeCoinModal() {
+        document.getElementById('modal-coin').style.display = 'none';
+      }
+
+      function editCoin(idx) {
+        const c = coins[idx];
+        document.getElementById('coin-index').value = idx;
+        document.getElementById('coin-name').value = c.name || '';
+        document.getElementById('coin-value').value = c.value || 0;
+        document.getElementById('modal-title').textContent = 'עריכת מטבע';
+        document.getElementById('modal-coin').style.display = 'flex';
+      }
+
+      async function saveCoin() {
+        const idx = parseInt(document.getElementById('coin-index').value);
+        const name = document.getElementById('coin-name').value.trim();
+        const value = parseInt(document.getElementById('coin-value').value) || 0;
+        
+        if (!name) return alert('נא להזין שם');
+
+        const newCoin = { name, value };
+        
+        if (idx >= 0) {
+            coins[idx] = newCoin;
+        } else {
+            coins.push(newCoin);
+        }
+        
+        await saveToServer();
+        closeCoinModal();
+        renderCoins();
+      }
+
+      async function deleteCoin(idx) {
+        if (!confirm('למחוק?')) return;
+        coins.splice(idx, 1);
+        await saveToServer();
+        renderCoins();
+      }
+
+      async function saveToServer() {
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'coins_settings', value: { coins: coins } })
+        });
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadCoins();
+    </script>
+    """
+    return _basic_web_shell("מטבעות", html_content, request=request)
+
+
+@app.get("/web/messages", response_class=HTMLResponse)
+def web_messages(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return guard
+    
+    html_content = """
+    <style>
+      .tabs { display: flex; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+      .tab { padding: 10px 20px; cursor: pointer; border-bottom: 3px solid transparent; font-weight: 600; color: var(--text-sub); }
+      .tab.active { border-bottom-color: var(--primary); color: var(--text-main); }
+      .tab:hover { background: rgba(0,0,0,0.02); }
+      .tab-content { display: none; }
+      .tab-content.active { display: block; }
+      .toolbar { display: flex; gap: 10px; margin-bottom: 10px; }
+      .data-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+      .data-table th, .data-table td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; }
+      .data-table th { background: #f8f9fa; font-weight: 700; color: #555; }
+      .data-table tr:hover { background: #fdfdfd; }
+      .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 5px; }
+      .status-active { background: #2ecc71; }
+      .status-inactive { background: #e74c3c; }
+      .btn-icon { cursor: pointer; padding: 4px; border-radius: 4px; border: none; background: transparent; }
+      .btn-icon:hover { background: #eee; }
+      /* Modal styles */
+      .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
+      .modal { background: #fff; padding: 20px; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+      .modal h3 { margin-top: 0; }
+      .form-group { margin-bottom: 15px; }
+      .form-group label { display: block; margin-bottom: 5px; font-weight: 600; }
+      .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+    </style>
+
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('static')">הודעות רצות</div>
+      <div class="tab" onclick="switchTab('threshold')">הודעות סף</div>
+      <div class="tab" onclick="switchTab('news')">חדשות</div>
+      <div class="tab" onclick="switchTab('ads')">פרסומות</div>
+      <div class="tab" onclick="switchTab('student')">הודעות אישיות</div>
+    </div>
+
+    <!-- Static Messages -->
+    <div id="tab-static" class="tab-content active">
+      <div class="toolbar">
+        <button class="green" onclick="openStaticModal()">+ חדש</button>
+        <button class="gray" onclick="loadStatic()">רענן</button>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>הודעה</th><th>הצג תמיד</th><th>פעיל</th><th>פעולות</th></tr></thead>
+        <tbody id="tbody-static"></tbody>
+      </table>
+    </div>
+
+    <!-- Threshold Messages -->
+    <div id="tab-threshold" class="tab-content">
+      <div class="toolbar">
+        <button class="green" onclick="openThresholdModal()">+ חדש</button>
+        <button class="gray" onclick="loadThreshold()">רענן</button>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>הודעה</th><th>טווח ניקוד</th><th>פעיל</th><th>פעולות</th></tr></thead>
+        <tbody id="tbody-threshold"></tbody>
+      </table>
+    </div>
+
+    <!-- News Items -->
+    <div id="tab-news" class="tab-content">
+      <div class="toolbar">
+        <button class="green" onclick="openNewsModal()">+ חדש</button>
+        <button class="blue" onclick="openNewsSettings()">הגדרות</button>
+        <button class="gray" onclick="loadNews()">רענן</button>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>טקסט</th><th>תאריכים</th><th>סדר</th><th>פעיל</th><th>פעולות</th></tr></thead>
+        <tbody id="tbody-news"></tbody>
+      </table>
+    </div>
+
+    <!-- Ads Items -->
+    <div id="tab-ads" class="tab-content">
+      <div class="toolbar">
+        <button class="green" onclick="openAdsModal()">+ חדש</button>
+        <button class="blue" onclick="openAdsSettings()">הגדרות</button>
+        <button class="gray" onclick="loadAds()">רענן</button>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>תמונה</th><th>טקסט</th><th>תאריכים</th><th>סדר</th><th>פעיל</th><th>פעולות</th></tr></thead>
+        <tbody id="tbody-ads"></tbody>
+      </table>
+    </div>
+
+    <!-- Student Messages -->
+    <div id="tab-student" class="tab-content">
+      <div class="toolbar">
+        <button class="green" onclick="openStudentMsgModal()">+ חדש</button>
+        <button class="gray" onclick="loadStudentMsg()">רענן</button>
+        <div style="flex-grow:1;"></div>
+        <input id="search-student-msg" placeholder="חיפוש..." onkeyup="filterStudentMsg()" style="padding:6px;border-radius:6px;border:1px solid #ddd;">
+      </div>
+      <table class="data-table">
+        <thead><tr><th>תלמיד</th><th>הודעה</th><th>נוצר</th><th>פעיל</th><th>פעולות</th></tr></thead>
+        <tbody id="tbody-student"></tbody>
+      </table>
+    </div>
+
+    <!-- Modals -->
+    <!-- Static Modal -->
+    <div id="modal-static" class="modal-overlay">
+      <div class="modal">
+        <h3 id="title-static">הודעה רצה</h3>
+        <input type="hidden" id="static-id">
+        <div class="form-group">
+          <label>תוכן ההודעה</label>
+          <textarea id="static-message" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label><input type="checkbox" id="static-always"> הצג גם כשיש הודעות אחרות (דחיפות)</label>
+        </div>
+        <div class="modal-actions">
+          <button class="gray" onclick="closeModal('modal-static')">ביטול</button>
+          <button class="green" onclick="saveStatic()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Threshold Modal -->
+    <div id="modal-threshold" class="modal-overlay">
+      <div class="modal">
+        <h3 id="title-threshold">הודעת סף</h3>
+        <input type="hidden" id="threshold-id">
+        <div class="form-group">
+          <label>תוכן ההודעה</label>
+          <textarea id="threshold-message" rows="3"></textarea>
+        </div>
+        <div class="form-group" style="display:flex; gap:10px;">
+          <div style="flex:1;">
+            <label>מינימום נקודות</label>
+            <input type="number" id="threshold-min">
+          </div>
+          <div style="flex:1;">
+            <label>מקסימום נקודות</label>
+            <input type="number" id="threshold-max">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="gray" onclick="closeModal('modal-threshold')">ביטול</button>
+          <button class="green" onclick="saveThreshold()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- News Modal -->
+    <div id="modal-news" class="modal-overlay">
+      <div class="modal">
+        <h3 id="title-news">ידיעה חדשותית</h3>
+        <input type="hidden" id="news-id">
+        <div class="form-group">
+          <label>תוכן הידיעה</label>
+          <textarea id="news-text" rows="3"></textarea>
+        </div>
+        <div class="form-group" style="display:flex; gap:10px;">
+          <div style="flex:1;">
+            <label>תאריך התחלה</label>
+            <input type="date" id="news-start">
+          </div>
+          <div style="flex:1;">
+            <label>תאריך סיום</label>
+            <input type="date" id="news-end">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="gray" onclick="closeModal('modal-news')">ביטול</button>
+          <button class="green" onclick="saveNews()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- News Settings Modal -->
+    <div id="modal-news-settings" class="modal-overlay">
+      <div class="modal">
+        <h3>הגדרות חדשות</h3>
+        <div class="form-group">
+          <label><input type="checkbox" id="ns-weekday"> הצג יום בשבוע</label>
+          <label><input type="checkbox" id="ns-hebrew"> הצג תאריך עברי</label>
+          <label><input type="checkbox" id="ns-parsha"> הצג פרשת שבוע</label>
+          <label><input type="checkbox" id="ns-holidays"> הצג חגים ומועדים</label>
+        </div>
+        <div class="form-group">
+          <label>מהירות גלילה</label>
+          <select id="ns-speed">
+            <option value="slow">איטית</option>
+            <option value="normal">רגילה</option>
+            <option value="fast">מהירה</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button class="gray" onclick="closeModal('modal-news-settings')">ביטול</button>
+          <button class="green" onclick="saveNewsSettings()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ads Modal -->
+    <div id="modal-ads" class="modal-overlay">
+      <div class="modal">
+        <h3 id="title-ads">פרסומת / תמונה</h3>
+        <input type="hidden" id="ads-id">
+        <div class="form-group">
+          <label>כיתוב (אופציונלי)</label>
+          <input type="text" id="ads-text">
+        </div>
+        <div class="form-group">
+          <label>תמונה</label>
+          <input type="file" id="ads-file" accept="image/*">
+          <div id="ads-preview" style="margin-top:5px; max-height:100px; overflow:hidden;"></div>
+        </div>
+        <div class="form-group" style="display:flex; gap:10px;">
+          <div style="flex:1;">
+            <label>תאריך התחלה</label>
+            <input type="date" id="ads-start">
+          </div>
+          <div style="flex:1;">
+            <label>תאריך סיום</label>
+            <input type="date" id="ads-end">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="gray" onclick="closeModal('modal-ads')">ביטול</button>
+          <button class="green" onclick="saveAds()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Ads Settings Modal -->
+    <div id="modal-ads-settings" class="modal-overlay">
+      <div class="modal">
+        <h3>הגדרות פרסומות</h3>
+        <div class="form-group">
+          <label><input type="checkbox" id="as-enabled"> אפשר קפיצת פרסומות (Popups)</label>
+        </div>
+        <div class="form-group">
+          <label>זמן המתנה ללא פעילות (שניות)</label>
+          <input type="number" id="as-idle" min="5">
+        </div>
+        <div class="form-group">
+          <label>משך זמן הצגת פרסומת (שניות)</label>
+          <input type="number" id="as-show" step="0.5">
+        </div>
+        <div class="form-group">
+          <label>מרווח בין פרסומות (שניות)</label>
+          <input type="number" id="as-gap" step="0.5">
+        </div>
+        <div class="modal-actions">
+          <button class="gray" onclick="closeModal('modal-ads-settings')">ביטול</button>
+          <button class="green" onclick="saveAdsSettings()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Student Msg Modal -->
+    <div id="modal-student" class="modal-overlay">
+      <div class="modal">
+        <h3 id="title-student">הודעה אישית לתלמיד</h3>
+        <input type="hidden" id="student-msg-id">
+        <div class="form-group" id="student-select-group">
+          <label>בחר תלמיד (חפש לפי שם או ת.ז.)</label>
+          <div style="display:flex; gap:5px;">
+             <input id="student-search-input" placeholder="הקלד שם/ת.ז..." oninput="searchStudentsDebounced()">
+             <input type="hidden" id="selected-student-id">
+          </div>
+          <div id="student-search-results" style="border:1px solid #ddd; max-height:150px; overflow-y:auto; display:none; position:absolute; background:#fff; width:80%; z-index:100;"></div>
+          <div id="selected-student-display" style="margin-top:5px; font-weight:bold; color:var(--primary);"></div>
+        </div>
+        <div class="form-group">
+          <label>תוכן ההודעה</label>
+          <textarea id="student-message-text" rows="3"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button class="gray" onclick="closeModal('modal-student')">ביטול</button>
+          <button class="green" onclick="saveStudentMsg()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let currentTab = 'static';
+      let studentSearchTimer = null;
+
+      function switchTab(tab) {
+        currentTab = tab;
+        document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+        document.getElementById(`tab-${tab}`).classList.add('active');
+        
+        if (tab === 'static') loadStatic();
+        else if (tab === 'threshold') loadThreshold();
+        else if (tab === 'news') loadNews();
+        else if (tab === 'ads') loadAds();
+        else if (tab === 'student') loadStudentMsg();
+      }
+
+      function closeModal(id) {
+        document.getElementById(id).style.display = 'none';
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      function formatDate(d) {
+        if (!d) return '';
+        try {
+            return d.split('T')[0].split('-').reverse().join('.');
+        } catch(e) { return d; }
+      }
+
+      // --- Static ---
+      async function loadStatic() {
+        const res = await fetch('/api/messages/static');
+        const data = await res.json();
+        const tbody = document.getElementById('tbody-static');
+        tbody.innerHTML = (data.items || []).map(item => `
+          <tr>
+            <td>${esc(item.message)}</td>
+            <td>${item.show_always ? 'V' : ''}</td>
+            <td><span class="status-dot ${item.is_active ? 'status-active' : 'status-inactive'}"></span></td>
+            <td>
+              <button class="btn-icon" onclick='editStatic(${JSON.stringify(item)})'>✏️</button>
+              <button class="btn-icon" onclick="toggleStatic(${item.id})">🔄</button>
+              <button class="btn-icon" onclick="deleteStatic(${item.id})">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openStaticModal() {
+        document.getElementById('static-id').value = '';
+        document.getElementById('static-message').value = '';
+        document.getElementById('static-always').checked = false;
+        document.getElementById('title-static').textContent = 'הוספת הודעה רצה';
+        document.getElementById('modal-static').style.display = 'flex';
+      }
+
+      function editStatic(item) {
+        document.getElementById('static-id').value = item.id;
+        document.getElementById('static-message').value = item.message;
+        document.getElementById('static-always').checked = !!item.show_always;
+        document.getElementById('title-static').textContent = 'עריכת הודעה רצה';
+        document.getElementById('modal-static').style.display = 'flex';
+      }
+
+      async function saveStatic() {
+        const id = document.getElementById('static-id').value;
+        const msg = document.getElementById('static-message').value;
+        const always = document.getElementById('static-always').checked ? 1 : 0;
+        
+        await fetch('/api/messages/static/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id ? parseInt(id) : null, message: msg, show_always: always })
+        });
+        closeModal('modal-static');
+        loadStatic();
+      }
+
+      async function deleteStatic(id) {
+        if(!confirm('למחוק?')) return;
+        await fetch('/api/messages/static/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id })
+        });
+        loadStatic();
+      }
+
+      async function toggleStatic(id) {
+        await fetch('/api/messages/static/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id })
+        });
+        loadStatic();
+      }
+
+      // --- Threshold ---
+      async function loadThreshold() {
+        const res = await fetch('/api/messages/threshold');
+        const data = await res.json();
+        document.getElementById('tbody-threshold').innerHTML = (data.items || []).map(item => `
+          <tr>
+            <td>${esc(item.message)}</td>
+            <td>${item.min_points} - ${item.max_points}</td>
+            <td><span class="status-dot ${item.is_active ? 'status-active' : 'status-inactive'}"></span></td>
+            <td>
+              <button class="btn-icon" onclick='editThreshold(${JSON.stringify(item)})'>✏️</button>
+              <button class="btn-icon" onclick="toggleThreshold(${item.id})">🔄</button>
+              <button class="btn-icon" onclick="deleteThreshold(${item.id})">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openThresholdModal() {
+        document.getElementById('threshold-id').value = '';
+        document.getElementById('threshold-message').value = '';
+        document.getElementById('threshold-min').value = '0';
+        document.getElementById('threshold-max').value = '1000';
+        document.getElementById('title-threshold').textContent = 'הוספת הודעת סף';
+        document.getElementById('modal-threshold').style.display = 'flex';
+      }
+
+      function editThreshold(item) {
+        document.getElementById('threshold-id').value = item.id;
+        document.getElementById('threshold-message').value = item.message;
+        document.getElementById('threshold-min').value = item.min_points;
+        document.getElementById('threshold-max').value = item.max_points;
+        document.getElementById('title-threshold').textContent = 'עריכת הודעת סף';
+        document.getElementById('modal-threshold').style.display = 'flex';
+      }
+
+      async function saveThreshold() {
+        const id = document.getElementById('threshold-id').value;
+        const msg = document.getElementById('threshold-message').value;
+        const min = document.getElementById('threshold-min').value;
+        const max = document.getElementById('threshold-max').value;
+        
+        await fetch('/api/messages/threshold/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id ? parseInt(id) : null, message: msg, min_points: parseInt(min), max_points: parseInt(max) })
+        });
+        closeModal('modal-threshold');
+        loadThreshold();
+      }
+
+      async function deleteThreshold(id) {
+        if(!confirm('למחוק?')) return;
+        await fetch('/api/messages/threshold/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id })
+        });
+        loadThreshold();
+      }
+
+      async function toggleThreshold(id) {
+        await fetch('/api/messages/threshold/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id })
+        });
+        loadThreshold();
+      }
+
+      // --- News ---
+      async function loadNews() {
+        const res = await fetch('/api/messages/news');
+        const data = await res.json();
+        const items = data.items || [];
+        document.getElementById('tbody-news').innerHTML = items.map((item, idx) => `
+          <tr>
+            <td>${esc(item.text)}</td>
+            <td>${formatDate(item.start_date)} - ${formatDate(item.end_date)}</td>
+            <td>
+               ${idx > 0 ? `<button class="btn-icon" onclick="reorderNews(${item.id}, 'up')">⬆️</button>` : ''}
+               ${idx < items.length-1 ? `<button class="btn-icon" onclick="reorderNews(${item.id}, 'down')">⬇️</button>` : ''}
+            </td>
+            <td><span class="status-dot ${item.is_active ? 'status-active' : 'status-inactive'}"></span></td>
+            <td>
+              <button class="btn-icon" onclick='editNews(${JSON.stringify(item)})'>✏️</button>
+              <button class="btn-icon" onclick="toggleNews(${item.id})">🔄</button>
+              <button class="btn-icon" onclick="deleteNews(${item.id})">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openNewsModal() {
+        document.getElementById('news-id').value = '';
+        document.getElementById('news-text').value = '';
+        document.getElementById('news-start').value = '';
+        document.getElementById('news-end').value = '';
+        document.getElementById('title-news').textContent = 'הוספת ידיעה';
+        document.getElementById('modal-news').style.display = 'flex';
+      }
+
+      function editNews(item) {
+        document.getElementById('news-id').value = item.id;
+        document.getElementById('news-text').value = item.text;
+        document.getElementById('news-start').value = item.start_date;
+        document.getElementById('news-end').value = item.end_date;
+        document.getElementById('title-news').textContent = 'עריכת ידיעה';
+        document.getElementById('modal-news').style.display = 'flex';
+      }
+
+      async function saveNews() {
+        const id = document.getElementById('news-id').value;
+        const text = document.getElementById('news-text').value;
+        const start = document.getElementById('news-start').value;
+        const end = document.getElementById('news-end').value;
+        
+        await fetch('/api/messages/news/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ news_id: id ? parseInt(id) : null, text: text, start_date: start, end_date: end })
+        });
+        closeModal('modal-news');
+        loadNews();
+      }
+
+      async function deleteNews(id) {
+        if(!confirm('למחוק?')) return;
+        await fetch('/api/messages/news/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ news_id: id })
+        });
+        loadNews();
+      }
+
+      async function toggleNews(id) {
+        await fetch('/api/messages/news/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ news_id: id })
+        });
+        loadNews();
+      }
+
+      async function reorderNews(id, direction) {
+        await fetch('/api/messages/news/reorder', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ news_id: id, direction: direction })
+        });
+        loadNews();
+      }
+
+      async function openNewsSettings() {
+        const res = await fetch('/api/messages/news/settings');
+        const s = await res.json();
+        document.getElementById('ns-weekday').checked = !!s.show_weekday;
+        document.getElementById('ns-hebrew').checked = !!s.show_hebrew_date;
+        document.getElementById('ns-parsha').checked = !!s.show_parsha;
+        document.getElementById('ns-holidays').checked = !!s.show_holidays;
+        document.getElementById('ns-speed').value = s.ticker_speed || 'normal';
+        document.getElementById('modal-news-settings').style.display = 'flex';
+      }
+
+      async function saveNewsSettings() {
+        const payload = {
+            show_weekday: document.getElementById('ns-weekday').checked ? 1 : 0,
+            show_hebrew_date: document.getElementById('ns-hebrew').checked ? 1 : 0,
+            show_parsha: document.getElementById('ns-parsha').checked ? 1 : 0,
+            show_holidays: document.getElementById('ns-holidays').checked ? 1 : 0,
+            ticker_speed: document.getElementById('ns-speed').value
+        };
+        await fetch('/api/messages/news/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        closeModal('modal-news-settings');
+      }
+
+      // --- Ads ---
+      async function loadAds() {
+        const res = await fetch('/api/messages/ads');
+        const data = await res.json();
+        const items = data.items || [];
+        document.getElementById('tbody-ads').innerHTML = items.map((item, idx) => `
+          <tr>
+            <td>${item.image_url ? `<img src="${item.image_url}" style="height:40px;">` : '-'}</td>
+            <td>${esc(item.text)}</td>
+            <td>${formatDate(item.start_date)} - ${formatDate(item.end_date)}</td>
+            <td>
+               ${idx > 0 ? `<button class="btn-icon" onclick="reorderAds(${item.id}, 'up')">⬆️</button>` : ''}
+               ${idx < items.length-1 ? `<button class="btn-icon" onclick="reorderAds(${item.id}, 'down')">⬇️</button>` : ''}
+            </td>
+            <td><span class="status-dot ${item.is_active ? 'status-active' : 'status-inactive'}"></span></td>
+            <td>
+              <button class="btn-icon" onclick='editAds(${JSON.stringify(item).replace(/'/g, "&apos;")})'>✏️</button>
+              <button class="btn-icon" onclick="toggleAds(${item.id})">🔄</button>
+              <button class="btn-icon" onclick="deleteAds(${item.id})">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openAdsModal() {
+        document.getElementById('ads-id').value = '';
+        document.getElementById('ads-text').value = '';
+        document.getElementById('ads-start').value = '';
+        document.getElementById('ads-end').value = '';
+        document.getElementById('ads-file').value = '';
+        document.getElementById('ads-preview').innerHTML = '';
+        document.getElementById('title-ads').textContent = 'הוספת פרסומת';
+        document.getElementById('modal-ads').style.display = 'flex';
+      }
+
+      function editAds(item) {
+        document.getElementById('ads-id').value = item.id;
+        document.getElementById('ads-text').value = item.text;
+        document.getElementById('ads-start').value = item.start_date;
+        document.getElementById('ads-end').value = item.end_date;
+        document.getElementById('ads-file').value = '';
+        document.getElementById('ads-preview').innerHTML = item.image_url ? `<img src="${item.image_url}" style="height:100px;">` : '';
+        document.getElementById('title-ads').textContent = 'עריכת פרסומת';
+        document.getElementById('modal-ads').style.display = 'flex';
+      }
+
+      async function saveAds() {
+        const id = document.getElementById('ads-id').value;
+        const text = document.getElementById('ads-text').value;
+        const start = document.getElementById('ads-start').value;
+        const end = document.getElementById('ads-end').value;
+        const fileInput = document.getElementById('ads-file');
+        
+        const formData = new FormData();
+        if (id) formData.append('ads_id', id);
+        formData.append('text', text);
+        formData.append('start_date', start);
+        formData.append('end_date', end);
+        if (fileInput.files[0]) {
+            formData.append('image', fileInput.files[0]);
+        }
+
+        await fetch('/api/messages/ads/save', {
+            method: 'POST',
+            body: formData
+        });
+        closeModal('modal-ads');
+        loadAds();
+      }
+
+      async function deleteAds(id) {
+        if(!confirm('למחוק?')) return;
+        await fetch('/api/messages/ads/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ ads_id: id })
+        });
+        loadAds();
+      }
+
+      async function toggleAds(id) {
+        await fetch('/api/messages/ads/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ ads_id: id })
+        });
+        loadAds();
+      }
+
+      async function reorderAds(id, direction) {
+        await fetch('/api/messages/ads/reorder', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ ads_id: id, direction: direction })
+        });
+        loadAds();
+      }
+
+      async function openAdsSettings() {
+        const res = await fetch('/api/messages/ads/settings');
+        const s = await res.json();
+        document.getElementById('as-enabled').checked = !!s.popup_enabled;
+        document.getElementById('as-idle').value = s.popup_idle_sec || 60;
+        document.getElementById('as-show').value = s.popup_show_sec || 10;
+        document.getElementById('as-gap').value = s.popup_gap_sec || 30;
+        document.getElementById('modal-ads-settings').style.display = 'flex';
+      }
+
+      async function saveAdsSettings() {
+        const payload = {
+            popup_enabled: document.getElementById('as-enabled').checked ? 1 : 0,
+            popup_idle_sec: parseInt(document.getElementById('as-idle').value),
+            popup_show_sec: parseFloat(document.getElementById('as-show').value),
+            popup_gap_sec: parseFloat(document.getElementById('as-gap').value)
+        };
+        await fetch('/api/messages/ads/settings', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        closeModal('modal-ads-settings');
+      }
+
+      // --- Student Msg ---
+      async function loadStudentMsg() {
+        const res = await fetch('/api/messages/student');
+        const data = await res.json();
+        const items = data.items || [];
+        document.getElementById('tbody-student').innerHTML = items.map(item => `
+          <tr>
+            <td>${esc(item.first_name)} ${esc(item.last_name)} (${esc(item.class_name)})</td>
+            <td>${esc(item.message)}</td>
+            <td>${formatDate(item.created_at)}</td>
+            <td><span class="status-dot ${item.is_active ? 'status-active' : 'status-inactive'}"></span></td>
+            <td>
+              <button class="btn-icon" onclick='editStudentMsg(${JSON.stringify(item)})'>✏️</button>
+              <button class="btn-icon" onclick="toggleStudentMsg(${item.id})">🔄</button>
+              <button class="btn-icon" onclick="deleteStudentMsg(${item.id})">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function searchStudentsDebounced() {
+        clearTimeout(studentSearchTimer);
+        studentSearchTimer = setTimeout(searchStudents, 300);
+      }
+
+      async function searchStudents() {
+        const q = document.getElementById('student-search-input').value;
+        if (q.length < 2) {
+            document.getElementById('student-search-results').style.display = 'none';
+            return;
+        }
+        const res = await fetch(`/api/students?q=${encodeURIComponent(q)}&limit=10&offset=0`);
+        const data = await res.json();
+        const results = document.getElementById('student-search-results');
+        results.innerHTML = (data.items || []).map(s => `
+            <div onclick="selectStudent(${s.id}, '${esc(s.first_name)} ${esc(s.last_name)}')" style="padding:8px; border-bottom:1px solid #eee; cursor:pointer;">
+                ${esc(s.first_name)} ${esc(s.last_name)} - ${esc(s.class_name)} (ת.ז. ${esc(s.id_number)})
+            </div>
+        `).join('');
+        results.style.display = 'block';
+      }
+
+      function selectStudent(id, name) {
+        document.getElementById('selected-student-id').value = id;
+        document.getElementById('selected-student-display').textContent = 'נבחר: ' + name;
+        document.getElementById('student-search-results').style.display = 'none';
+        document.getElementById('student-search-input').value = '';
+      }
+
+      function openStudentMsgModal() {
+        document.getElementById('student-msg-id').value = '';
+        document.getElementById('selected-student-id').value = '';
+        document.getElementById('selected-student-display').textContent = '';
+        document.getElementById('student-message-text').value = '';
+        document.getElementById('student-select-group').style.display = 'block'; // Show student selector
+        document.getElementById('title-student').textContent = 'הודעה חדשה לתלמיד';
+        document.getElementById('modal-student').style.display = 'flex';
+      }
+
+      function editStudentMsg(item) {
+        document.getElementById('student-msg-id').value = item.id;
+        document.getElementById('selected-student-id').value = item.student_id;
+        document.getElementById('selected-student-display').textContent = `נבחר: ${item.first_name} ${item.last_name}`;
+        document.getElementById('student-message-text').value = item.message;
+        // Hide student selector on edit? Or allow changing? Usually msg is specific to student.
+        // Let's allow changing but show current.
+        document.getElementById('title-student').textContent = 'עריכת הודעה';
+        document.getElementById('modal-student').style.display = 'flex';
+      }
+
+      async function saveStudentMsg() {
+        const id = document.getElementById('student-msg-id').value;
+        const sid = document.getElementById('selected-student-id').value;
+        const msg = document.getElementById('student-message-text').value;
+        
+        if (!sid && !id) {
+            alert('אנא בחר תלמיד');
+            return;
+        }
+
+        await fetch('/api/messages/student/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id ? parseInt(id) : null, student_id: parseInt(sid), message: msg })
+        });
+        closeModal('modal-student');
+        loadStudentMsg();
+      }
+
+      async function deleteStudentMsg(id) {
+        if(!confirm('למחוק?')) return;
+        await fetch('/api/messages/student/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id })
+        });
+        loadStudentMsg();
+      }
+
+      async function toggleStudentMsg(id) {
+        await fetch('/api/messages/student/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ message_id: id })
+        });
+        loadStudentMsg();
+      }
+
+      // Initial load
+      switchTab('static');
+    </script>
+    """
+    return _basic_web_shell("ניהול הודעות", html_content, request=request)
 
 
 @app.get("/web/holidays", response_class=HTMLResponse)
@@ -4736,23 +6881,156 @@ def web_holidays(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'holidays', '{\n  "items": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "חגים וחופשות",
-        'holidays',
-        value_json,
-        'הגדרות חגים/חופשות.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("חגים וחופשות", body, request=request)
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>חגים וחופשות</h2>
+      <button class="green" onclick="openHolidayModal()">+ חג חדש</button>
+    </div>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">שם החג</th>
+            <th style="padding:12px; text-align:right;">תאריך התחלה</th>
+            <th style="padding:12px; text-align:right;">תאריך סיום</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="holidays-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-holiday" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">חג / חופשה</h3>
+        <input type="hidden" id="holiday-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">שם החג</label>
+          <input id="holiday-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">תאריך התחלה</label>
+          <input type="date" id="holiday-start" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">תאריך סיום</label>
+          <input type="date" id="holiday-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeHolidayModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveHoliday()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let holidays = [];
+
+      async function loadHolidays() {
+        try {
+          const res = await fetch('/api/settings/holidays');
+          const data = await res.json();
+          holidays = Array.isArray(data.items) ? data.items : [];
+          renderHolidays();
+        } catch(e) {
+          console.error(e);
+        }
+      }
+
+      function renderHolidays() {
+        const tbody = document.getElementById('holidays-list');
+        if (holidays.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="padding:20px; text-align:center; color:#888;">אין חגים מוגדרים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = holidays.map((h, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${esc(h.name)}</td>
+            <td style="padding:12px;">${formatDate(h.start_date)}</td>
+            <td style="padding:12px;">${formatDate(h.end_date)}</td>
+            <td style="padding:12px;">
+              <button onclick="editHoliday(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteHoliday(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function formatDate(d) {
+        if (!d) return '';
+        try { return d.split('T')[0].split('-').reverse().join('.'); } catch(e) { return d; }
+      }
+
+      function openHolidayModal() {
+        document.getElementById('holiday-index').value = '-1';
+        document.getElementById('holiday-name').value = '';
+        document.getElementById('holiday-start').value = '';
+        document.getElementById('holiday-end').value = '';
+        document.getElementById('modal-title').textContent = 'הוספת חג';
+        document.getElementById('modal-holiday').style.display = 'flex';
+      }
+
+      function closeHolidayModal() {
+        document.getElementById('modal-holiday').style.display = 'none';
+      }
+
+      function editHoliday(idx) {
+        const h = holidays[idx];
+        document.getElementById('holiday-index').value = idx;
+        document.getElementById('holiday-name').value = h.name || '';
+        document.getElementById('holiday-start').value = h.start_date || '';
+        document.getElementById('holiday-end').value = h.end_date || '';
+        document.getElementById('modal-title').textContent = 'עריכת חג';
+        document.getElementById('modal-holiday').style.display = 'flex';
+      }
+
+      async function saveHoliday() {
+        const idx = parseInt(document.getElementById('holiday-index').value);
+        const name = document.getElementById('holiday-name').value.trim();
+        const start = document.getElementById('holiday-start').value;
+        const end = document.getElementById('holiday-end').value;
+        
+        if (!name) return alert('נא להזין שם');
+
+        const newHoliday = { name, start_date: start, end_date: end };
+        
+        if (idx >= 0) {
+            holidays[idx] = newHoliday;
+        } else {
+            holidays.push(newHoliday);
+        }
+        
+        await saveToServer();
+        closeHolidayModal();
+        renderHolidays();
+      }
+
+      async function deleteHoliday(idx) {
+        if (!confirm('למחוק חג זה?')) return;
+        holidays.splice(idx, 1);
+        await saveToServer();
+        renderHolidays();
+      }
+
+      async function saveToServer() {
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'holidays', value: { items: holidays } })
+        });
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadHolidays();
+    </script>
+    """
+    return _basic_web_shell("חגים וחופשות", html_content, request=request)
 
 
 @app.get("/web/upgrades", response_class=HTMLResponse)
@@ -4760,23 +7038,56 @@ def web_upgrades(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'upgrades_settings', '{\n  "auto_update": false,\n  "channel": "stable"\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "שדרוגים",
-        'upgrades_settings',
-        value_json,
-        'הגדרות שדרוגים.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("שדרוגים", body, request=request)
+    
+    html_content = """
+    <h2>הגדרות שדרוגים</h2>
+    
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <div class="form-group" style="margin-bottom:15px;">
+        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
+          <input type="checkbox" id="upg-auto" style="width:18px; height:18px;"> עדכון אוטומטי
+        </label>
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">ערוץ עדכון</label>
+        <select id="upg-channel" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+          <option value="stable">יציב (Stable)</option>
+          <option value="beta">בטא (Beta)</option>
+          <option value="dev">פיתוח (Dev)</option>
+        </select>
+      </div>
+      <div>
+        <button class="green" onclick="saveUpgrades()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
+      </div>
+    </div>
+
+    <script>
+      async function loadUpgrades() {
+        try {
+          const res = await fetch('/api/settings/upgrades_settings');
+          const data = await res.json();
+          document.getElementById('upg-auto').checked = !!data.auto_update;
+          document.getElementById('upg-channel').value = data.channel || 'stable';
+        } catch(e) {}
+      }
+
+      async function saveUpgrades() {
+        const payload = {
+            auto_update: document.getElementById('upg-auto').checked,
+            channel: document.getElementById('upg-channel').value
+        };
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'upgrades_settings', value: payload })
+        });
+        alert('נשמר בהצלחה');
+      }
+
+      loadUpgrades();
+    </script>
+    """
+    return _basic_web_shell("שדרוגים", html_content, request=request)
 
 
 @app.get("/web/special-bonus", response_class=HTMLResponse)
@@ -4784,28 +7095,140 @@ def web_special_bonus(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'special_bonus', '{\n  "items": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    editor = _web_json_editor(
-        "בונוס מיוחד",
-        'special_bonus',
-        value_json,
-        'בונוס מיוחד.',
-        back_href='/web/bonuses',
-    )
-    body = editor + """
-    <div class=\"actionbar\">
-      <a class=\"blue\" href=\"/web/bonuses\">↩️ למסך בונוסים</a>
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>בונוס מיוחד</h2>
+      <button class="green" onclick="openItemModal()">+ פריט חדש</button>
     </div>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">תיאור</th>
+            <th style="padding:12px; text-align:right;">ניקוד</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="items-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-item" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">פריט בונוס</h3>
+        <input type="hidden" id="item-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">תיאור</label>
+          <input id="item-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">ניקוד</label>
+          <input type="number" id="item-points" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeItemModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveItem()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let items = [];
+
+      async function loadItems() {
+        try {
+          const res = await fetch('/api/settings/special_bonus');
+          const data = await res.json();
+          items = Array.isArray(data.items) ? data.items : [];
+          renderItems();
+        } catch(e) {}
+      }
+
+      function renderItems() {
+        const tbody = document.getElementById('items-list');
+        if (items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#888;">אין פריטים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = items.map((b, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${esc(b.name)}</td>
+            <td style="padding:12px;">${b.points}</td>
+            <td style="padding:12px;">
+              <button onclick="editItem(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteItem(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openItemModal() {
+        document.getElementById('item-index').value = '-1';
+        document.getElementById('item-name').value = '';
+        document.getElementById('item-points').value = '';
+        document.getElementById('modal-title').textContent = 'הוספת פריט';
+        document.getElementById('modal-item').style.display = 'flex';
+      }
+
+      function closeItemModal() {
+        document.getElementById('modal-item').style.display = 'none';
+      }
+
+      function editItem(idx) {
+        const b = items[idx];
+        document.getElementById('item-index').value = idx;
+        document.getElementById('item-name').value = b.name || '';
+        document.getElementById('item-points').value = b.points || 0;
+        document.getElementById('modal-title').textContent = 'עריכת פריט';
+        document.getElementById('modal-item').style.display = 'flex';
+      }
+
+      async function saveItem() {
+        const idx = parseInt(document.getElementById('item-index').value);
+        const name = document.getElementById('item-name').value.trim();
+        const points = parseInt(document.getElementById('item-points').value) || 0;
+        
+        if (!name) return alert('נא להזין שם');
+
+        const newItem = { name, points };
+        
+        if (idx >= 0) {
+            items[idx] = newItem;
+        } else {
+            items.push(newItem);
+        }
+        
+        await saveToServer();
+        closeItemModal();
+        renderItems();
+      }
+
+      async function deleteItem(idx) {
+        if (!confirm('למחוק?')) return;
+        items.splice(idx, 1);
+        await saveToServer();
+        renderItems();
+      }
+
+      async function saveToServer() {
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'special_bonus', value: { items: items } })
+        });
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadItems();
+    </script>
     """
-    return _basic_web_shell("בונוס מיוחד", body, request=request)
+    return _basic_web_shell("בונוס מיוחד", html_content, request=request)
 
 
 @app.get("/web/time-bonus", response_class=HTMLResponse)
@@ -4813,28 +7236,158 @@ def web_time_bonus(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'time_bonus', '{\n  "rules": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    editor = _web_json_editor(
-        "בונוס זמנים",
-        'time_bonus',
-        value_json,
-        'כללי בונוס לפי זמן.',
-        back_href='/web/holidays',
-    )
-    body = editor + """
-    <div class=\"actionbar\">
-      <a class=\"blue\" href=\"/web/holidays\">📅 חגים/חופשות</a>
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>בונוס זמנים</h2>
+      <button class="green" onclick="openRuleModal()">+ כלל חדש</button>
     </div>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">שם הכלל</th>
+            <th style="padding:12px; text-align:right;">שעות</th>
+            <th style="padding:12px; text-align:right;">בונוס (נקודות)</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="rules-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-rule" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:450px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">כלל בונוס זמן</h3>
+        <input type="hidden" id="rule-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">שם הכלל (לדוגמה: שחרית)</label>
+          <input id="rule-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; gap:10px; margin-bottom:15px;">
+            <div style="flex:1;">
+                <label style="display:block; margin-bottom:5px; font-weight:600;">התחלה</label>
+                <input type="time" id="rule-start" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+            </div>
+            <div style="flex:1;">
+                <label style="display:block; margin-bottom:5px; font-weight:600;">סיום</label>
+                <input type="time" id="rule-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+            </div>
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">תוספת נקודות</label>
+          <input type="number" id="rule-points" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeRuleModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveRule()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let rules = [];
+
+      async function loadRules() {
+        try {
+          const res = await fetch('/api/settings/time_bonus');
+          const data = await res.json();
+          rules = Array.isArray(data.rules) ? data.rules : [];
+          renderRules();
+        } catch(e) {}
+      }
+
+      function renderRules() {
+        const tbody = document.getElementById('rules-list');
+        if (rules.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="padding:20px; text-align:center; color:#888;">אין כללים מוגדרים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = rules.map((r, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${esc(r.name)}</td>
+            <td style="padding:12px; direction:ltr; text-align:right;">${r.start_time} - ${r.end_time}</td>
+            <td style="padding:12px;">${r.points}</td>
+            <td style="padding:12px;">
+              <button onclick="editRule(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteRule(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openRuleModal() {
+        document.getElementById('rule-index').value = '-1';
+        document.getElementById('rule-name').value = '';
+        document.getElementById('rule-start').value = '';
+        document.getElementById('rule-end').value = '';
+        document.getElementById('rule-points').value = '';
+        document.getElementById('modal-title').textContent = 'הוספת כלל';
+        document.getElementById('modal-rule').style.display = 'flex';
+      }
+
+      function closeRuleModal() {
+        document.getElementById('modal-rule').style.display = 'none';
+      }
+
+      function editRule(idx) {
+        const r = rules[idx];
+        document.getElementById('rule-index').value = idx;
+        document.getElementById('rule-name').value = r.name || '';
+        document.getElementById('rule-start').value = r.start_time || '';
+        document.getElementById('rule-end').value = r.end_time || '';
+        document.getElementById('rule-points').value = r.points || 0;
+        document.getElementById('modal-title').textContent = 'עריכת כלל';
+        document.getElementById('modal-rule').style.display = 'flex';
+      }
+
+      async function saveRule() {
+        const idx = parseInt(document.getElementById('rule-index').value);
+        const name = document.getElementById('rule-name').value.trim();
+        const start = document.getElementById('rule-start').value;
+        const end = document.getElementById('rule-end').value;
+        const points = parseInt(document.getElementById('rule-points').value) || 0;
+        
+        if (!name) return alert('נא להזין שם');
+
+        const newRule = { name, start_time: start, end_time: end, points };
+        
+        if (idx >= 0) {
+            rules[idx] = newRule;
+        } else {
+            rules.push(newRule);
+        }
+        
+        await saveToServer();
+        closeRuleModal();
+        renderRules();
+      }
+
+      async function deleteRule(idx) {
+        if (!confirm('למחוק?')) return;
+        rules.splice(idx, 1);
+        await saveToServer();
+        renderRules();
+      }
+
+      async function saveToServer() {
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'time_bonus', value: { rules: rules } })
+        });
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadRules();
+    </script>
     """
-    return _basic_web_shell("בונוס זמנים", body, request=request)
+    return _basic_web_shell("בונוס זמנים", html_content, request=request)
 
 
 @app.get("/web/cashier", response_class=HTMLResponse)
@@ -4842,23 +7395,150 @@ def web_cashier(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'cashier_settings', '{\n  "enabled": true,\n  "items": []\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "עמדת קופה",
-        'cashier_settings',
-        value_json,
-        'הגדרות קופה.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("עמדת קופה", body, request=request)
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>עמדת קופה</h2>
+      <button class="green" onclick="openItemModal()">+ פריט קופה חדש</button>
+    </div>
+    
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee; margin-bottom:20px;">
+      <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
+        <input type="checkbox" id="cashier-enabled" style="width:18px; height:18px;" onchange="saveToServer()"> קופה פעילה
+      </label>
+    </div>
+
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px; text-align:right;">שם הפריט</th>
+            <th style="padding:12px; text-align:right;">מחיר (נקודות)</th>
+            <th style="padding:12px; text-align:right;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="items-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-item" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:400px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+        <h3 id="modal-title" style="margin-top:0;">פריט קופה</h3>
+        <input type="hidden" id="item-index">
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">שם הפריט</label>
+          <input id="item-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">מחיר בנקודות</label>
+          <input type="number" id="item-price" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+          <button class="gray" onclick="closeItemModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button class="green" onclick="saveItem()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let items = [];
+      let enabled = true;
+
+      async function loadItems() {
+        try {
+          const res = await fetch('/api/settings/cashier_settings');
+          const data = await res.json();
+          items = Array.isArray(data.items) ? data.items : [];
+          enabled = !!data.enabled;
+          document.getElementById('cashier-enabled').checked = enabled;
+          renderItems();
+        } catch(e) {}
+      }
+
+      function renderItems() {
+        const tbody = document.getElementById('items-list');
+        if (items.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" style="padding:20px; text-align:center; color:#888;">אין פריטים</td></tr>';
+            return;
+        }
+        tbody.innerHTML = items.map((b, idx) => `
+          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
+            <td style="padding:12px;">${esc(b.name)}</td>
+            <td style="padding:12px;">${b.price || 0}</td>
+            <td style="padding:12px;">
+              <button onclick="editItem(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteItem(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      function openItemModal() {
+        document.getElementById('item-index').value = '-1';
+        document.getElementById('item-name').value = '';
+        document.getElementById('item-price').value = '';
+        document.getElementById('modal-title').textContent = 'הוספת פריט';
+        document.getElementById('modal-item').style.display = 'flex';
+      }
+
+      function closeItemModal() {
+        document.getElementById('modal-item').style.display = 'none';
+      }
+
+      function editItem(idx) {
+        const b = items[idx];
+        document.getElementById('item-index').value = idx;
+        document.getElementById('item-name').value = b.name || '';
+        document.getElementById('item-price').value = b.price || 0;
+        document.getElementById('modal-title').textContent = 'עריכת פריט';
+        document.getElementById('modal-item').style.display = 'flex';
+      }
+
+      async function saveItem() {
+        const idx = parseInt(document.getElementById('item-index').value);
+        const name = document.getElementById('item-name').value.trim();
+        const price = parseInt(document.getElementById('item-price').value) || 0;
+        
+        if (!name) return alert('נא להזין שם');
+
+        const newItem = { name, price };
+        
+        if (idx >= 0) {
+            items[idx] = newItem;
+        } else {
+            items.push(newItem);
+        }
+        
+        await saveToServer();
+        closeItemModal();
+        renderItems();
+      }
+
+      async function deleteItem(idx) {
+        if (!confirm('למחוק?')) return;
+        items.splice(idx, 1);
+        await saveToServer();
+        renderItems();
+      }
+
+      async function saveToServer() {
+        const en = document.getElementById('cashier-enabled').checked;
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'cashier_settings', value: { enabled: en, items: items } })
+        });
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadItems();
+    </script>
+    """
+    return _basic_web_shell("עמדת קופה", html_content, request=request)
 
 
 @app.get("/web/reports", response_class=HTMLResponse)
@@ -4866,28 +7546,53 @@ def web_reports(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'reports_settings', '{\n  "enabled": true\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    editor = _web_json_editor(
-        "דוחות",
-        'reports_settings',
-        value_json,
-        'הגדרות דוחות (JSON). ייצוא תלמידים (CSV) זמין כבר עכשיו.',
-        back_href='/web/admin',
-    )
-    body = editor + """
-    <div class=\"actionbar\">
-      <a class=\"blue\" href=\"/web/export/download\">⬇️ ייצוא תלמידים (CSV)</a>
+    
+    html_content = """
+    <h2>דוחות</h2>
+    
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee; margin-bottom:20px;">
+      <h3 style="margin-top:0;">ייצוא נתונים</h3>
+      <p style="color:#666;">הורדת רשימת התלמידים והניקוד שלהם לקובץ CSV (אקסל).</p>
+      <a href="/web/export/download" target="_blank" style="text-decoration:none;">
+        <button class="blue" style="padding:10px 20px; border-radius:6px; border:none; background:#3498db; color:white; font-weight:bold; cursor:pointer;">⬇️ ייצוא תלמידים (CSV)</button>
+      </a>
     </div>
+
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <h3 style="margin-top:0;">הגדרות דוחות</h3>
+      <div style="margin-bottom:15px;">
+        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
+          <input type="checkbox" id="rep-enabled" style="width:18px; height:18px;"> אפשר דוחות
+        </label>
+      </div>
+      <div>
+        <button class="green" onclick="saveReports()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
+      </div>
+    </div>
+
+    <script>
+      async function loadReports() {
+        try {
+          const res = await fetch('/api/settings/reports_settings');
+          const data = await res.json();
+          document.getElementById('rep-enabled').checked = !!data.enabled;
+        } catch(e) {}
+      }
+
+      async function saveReports() {
+        const enabled = document.getElementById('rep-enabled').checked;
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'reports_settings', value: { enabled: enabled } })
+        });
+        alert('נשמר בהצלחה');
+      }
+
+      loadReports();
+    </script>
     """
-    return _basic_web_shell("דוחות", body, request=request)
+    return _basic_web_shell("דוחות", html_content, request=request)
 
 
 @app.get("/web/logs", response_class=HTMLResponse)
@@ -4895,52 +7600,41 @@ def web_logs(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'log_settings', '{\n  "retention_days": 30\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "לוגים",
-        'log_settings',
-        value_json,
-        'הגדרות לוגים.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("לוגים", body, request=request)
+    
+    html_content = """
+    <h2>הגדרות לוגים</h2>
+    
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <h3 style="margin-top:0;">שמירת היסטוריה</h3>
+      <div style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">מספר ימים לשמירת לוגים</label>
+        <input type="number" id="log-retention" style="width:100%; max-width:200px; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+      </div>
+      <div>
+        <button class="green" onclick="saveLogs()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
+      </div>
+    </div>
 
+    <script>
+      async function loadLogs() {
+        try {
+          const res = await fetch('/api/settings/log_settings');
+          const data = await res.json();
+          document.getElementById('log-retention').value = data.retention_days || 30;
+        } catch(e) {}
+      }
 
-@app.get("/web/settings", response_class=HTMLResponse)
-def web_settings(request: Request):
-    guard = _web_require_admin_teacher(request)
-    if guard:
-        return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    conn = _tenant_school_db(tenant_id)
-    try:
-        value_json = _get_web_setting_json(conn, 'settings', '{\n  "notes": ""\n}')
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    body = _web_json_editor(
-        "הגדרות",
-        'settings',
-        value_json,
-        'הגדרות כלליות (JSON). עמוד זה מחליף placeholder ונותן מקום לשמור הגדרות נוספות בווב.',
-        back_href='/web/admin',
-    )
-    return _basic_web_shell("הגדרות", body, request=request)
+      async function saveLogs() {
+        const days = parseInt(document.getElementById('log-retention').value) || 30;
+        await fetch('/api/settings/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ key: 'log_settings', value: { retention_days: days } })
+        });
+        alert('נשמר בהצלחה');
+      }
 
-
-@app.get("/admin/sync-status", response_class=HTMLResponse)
-def admin_sync_status(request: Request, admin_key: str = '') -> str:
-    guard = _admin_require(request, admin_key)
+      loadLogs();
     if guard:
         return guard  # type: ignore[return-value]
     conn = _db()
@@ -5058,60 +7752,181 @@ def admin_changes(request: Request, admin_key: str = '') -> str:
     """
 
 
-@app.get("/admin/institutions", response_class=HTMLResponse)
-def admin_institutions(request: Request, admin_key: str = '') -> str:
-    guard = _admin_require(request, admin_key)
-    if guard:
-        return guard  # type: ignore[return-value]
-    status_bar = _admin_status_bar()
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute('SELECT tenant_id, name, api_key, password_hash, created_at FROM institutions ORDER BY id DESC')
-    rows = cur.fetchall() or []
-    conn.close()
-    items = "".join(
-        f"<tr><td>{r['tenant_id']}</td><td>{r['name']}</td><td>{r['api_key']}</td><td>{'כן' if (r['password_hash'] or '').strip() else 'לא'}</td><td><a href='/admin/institutions/password?tenant_id={r['tenant_id']}'>עדכן סיסמה</a></td><td>{r['created_at']}</td></tr>"
-        for r in rows
-    )
+def _super_admin_shell(title: str, body: str, request: Request = None) -> str:
+    nav_links = [
+        {"href": "/admin/dashboard", "label": "דשבורד"},
+        {"href": "/admin/institutions", "label": "ניהול מוסדות"},
+        {"href": "/admin/setup", "label": "הקמת מוסד"},
+        {"href": "/admin/global-settings", "label": "הגדרות שרת"},
+        {"href": "/admin/logout", "label": "יציאה", "class": "red"},
+    ]
+    
+    nav_html = ""
+    for link in nav_links:
+        cls = link.get("class", "")
+        style = "color:#e74c3c;" if cls == "red" else ""
+        nav_html += f'<a href="{link["href"]}" class="{cls}" style="{style}">{link["label"]}</a>'
+
     return f"""
     <!doctype html>
-    <html lang="he">
+    <html lang="he" dir="rtl">
     <head>
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>מוסדות רשומים</title>
+      <title>{title} - ניהול על</title>
       <style>
-        body {{ margin:0; font-family: Arial, sans-serif; background:#f2f5f6; color:#1f2d3a; direction: rtl; }}
-        .wrap {{ max-width: 900px; margin: 30px auto; padding: 0 16px; }}
-        .card {{ background:#fff; border-radius:14px; padding:20px; border:1px solid #e1e8ee; }}
-        table {{ width:100%; border-collapse:collapse; font-size:14px; }}
-        th, td {{ padding:8px; border-bottom:1px solid #e8eef2; text-align:right; }}
-        th {{ background:#f7f9fb; }}
-        tbody tr:nth-child(even) {{ background:#f3f6f8; }}
-        .links {{ margin-top:12px; font-size:13px; }}
-        .links a {{ color:#1f2d3a; text-decoration:none; margin-left:10px; }}
+        :root {{ --primary: #2c3e50; --secondary: #34495e; --accent: #3498db; --bg: #f8f9fa; --card: #ffffff; --text: #2c3e50; --border: #dfe6e9; }}
+        body {{ margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); }}
+        .layout {{ display: flex; min-height: 100vh; }}
+        .sidebar {{ width: 240px; background: var(--primary); color: white; display: flex; flex-direction: column; padding: 20px 0; }}
+        .sidebar-header {{ padding: 0 20px 20px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 10px; }}
+        .sidebar-header h1 {{ margin: 0; font-size: 20px; font-weight: 600; }}
+        .nav {{ display: flex; flex-direction: column; }}
+        .nav a {{ padding: 12px 20px; color: rgba(255,255,255,0.8); text-decoration: none; transition: 0.2s; border-right: 3px solid transparent; }}
+        .nav a:hover, .nav a.active {{ background: rgba(255,255,255,0.05); color: white; border-right-color: var(--accent); }}
+        .main {{ flex: 1; padding: 30px; overflow-y: auto; }}
+        .card {{ background: var(--card); border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); padding: 24px; margin-bottom: 24px; border: 1px solid var(--border); }}
+        h2 {{ margin-top: 0; margin-bottom: 20px; font-size: 24px; color: var(--primary); }}
+        table {{ width: 100%; border-collapse: collapse; }}
+        th, td {{ padding: 12px 16px; text-align: right; border-bottom: 1px solid var(--border); }}
+        th {{ font-weight: 600; color: var(--secondary); background: rgba(0,0,0,0.02); }}
+        tr:hover {{ background: rgba(0,0,0,0.01); }}
+        input, select, textarea {{ padding: 10px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; width: 100%; box-sizing: border-box; }}
+        button {{ padding: 10px 20px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.2s; }}
+        button:hover {{ filter: brightness(1.1); }}
+        .btn-red {{ background: #e74c3c; }}
+        .btn-green {{ background: #2ecc71; }}
+        .form-group {{ margin-bottom: 16px; }}
+        .form-group label {{ display: block; margin-bottom: 6px; font-weight: 500; }}
+        .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 24px; }}
+        .stat-card {{ background: white; padding: 20px; border-radius: 10px; border: 1px solid var(--border); text-align: center; }}
+        .stat-val {{ font-size: 32px; font-weight: 700; color: var(--accent); }}
+        .stat-label {{ color: var(--secondary); font-size: 14px; margin-top: 5px; }}
       </style>
     </head>
     <body>
-      <div class="wrap">
-        <div class="card">
-          {status_bar}
-          <h2>מוסדות רשומים</h2>
-          <table>
-            <thead>
-              <tr><th>Tenant ID</th><th>שם מוסד</th><th>API Key</th><th>סיסמה הוגדרה</th><th>סיסמת מוסד</th><th>נוצר</th></tr>
-            </thead>
-            <tbody>{items}</tbody>
-          </table>
-          <div class="links">
-            <a href="/admin/setup">רישום מוסד חדש</a>
-            <a href="/web/admin">עמדת ניהול ווב</a>
+      <div class="layout">
+        <div class="sidebar">
+          <div class="sidebar-header">
+            <h1>ניהול מערכת</h1>
+            <div style="font-size:12px; opacity:0.6; margin-top:4px;">SchoolPoints Cloud</div>
           </div>
+          <div class="nav">
+            {nav_html}
+          </div>
+        </div>
+        <div class="main">
+          {body}
         </div>
       </div>
     </body>
     </html>
     """
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
+def admin_dashboard(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard
+    
+    conn = _db()
+    cur = conn.cursor()
+    
+    # Stats
+    cur.execute('SELECT COUNT(*) FROM institutions')
+    inst_count = cur.fetchone()[0]
+    
+    cur.execute('SELECT COUNT(*) FROM changes')
+    changes_count = cur.fetchone()[0]
+    
+    cur.execute('SELECT COUNT(*) FROM device_pairings WHERE consumed_at IS NULL')
+    pending_pairs = cur.fetchone()[0]
+    
+    conn.close()
+    
+    body = f"""
+    <h2>דשבורד</h2>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-val">{inst_count}</div>
+        <div class="stat-label">מוסדות פעילים</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">{changes_count}</div>
+        <div class="stat-label">אירועי סנכרון</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val">{pending_pairs}</div>
+        <div class="stat-label">צימודים בהמתנה</div>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h3>קיצורי דרך</h3>
+      <div style="display:flex; gap:10px;">
+        <a href="/admin/setup"><button class="btn-green">+ הקמת מוסד חדש</button></a>
+        <a href="/admin/institutions"><button>ניהול מוסדות</button></a>
+      </div>
+    </div>
+    """
+    return _super_admin_shell("דשבורד", body, request)
+
+@app.get("/admin/institutions", response_class=HTMLResponse)
+def admin_institutions(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard
+    
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute('SELECT tenant_id, name, api_key, password_hash, created_at FROM institutions ORDER BY id DESC')
+    rows = cur.fetchall() or []
+    conn.close()
+    
+    items = ""
+    for r in rows:
+        has_pw = "כן" if (r['password_hash'] or '').strip() else '<span style="color:#e74c3c">לא</span>'
+        created = str(r['created_at'])[:16]
+        items += f"""
+        <tr>
+          <td style="font-weight:600;">{r['name']}</td>
+          <td><code>{r['tenant_id']}</code></td>
+          <td style="font-family:monospace;font-size:12px;">{r['api_key']}</td>
+          <td>{has_pw}</td>
+          <td>{created}</td>
+          <td>
+            <a href='/admin/institutions/password?tenant_id={r['tenant_id']}' style="text-decoration:none;">
+              <button style="padding:6px 12px; font-size:12px;">🔑 סיסמה</button>
+            </a>
+          </td>
+        </tr>
+        """
+        
+    body = f"""
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>מוסדות ({len(rows)})</h2>
+      <a href="/admin/setup"><button class="btn-green">+ חדש</button></a>
+    </div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table>
+        <thead>
+          <tr>
+            <th>שם מוסד</th>
+            <th>Tenant ID</th>
+            <th>API Key</th>
+            <th>סיסמה?</th>
+            <th>נוצר</th>
+            <th>פעולות</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items}
+        </tbody>
+      </table>
+    </div>
+    """
+    return _super_admin_shell("מוסדות", body, request)
+
 
 
 @app.get("/admin/institutions/password", response_class=HTMLResponse)
@@ -5176,14 +7991,23 @@ def admin_institution_password_submit(
 ) -> str:
     guard = _admin_require(request, admin_key)
     if guard:
-        return guard  # type: ignore[return-value]
+        return guard
+        
     conn = _db()
     cur = conn.cursor()
     pw_hash = _pbkdf2_hash(institution_password.strip())
     cur.execute(_sql_placeholder('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?'), (pw_hash, tenant_id.strip()))
     conn.commit()
     conn.close()
-    return "<h3>סיסמת מוסד עודכנה.</h3><p><a href='/admin/institutions'>חזרה לרשימת מוסדות</a></p>"
+    
+    body = f"""
+    <h2>הסיסמה עודכנה בהצלחה</h2>
+    <p>הסיסמה עבור מוסד <code>{tenant_id}</code> עודכנה.</p>
+    <div style="margin-top:20px;">
+      <a href='/admin/institutions'><button>חזרה לרשימת מוסדות</button></a>
+    </div>
+    """
+    return _super_admin_shell("עדכון בוצע", body, request)
 
 
 @app.get("/api/students")
@@ -5793,242 +8617,149 @@ def api_students_delete(request: Request, payload: StudentDeletePayload) -> Dict
             pass
 
 
+@app.get("/web/personal", response_class=HTMLResponse)
+def web_personal(request: Request):
+    guard = _web_require_teacher(request)
+    if guard:
+        return guard
+    
+    teacher = _web_current_teacher_permissions(request)
+    if not teacher:
+        return RedirectResponse(url="/web/teacher-login", status_code=302)
+
+    name = teacher.get('name') or 'מורה'
+    card = teacher.get('card_number') or ''
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    
+    # Permissions
+    can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
+    can_edit_photo = bool(_safe_int(teacher.get('can_edit_student_photo'), 0) == 1)
+    bonus_cap_student = teacher.get('bonus_max_points_per_student')
+    bonus_cap_total = teacher.get('bonus_max_total_runs')
+    
+    perm_html = "<ul style='list-style-type:none; padding:0;'>"
+    if is_admin: perm_html += "<li style='margin-bottom:5px;'>👮 מנהל מערכת</li>"
+    perm_html += f"<li style='margin-bottom:5px;'>💳 עריכת כרטיס תלמיד: {'כן' if can_edit_card else 'לא'}</li>"
+    perm_html += f"<li style='margin-bottom:5px;'>📷 עריכת תמונת תלמיד: {'כן' if can_edit_photo else 'לא'}</li>"
+    if bonus_cap_student:
+        perm_html += f"<li style='margin-bottom:5px;'>🎁 מגבלת בונוס לתלמיד: {bonus_cap_student}</li>"
+    if bonus_cap_total:
+        perm_html += f"<li style='margin-bottom:5px;'>🔢 מגבלת שימוש בבונוס: {bonus_cap_total}</li>"
+    perm_html += "</ul>"
+
+    html_content = f"""
+    <h2>אזור אישי</h2>
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <h3 style="margin-top:0;">שלום, {name}</h3>
+      <div style="margin-bottom:10px;"><b>מספר כרטיס:</b> {card}</div>
+      <div style="margin-bottom:10px;"><b>הרשאות:</b></div>
+      {perm_html}
+      <div style="margin-top:20px;">
+        <a href="/web/logout"><button class="red" style="padding:10px 20px; border-radius:6px; border:none; background:#e74c3c; color:white; font-weight:bold; cursor:pointer;">יציאה</button></a>
+      </div>
+    </div>
+    """
+    return _basic_web_shell("אזור אישי", html_content, request=request)
+
+
 @app.get("/web/admin", response_class=HTMLResponse)
 def web_admin(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    return RedirectResponse(url='/web/students', status_code=302)
-    tenant_json = json.dumps(str(tenant_id or ''))
-    js = """
-      <script>
-        const rowsEl = document.getElementById('rows');
-        const statusEl = document.getElementById('status');
-        const searchEl = document.getElementById('search');
-        const selectedEl = document.getElementById('selected');
-        const btnEditPoints = document.getElementById('btnEditPoints');
-        const btnQuickDelta = document.getElementById('btnQuickDelta');
-        const btnEditMsg = document.getElementById('btnEditMsg');
-        const btnEditStudent = document.getElementById('btnEditStudent');
-        let selectedId = null;
-        let timer = null;
-
-        function setSelected(id) {
-          selectedId = id;
-          const on = (selectedId !== null);
-          btnEditPoints.style.opacity = on ? '1' : '.55';
-          btnQuickDelta.style.opacity = on ? '1' : '.55';
-          btnEditMsg.style.opacity = on ? '1' : '.55';
-          btnEditStudent.style.opacity = on ? '1' : '.55';
-          btnEditPoints.style.pointerEvents = on ? 'auto' : 'none';
-          btnQuickDelta.style.pointerEvents = on ? 'auto' : 'none';
-          btnEditMsg.style.pointerEvents = on ? 'auto' : 'none';
-          btnEditStudent.style.pointerEvents = on ? 'auto' : 'none';
-          selectedEl.textContent = on ? `נבחר תלמיד ID ${selectedId}` : 'לא נבחר תלמיד';
-          document.querySelectorAll('tr[data-id]').forEach(tr => {
-            tr.style.outline = (String(tr.getAttribute('data-id')) === String(selectedId)) ? '2px solid #1abc9c' : 'none';
-          });
-        }
-
-        async function updateStudentFor(studentId, patch) {
-          if (!studentId) return;
-          const resp = await fetch('/api/students/update', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_id: parseInt(String(studentId), 10), ...patch })
-          });
-          if (!resp.ok) {
-            const txt = await resp.text();
-            alert('שגיאה בעדכון: ' + txt);
-            return;
-          }
-          await load();
-        }
-
-        async function updateStudent(patch) {
-          if (!selectedId) return;
-          await updateStudentFor(selectedId, patch);
-        }
-
-        async function load() {
-          statusEl.textContent = 'טוען...';
-          const q = encodeURIComponent(searchEl.value || '');
-          const resp = await fetch(`/api/students?q=${q}`);
-          const data = await resp.json();
-          rowsEl.innerHTML = data.items.map(r => `
-            <tr data-id="${r.id}">
-              <td class="cell">${r.serial_number ?? ''}</td>
-              <td class="cell">${(r.photo_number && String(r.photo_number).trim()) ? '📷' : ''}</td>
-              <td class="cell">${r.last_name ?? ''}</td>
-              <td class="cell">${r.first_name ?? ''}</td>
-              <td class="cell">${r.class_name ?? ''}</td>
-              <td class="cell editable" data-field="points" contenteditable="true">${r.points ?? ''}</td>
-              <td class="cell editable" data-field="private_message" contenteditable="true">${r.private_message ?? ''}</td>
-              <td class="cell ltr">${r.card_number ?? ''}</td>
-            </tr>`).join('');
-          statusEl.textContent = `נטענו ${data.items.length} תלמידים`;
-
-          document.querySelectorAll('tr[data-id]').forEach(tr => {
-            tr.addEventListener('click', () => setSelected(tr.getAttribute('data-id')));
-          });
-
-          document.querySelectorAll('td[contenteditable][data-field]').forEach(td => {
-            td.addEventListener('click', (ev) => {
-              try { ev.stopPropagation(); } catch (e) {}
-              const tr = td.closest('tr[data-id]');
-              if (tr) setSelected(tr.getAttribute('data-id'));
-            });
-
-            td.addEventListener('keydown', (ev) => {
-              if (ev.key === 'Enter') {
-                ev.preventDefault();
-                try { td.blur(); } catch (e) {}
-              }
-            });
-
-            td.addEventListener('blur', async () => {
-              const tr = td.closest('tr[data-id]');
-              const sid = tr ? tr.getAttribute('data-id') : null;
-              if (!sid) return;
-              const field = td.getAttribute('data-field');
-              const raw = (td.textContent ?? '').trim();
-
-              if (field === 'points') {
-                const n = parseInt(raw || '0', 10);
-                if (Number.isNaN(n)) { alert('ערך לא תקין'); await load(); return; }
-                await updateStudentFor(sid, { points: n });
-              } else if (field === 'private_message') {
-                await updateStudentFor(sid, { private_message: String(raw) });
-              }
-            });
-          });
-
-          if (selectedId) {
-            setSelected(selectedId);
-          }
-        }
-        searchEl.addEventListener('input', () => {
-          clearTimeout(timer);
-          timer = setTimeout(load, 300);
-        });
-
-        btnEditPoints.addEventListener('click', async () => {
-          if (!selectedId) return;
-          const val = prompt('נקודות חדשות:');
-          if (val === null) return;
-          const n = parseInt(val, 10);
-          if (Number.isNaN(n)) { alert('ערך לא תקין'); return; }
-          await updateStudent({ points: n });
-        });
-
-        btnQuickDelta.addEventListener('click', async () => {
-          if (!selectedId) return;
-          const deltaS = prompt('כמה נקודות להוסיף/להוריד? (לדוגמה: 5 או -3)');
-          if (deltaS === null) return;
-          const delta = parseInt(deltaS, 10);
-          if (Number.isNaN(delta) || delta === 0) { alert('ערך לא תקין'); return; }
-          const reason = prompt('סיבה (אופציונלי):') ?? '';
-          const resp = await fetch('/api/students/points-delta', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ student_id: parseInt(String(selectedId), 10), delta: delta, reason: String(reason || '') })
-          });
-          if (!resp.ok) {
-            const txt = await resp.text();
-            alert('שגיאה: ' + txt);
-            return;
-          }
-          await load();
-        });
-
-        btnEditMsg.addEventListener('click', async () => {
-          if (!selectedId) return;
-          const val = prompt('הודעה פרטית (ריק למחיקה):');
-          if (val === null) return;
-          await updateStudent({ private_message: String(val) });
-        });
-
-        btnEditStudent.addEventListener('click', async () => {
-          if (!selectedId) return;
-          window.location.href = `/web/students/edit?student_id=${encodeURIComponent(String(selectedId))}`;
-        });
-
-        load();
-      </script>
+    
+    teacher = _web_current_teacher(request)
+    if not teacher:
+        return RedirectResponse(url="/web/teacher-login", status_code=302)
+        
+    is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
+    
+    tiles_html = ""
+    
+    # Students (Everyone)
+    tiles_html += """
+    <a href="/web/students" class="tile blue">
+      <div class="icon">🎓</div>
+      <div class="label">תלמידים</div>
+    </a>
     """
+    
+    if is_admin:
+        tiles_html += """
+        <a href="/web/teachers" class="tile red">
+          <div class="icon">👨‍🏫</div>
+          <div class="label">מורים</div>
+        </a>
+        <a href="/web/messages" class="tile purple">
+          <div class="icon">📢</div>
+          <div class="label">הודעות</div>
+        </a>
+        <a href="/web/bonuses" class="tile orange">
+          <div class="icon">🎁</div>
+          <div class="label">בונוסים</div>
+        </a>
+        <a href="/web/coins" class="tile yellow">
+          <div class="icon">🪙</div>
+          <div class="label">מטבעות/יעדים</div>
+        </a>
+        <a href="/web/time-bonus" class="tile teal">
+          <div class="icon">⏱️</div>
+          <div class="label">בונוס זמן</div>
+        </a>
+        <a href="/web/special-bonus" class="tile pink">
+          <div class="icon">✨</div>
+          <div class="label">בונוס מיוחד</div>
+        </a>
+        <a href="/web/holidays" class="tile green">
+          <div class="icon">📅</div>
+          <div class="label">חגים</div>
+        </a>
+        <a href="/web/cashier" class="tile indigo">
+          <div class="icon">🛒</div>
+          <div class="label">קופה</div>
+        </a>
+        <a href="/web/reports" class="tile cyan">
+          <div class="icon">📊</div>
+          <div class="label">דוחות</div>
+        </a>
+        <a href="/web/settings" class="tile gray">
+          <div class="icon">⚙️</div>
+          <div class="label">הגדרות</div>
+        </a>
+        """
+
+    # Personal Area (Everyone)
+    tiles_html += """
+    <a href="/web/personal" class="tile dark">
+      <div class="icon">👤</div>
+      <div class="label">אזור אישי</div>
+    </a>
+    """
+
     body = f"""
     <style>
-      table {{ width:100%; border-collapse:separate; border-spacing:0; font-size:13px; overflow:hidden; border-radius:14px; }}
-      thead th {{
-        position: sticky;
-        top: 0;
-        background: rgba(255,255,255,.12);
-        color: rgba(255,255,255,.92);
-        border-bottom: 1px solid rgba(255,255,255,.16);
-        padding: 10px 10px;
-        text-align: right;
-        font-weight: 950;
-        white-space: nowrap;
-      }}
-      tbody tr {{ background: rgba(0,0,0,.08); }}
-      tbody tr:nth-child(even) {{ background: rgba(255,255,255,.06); }}
-      tbody tr:hover {{ background: rgba(26,188,156,.18); }}
-      .cell {{
-        padding: 10px 10px;
-        border-bottom: 1px solid rgba(255,255,255,.12);
-        color: rgba(255,255,255,.92);
-        white-space: nowrap;
-      }}
-      .cell.ltr {{ direction:ltr; text-align:left; }}
-      .cell.editable {{ outline: none; border-radius: 10px; }}
-      .cell.editable:focus {{ background: rgba(255,255,255,.10); box-shadow: 0 0 0 2px rgba(26,188,156,.55); }}
-      .bar {{ margin:10px 0; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }}
-      .bar input {{ padding:10px 12px; border:1px solid rgba(255,255,255,.18); border-radius:12px; background: rgba(0,0,0,.18); color: rgba(255,255,255,.92); }}
-      .bar input::placeholder {{ color: rgba(255,255,255,.62); }}
-      .hint {{ opacity:.86; font-size:13px; line-height:1.8; margin:6px 0 0; }}
-      .btn2 {{ padding:10px 14px; border-radius:14px; color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.16); font-weight:900; cursor:pointer; box-shadow: 0 14px 28px rgba(0,0,0,.22); }}
-      .btn2.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
-      .btn2.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
-      .btn2.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
+      .dashboard-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 16px; padding: 10px 0; }}
+      .tile {{ display: flex; flex-direction: column; align-items: center; justify-content: center; height: 120px; border-radius: 16px; text-decoration: none; color: white; transition: transform 0.2s, box-shadow 0.2s; box-shadow: 0 4px 10px rgba(0,0,0,0.15); position:relative; overflow:hidden; }}
+      .tile:hover {{ transform: translateY(-4px); box-shadow: 0 8px 20px rgba(0,0,0,0.25); }}
+      .tile .icon {{ font-size: 42px; margin-bottom: 8px; text-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+      .tile .label {{ font-weight: 700; font-size: 16px; text-shadow: 0 1px 2px rgba(0,0,0,0.2); text-align:center; padding:0 8px; }}
+      
+      .tile.blue {{ background: linear-gradient(135deg, #3498db, #2980b9); }}
+      .tile.red {{ background: linear-gradient(135deg, #e74c3c, #c0392b); }}
+      .tile.purple {{ background: linear-gradient(135deg, #9b59b6, #8e44ad); }}
+      .tile.orange {{ background: linear-gradient(135deg, #e67e22, #d35400); }}
+      .tile.yellow {{ background: linear-gradient(135deg, #f1c40f, #f39c12); }}
+      .tile.green {{ background: linear-gradient(135deg, #2ecc71, #27ae60); }}
+      .tile.teal {{ background: linear-gradient(135deg, #1abc9c, #16a085); }}
+      .tile.pink {{ background: linear-gradient(135deg, #e91e63, #c2185b); }}
+      .tile.indigo {{ background: linear-gradient(135deg, #3f51b5, #303f9f); }}
+      .tile.cyan {{ background: linear-gradient(135deg, #00bcd4, #0097a7); }}
+      .tile.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
+      .tile.dark {{ background: linear-gradient(135deg, #34495e, #2c3e50); }}
     </style>
-
-    <div class="bar">
-      <input id="search" placeholder="חיפוש" />
-      <span id="status" style="opacity:.86;">טוען...</span>
-      <span class="hint">מוסד פעיל: <b>{html.escape(str(tenant_id or ''))}</b></span>
-    </div>
-
-    <div class="bar">
-      <a class="btn2 blue" id="btnEditPoints" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך נקודות</a>
-      <a class="btn2 orange" id="btnQuickDelta" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">⚡ עדכון מהיר</a>
-      <a class="btn2 blue" id="btnEditMsg" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך הודעה</a>
-      <a class="btn2 blue" id="btnEditStudent" style="opacity:.55;pointer-events:none;" href="javascript:void(0)">✏️ ערוך תלמיד</a>
-      <span id="selected" style="opacity:.86;">לא נבחר תלמיד</span>
-    </div>
-
-    <div style="overflow:auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>מס'</th>
-            <th>תמונה</th>
-            <th>משפחה</th>
-            <th>פרטי</th>
-            <th>כיתה</th>
-            <th>נקודות</th>
-            <th>הודעה פרטית</th>
-            <th>כרטיס</th>
-          </tr>
-        </thead>
-        <tbody id="rows"></tbody>
-      </table>
-    </div>
-    """
-    return HTMLResponse(_basic_web_shell("תלמידים", body + js, request=request))
-
-
-@app.get("/web/students", response_class=HTMLResponse)
+    
+    <h2>לוח בקרה</h2>
+    <div class="dashboard-grid">
 def web_students(request: Request):
     try:
         guard = _web_require_teacher(request)
@@ -6558,6 +9289,195 @@ def view_changes(tenant_id: str, api_key: str) -> str:
     cur.execute(
         _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
         (tenant_id, api_key)
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "<h3>Unauthorized</h3>"
+    cur.execute(
+        _sql_placeholder(
+            '''
+            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
+            FROM changes
+            WHERE tenant_id = ?
+            ORDER BY id DESC
+            LIMIT 200
+            '''
+        ),
+        (tenant_id,)
+    )
+    rows = cur.fetchall() or []
+    conn.close()
+    items = "".join(
+        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
+        for r in rows
+    )
+    return f"""
+    <html><body>
+    <h2>Recent Changes</h2>
+    <table border="1" cellpadding="6">
+    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
+    {items}
+    </table>
+    </body></html>
+    """
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "<h3>Unauthorized</h3>"
+    cur.execute(
+        _sql_placeholder(
+            '''
+            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
+            FROM changes
+            WHERE tenant_id = ?
+            ORDER BY id DESC
+            LIMIT 200
+            '''
+        ),
+        (tenant_id,)
+    )
+    rows = cur.fetchall() or []
+    conn.close()
+    items = "".join(
+        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
+        for r in rows
+    )
+    return f"""
+    <html><body>
+    <h2>Recent Changes</h2>
+    <table border="1" cellpadding="6">
+    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
+    {items}
+    </table>
+    </body></html>
+    """
+              <div style=\"margin-top:10px;\">
+                <div style=\"margin-bottom:6px;\"><b>Presigned URL (10 דקות)</b></div>
+                <div><a href=\"{presigned}\" target=\"_blank\">{presigned or 'N/A'}</a></div>
+              </div>
+              <div style=\"margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;\">
+                <form method=\"post\" action=\"/web/spaces-test\">
+                  <button class=\"btn btn-primary\" type=\"submit\">בדיקה נוספת</button>
+                </form>
+                <a class=\"btn\" href=\"/web/admin\">חזרה לניהול</a>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+        """
+    )
+
+
+@app.post("/admin/setup", response_class=HTMLResponse)
+def admin_setup_submit(
+    request: Request,
+    name: str = Form(...),
+    tenant_id: str = Form(...),
+    institution_password: str = Form(...),
+    api_key: str = Form(default=''),
+    admin_key: str = ''
+) -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
+    conn = _db()
+    cur = conn.cursor()
+    api_key = api_key.strip() or secrets.token_urlsafe(16)
+    pw_hash = _pbkdf2_hash(institution_password.strip())
+    try:
+        cur.execute(
+            _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)'),
+            (tenant_id.strip(), name.strip(), api_key, pw_hash)
+        )
+        conn.commit()
+        _ensure_tenant_db_exists(tenant_id.strip())
+        return f"<h3>Institution created.</h3><p>API Key: <b>{api_key}</b></p><p>עדכן ב־config.json: sync_api_key, sync_tenant_id</p>"
+    except _integrity_errors():
+        return "<h3>Tenant ID already exists.</h3>"
+    finally:
+        conn.close()
+
+
+@app.get("/view/changes", response_class=HTMLResponse)
+def view_changes(tenant_id: str, api_key: str) -> str:
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
+        (tenant_id, api_key)
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "<h3>Unauthorized</h3>"
+    cur.execute(
+        _sql_placeholder(
+            '''
+            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
+            FROM changes
+            WHERE tenant_id = ?
+            ORDER BY id DESC
+            LIMIT 200
+            '''
+        ),
+        (tenant_id,)
+    )
+    rows = cur.fetchall() or []
+    conn.close()
+    items = "".join(
+        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
+        for r in rows
+    )
+    return f"""
+    <html><body>
+    <h2>Recent Changes</h2>
+    <table border="1" cellpadding="6">
+    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
+    {items}
+    </table>
+    </body></html>
+    """
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return "<h3>Unauthorized</h3>"
+    cur.execute(
+        _sql_placeholder(
+            '''
+            SELECT received_at, station_id, entity_type, action_type, entity_id, payload_json
+            FROM changes
+            WHERE tenant_id = ?
+            ORDER BY id DESC
+            LIMIT 200
+            '''
+        ),
+        (tenant_id,)
+    )
+    rows = cur.fetchall() or []
+    conn.close()
+    items = "".join(
+        f"<tr><td>{r['received_at']}</td><td>{r['station_id'] or ''}</td><td>{r['entity_type']}</td><td>{r['action_type']}</td><td>{r['entity_id'] or ''}</td><td><pre>{r['payload_json'] or ''}</pre></td></tr>"
+        for r in rows
+    )
+    return f"""
+    <html><body>
+    <h2>Recent Changes</h2>
+    <table border="1" cellpadding="6">
+    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
+    {items}
+    </table>
+    </body></html>
+    """
+    <table border="1" cellpadding="6">
+    <tr><th>Received</th><th>Station</th><th>Type</th><th>Action</th><th>Entity</th><th>Payload</th></tr>
+    {items}
+    </table>
+    </body></html>
+    """
     )
     row = cur.fetchone()
     if not row:

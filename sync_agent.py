@@ -249,6 +249,11 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
         'teachers',
         'students',
         'messages',
+        'static_messages',
+        'threshold_messages',
+        'news_items',
+        'ads_items',
+        'student_messages',
         'settings',
         'product_categories',
         'products',
@@ -693,6 +698,30 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                 new_points = int(payload.get('new_points') or 0)
                 cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (int(new_points), int(sid)))
                 applied += 1
+            
+            # Handle message entities
+            table_map = {
+                'static_message': 'static_messages',
+                'threshold_message': 'threshold_messages',
+                'news_item': 'news_items',
+                'ads_item': 'ads_items',
+                'student_message': 'student_messages'
+            }
+            
+            if entity_type in table_map:
+                table = table_map[entity_type]
+                eid = int(entity_id or '0')
+                if action_type == 'delete':
+                    cur.execute(f"DELETE FROM {table} WHERE id = ?", (eid,))
+                    applied += 1
+                elif action_type in ('create', 'update'):
+                    # We use _replace_rows_local for convenience if payload matches columns
+                    # Payload usually contains all fields from the API save
+                    # We construct a single row list
+                    row = dict(payload)
+                    row['id'] = eid # Ensure ID is set
+                    _replace_rows_local(conn, table, [row])
+                    applied += 1
 
             if event_id:
                 _mark_event_applied(conn, event_id)
