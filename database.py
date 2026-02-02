@@ -8,7 +8,7 @@ import shutil
 import re
 import uuid
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 
 class Database:
@@ -5124,6 +5124,109 @@ class Database:
             return merged
         except Exception:
             return []
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def get_daily_points_summary_matrix(self, *, allowed_classes: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            where_students = ''
+            params_students: List[Any] = []
+            allowed = [str(c).strip() for c in (allowed_classes or []) if str(c).strip()]
+            if allowed:
+                where_students = ' WHERE class_name IN (' + ','.join(['?'] * len(allowed)) + ')'
+                params_students = list(allowed)
+
+            cursor.execute(
+                f'''
+                SELECT id, serial_number, class_name, first_name, last_name
+                  FROM students
+                  {where_students}
+                 ORDER BY class_name, last_name, first_name, serial_number, id
+                ''',
+                tuple(params_students)
+            )
+            students = [dict(r) for r in (cursor.fetchall() or [])]
+
+            join_students = ''
+            where_log = ''
+            params_log: List[Any] = []
+            if allowed:
+                join_students = ' JOIN students s ON s.id = pl.student_id '
+                where_log = ' WHERE s.class_name IN (' + ','.join(['?'] * len(allowed)) + ') '
+                params_log = list(allowed)
+
+            sql = (
+                'SELECT pl.student_id AS student_id, '
+                "date(datetime(pl.created_at, 'localtime')) AS day, "
+                'SUM(pl.delta) AS delta_sum, '
+                'COUNT(*) AS cnt '
+                'FROM points_log pl '
+                + str(join_students or '')
+                + str(where_log or '')
+                + 'GROUP BY pl.student_id, day '
+                + 'ORDER BY day ASC'
+            )
+            cursor.execute(sql, tuple(params_log))
+            rows = [dict(r) for r in (cursor.fetchall() or [])]
+
+            day_set: set = set()
+            by_student_day: Dict[int, Dict[str, int]] = {}
+            has_row: set = set()
+            for r in rows:
+                try:
+                    sid = int(r.get('student_id') or 0)
+                except Exception:
+                    sid = 0
+                day = str(r.get('day') or '').strip()
+                try:
+                    cnt = int(r.get('cnt') or 0)
+                except Exception:
+                    cnt = 0
+                try:
+                    delta_sum = int(r.get('delta_sum') or 0)
+                except Exception:
+                    delta_sum = 0
+                if sid <= 0 or not day or cnt <= 0:
+                    continue
+                day_set.add(day)
+                by_student_day.setdefault(sid, {})[day] = int(delta_sum)
+                has_row.add((sid, day))
+
+            days = sorted(day_set)
+
+            def _fmt_day(d: str) -> str:
+                try:
+                    y, m, dd = d.split('-', 2)
+                    yy = str(y)[-2:]
+                    return f"{int(dd)}.{int(m)}.{yy}"
+                except Exception:
+                    return d
+
+            headers = [_fmt_day(d) for d in days]
+
+            out_rows: List[Dict[str, Any]] = []
+            for s in students:
+                sid = int(s.get('id') or 0)
+                base = {
+                    "מס' סידורי": s.get('serial_number') if s.get('serial_number') is not None else '',
+                    'שם משפחה': str(s.get('last_name') or '').strip(),
+                    'שם פרטי': str(s.get('first_name') or '').strip(),
+                    'כיתה': str(s.get('class_name') or '').strip(),
+                }
+                m = by_student_day.get(sid, {})
+                for iso_day, hdr in zip(days, headers):
+                    if (sid, iso_day) not in has_row:
+                        base[hdr] = ''
+                    else:
+                        base[hdr] = int(m.get(iso_day) or 0)
+                out_rows.append(base)
+
+            return out_rows, headers
         finally:
             try:
                 conn.close()

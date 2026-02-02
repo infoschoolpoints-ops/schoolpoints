@@ -1003,3 +1003,48 @@ class ExcelImporter:
             import traceback
             traceback.print_exc()
             return False
+
+    def export_daily_points_summary_excel(self, excel_path: str, *, allowed_classes: list = None) -> bool:
+        try:
+            from openpyxl import load_workbook
+            from openpyxl.styles import Alignment
+
+            rows, headers = self.db.get_daily_points_summary_matrix(allowed_classes=allowed_classes)
+            base_cols = ["מס' סידורי", 'שם משפחה', 'שם פרטי', 'כיתה']
+            cols = base_cols + list(headers or [])
+
+            try:
+                df = pd.DataFrame(rows or [])
+            except Exception:
+                df = pd.DataFrame([])
+
+            for c in cols:
+                if c not in df.columns:
+                    df[c] = ''
+            df = df[cols]
+
+            df.to_excel(excel_path, index=False, engine='openpyxl')
+
+            wb = load_workbook(excel_path)
+            ws = wb.active
+            try:
+                ws.title = 'תשקיף יומי'[:31]
+            except Exception:
+                pass
+
+            try:
+                from excel_styling import apply_rtl_and_alternating_colors
+                apply_rtl_and_alternating_colors(ws, has_header=True)
+            except Exception:
+                ws.sheet_view.rightToLeft = True
+                for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
+                    for cell in row:
+                        cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
+
+            wb.save(excel_path)
+            return True
+        except Exception as e:
+            print(f"שגיאה בייצוא תשקיף יומי נקודות: {e}")
+            import traceback
+            traceback.print_exc()
+            return False

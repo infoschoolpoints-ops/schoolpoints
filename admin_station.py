@@ -3784,6 +3784,15 @@ class AdminStation:
         )
         rb_points_history.pack(anchor='w')
 
+        rb_daily_points_summary = tk.Radiobutton(
+            mode_frame,
+            text='תשקיף יומי נקודות (סיכום יומי לכל תלמיד)',
+            variable=mode_var,
+            value='daily_points_summary',
+            bg='#f0f0f0'
+        )
+        rb_daily_points_summary.pack(anchor='w')
+
         rb_teacher_actions = tk.Radiobutton(
             mode_frame,
             text="פעולות לפי מורה",
@@ -4503,6 +4512,8 @@ class AdminStation:
             if student_name_for_file:
                 base = f"{base} - {student_name_for_file}"
             initial_name = f"{base}.xlsx"
+        elif mode == "daily_points_summary":
+            initial_name = "תשקיף יומי נקודות.xlsx"
         elif mode == "teacher_actions":
             base = "פעולות מורה"
             if teacher_id == -1:
@@ -4564,6 +4575,8 @@ class AdminStation:
             except Exception:
                 logs = []
             success = self.importer.export_points_log_excel(file_path, student, logs)
+        elif mode == "daily_points_summary":
+            success = self.importer.export_daily_points_summary_excel(file_path, allowed_classes=allowed_classes)
         elif mode == "teacher_actions":
             if not teacher_id:
                 messagebox.showerror("שגיאה", "לא נבחר מורה לייצוא פעולות.")
