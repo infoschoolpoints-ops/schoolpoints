@@ -1605,7 +1605,7 @@ def web_assets(asset_path: str) -> Response:
     return FileResponse(full_path)
 
 
-def _public_web_shell(title: str, body_html: str) -> str:
+def _public_web_shell(title: str, body_html: str, request: Request = None) -> str:
     style_block = """
       <style>
         :root {
@@ -1668,7 +1668,7 @@ def _public_web_shell(title: str, body_html: str) -> str:
 
         table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
         table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { position: sticky; top: 64px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
+        table thead th { position: sticky; top: 90px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -1944,7 +1944,7 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
 
         table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
         table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { position: sticky; top: 64px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
+        table thead th { position: sticky; top: 90px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -8947,6 +8947,60 @@ def web_reports(request: Request):
     return _basic_web_shell("דוחות", html_content, request=request)
 
 
+@app.get('/web/export/download')
+def web_export_download(request: Request) -> Response:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                'SELECT serial_number, last_name, first_name, class_name, points, card_number '
+                'FROM students '
+                'ORDER BY class_name, last_name, first_name'
+            )
+        )
+        rows = cur.fetchall() or []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["מס' סידורי", 'שם משפחה', 'שם פרטי', 'כיתה', "מס' נקודות", "מס' כרטיס"])
+    for r in rows:
+        if isinstance(r, dict):
+            d = r
+        else:
+            try:
+                d = dict(r)
+            except Exception:
+                d = {}
+        w.writerow([
+            d.get('serial_number') or '',
+            d.get('last_name') or '',
+            d.get('first_name') or '',
+            d.get('class_name') or '',
+            d.get('points') if d.get('points') is not None else '',
+            d.get('card_number') or '',
+        ])
+
+    data = buf.getvalue().encode('utf-8-sig')
+    return Response(
+        content=data,
+        media_type='text/csv; charset=utf-8',
+        headers={'Content-Disposition': 'attachment; filename="students_export.csv"'}
+    )
+
+
 @app.get("/web/logs", response_class=HTMLResponse)
 def web_logs(request: Request):
     guard = _web_require_admin_teacher(request)
@@ -9184,25 +9238,32 @@ def _super_admin_shell(title: str, body: str, request: Request = None) -> str:
     </html>
     """
 
-@app.get("/admin/dashboard", response_class=HTMLResponse)
 def admin_dashboard(request: Request, admin_key: str = '') -> str:
     guard = _admin_require(request, admin_key)
     if guard:
         return guard
-    
+
+    try:
+        _ensure_device_pairings_table()
+    except Exception:
+        pass
+
     conn = _db()
     cur = conn.cursor()
-    
+
     # Stats
-    cur.execute('SELECT COUNT(*) FROM institutions')
-    inst_count = cur.fetchone()[0]
-    
-    cur.execute('SELECT COUNT(*) FROM changes')
-    changes_count = cur.fetchone()[0]
-    
-    cur.execute('SELECT COUNT(*) FROM device_pairings WHERE consumed_at IS NULL')
-    pending_pairs = cur.fetchone()[0]
-    
+    cur.execute('SELECT COUNT(*) AS total FROM institutions')
+    row = cur.fetchone() or {}
+    inst_count = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
+
+    cur.execute('SELECT COUNT(*) AS total FROM changes')
+    row = cur.fetchone() or {}
+    changes_count = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
+
+    cur.execute('SELECT COUNT(*) AS total FROM device_pairings WHERE consumed_at IS NULL')
+    row = cur.fetchone() or {}
+    pending_pairs = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
+
     conn.close()
     
     body = f"""
@@ -9231,6 +9292,28 @@ def admin_dashboard(request: Request, admin_key: str = '') -> str:
     </div>
     """
     return _super_admin_shell("דשבורד", body, request)
+
+
+@app.get("/admin/global-settings", response_class=HTMLResponse)
+def admin_global_settings(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard
+
+    body = f"""
+    <h2>הגדרות שרת</h2>
+    <div class="card">
+      <div style="line-height:1.9;">
+        <div><b>Build:</b> {APP_BUILD_TAG}</div>
+        <div><b>DB:</b> {'Postgres' if USE_POSTGRES else 'SQLite'}</div>
+      </div>
+      <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
+        <a href="/web/system-settings"><button>פתיחת הגדרות מערכת (Web)</button></a>
+        <a href="/admin/dashboard"><button class="btn-gray">חזרה לדשבורד</button></a>
+      </div>
+    </div>
+    """
+    return _super_admin_shell("הגדרות שרת", body, request)
 
 @app.get("/admin/institutions", response_class=HTMLResponse)
 def admin_institutions(request: Request, admin_key: str = '') -> str:
@@ -9394,10 +9477,15 @@ def admin_institution_login(request: Request, tenant_id: str, admin_key: str = '
     if not row:
         return HTMLResponse("<h3>Tenant not found</h3>", status_code=404)
         
-    resp = RedirectResponse(url='/web/teacher-login', status_code=302)
+    resp = RedirectResponse(url='/web/admin', status_code=302)
     resp.set_cookie('web_tenant', tenant_id.strip(), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
-    # Clear teacher cookie to ensure fresh login state
     resp.delete_cookie('web_teacher')
+    try:
+        token = _master_token_create(tenant_id.strip(), ttl_sec=60 * 60 * 6)
+    except Exception:
+        token = ''
+    if token:
+        resp.set_cookie('web_master', token, httponly=True, samesite='lax', max_age=60 * 60 * 6)
     return resp
 
 
@@ -10180,8 +10268,8 @@ def web_holidays(request: Request): return _stub_page("חגים", request)
 @app.get('/web/purchases', response_class=HTMLResponse)
 def web_purchases(request: Request): return _stub_page("קניות", request)
 
-@app.get('/web/reports', response_class=HTMLResponse)
-def web_reports(request: Request): return _stub_page("דוחות", request)
+@app.get('/web/reports2', response_class=HTMLResponse)
+def web_reports2(request: Request): return _stub_page("דוחות", request)
 
 
 @app.get('/web/students', response_class=HTMLResponse)
@@ -10425,10 +10513,10 @@ def web_students(request: Request):
         btnDelete.style.pointerEvents = 'none';
       }
 
-      btnNew.addEventListener('click', () => alert('שלב הבא: modal הוספה/עריכה'));
+      btnNew.addEventListener('click', () => alert('בקרוב: הוספת תלמיד'));
       btnEdit.addEventListener('click', () => {
         if (!selectedId) return;
-        alert('שלב הבא: modal עריכת תלמיד');
+        window.location.href = '/web/students/edit?student_id=' + encodeURIComponent(String(selectedId));
       });
       btnDelete.addEventListener('click', async () => {
         if (!selectedId || !IS_ADMIN) return;
