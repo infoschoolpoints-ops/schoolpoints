@@ -1,0 +1,14 @@
+{
+  "license": {
+    "schema": 1,
+    "school_name": "בדיקה",
+    "license_type": "basic",
+    "license_key": "02C9D-57BCF-59ADE-A82C9",
+    "max_stations": 2,
+    "trial_start": "2025-11-23",
+    "machines": [
+      "7291b96d5e814c86"
+    ]
+  },
+  "sig": "037b308c84e5f93d8510989bf756cc5d40627efabe7af72e5879cfa28d827a42"
+}

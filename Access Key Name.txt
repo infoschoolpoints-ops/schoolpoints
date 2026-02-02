@@ -1,0 +1,17 @@
+Access Key Name
+Access Key ID
+Buckets
+Permissions
+Created At
+key-1769721273540
+DO801GPP384WFYDPU3NY
+
+schoolpoints-media
+Read/Write/Delete
+לפני דקה
+Don't forget to copy your secret key
+
+The secret key won't be shown again for your security.
++8wHZOTbAdCQYYNLxwpOreUwgpI6lP5t2VD3dn7lT3w
+
+Connect using this key

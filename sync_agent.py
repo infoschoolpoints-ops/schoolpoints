@@ -247,6 +247,7 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
 
     tables = [
         'teachers',
+        'teacher_classes',
         'students',
         'messages',
         'static_messages',
@@ -268,6 +269,7 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
         'scheduled_service_dates',
         'scheduled_service_slots',
         'scheduled_service_reservations',
+        'points_log',
         'web_settings',
     ]
     applied: Dict[str, int] = {}
@@ -282,6 +284,15 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
                 applied[t] = _replace_rows_local(conn, t, rows)
             except Exception:
                 applied[t] = 0
+        
+        # Update last_change_id if present
+        last_id = snapshot.get('last_change_id')
+        if last_id is not None:
+            try:
+                _set_sync_state(conn, 'pull_since_id', str(last_id))
+            except Exception:
+                pass
+                
         conn.commit()
     except Exception:
         try:

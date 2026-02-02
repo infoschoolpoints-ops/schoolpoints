@@ -1,0 +1,24 @@
+
+צעד 2 – הגדרת המפתח בענן
+באפליקציה שלך ב‑DigitalOcean לחץ Settings
+גלול ל‑Environment Variables ולחץ Edit
+הוסף משתנה חדש:
+Key:
+
+SYNC_API_KEY
+Value:
+1565@Yh-SP
+
+
+צעד 2 — להגדיר ADMIN_KEY
+ב‑DigitalOcean:
+
+Settings
+Environment Variables → Edit
+הוסף משתנה חדש:
+Key:
+
+ADMIN_KEY
+Value:
+
+admin-1565

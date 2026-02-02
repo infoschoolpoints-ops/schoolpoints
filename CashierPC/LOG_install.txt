@@ -1,0 +1,72 @@
+====================================== 
+Installing Python venv and dependencies 
+[Thu 01/01/2026 22:57:26.90] 
+====================================== 
+ 
+Found requirements.txt: Z:\requirements.txt 
+ 
+Venv location: C:\SchoolPoints_venv 
+ 
+Checking Python... 
+Python 3.12.3
+ 
+Creating venv at: C:\SchoolPoints_venv 
+This may take a few minutes... 
+ 
+Venv created successfully 
+ 
+Upgrading pip... 
+Requirement already satisfied: pip in c:\schoolpoints_venv\lib\site-packages (24.0)
+WARNING: Retrying (Retry(total=4, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))': /simple/pip/
+WARNING: Retrying (Retry(total=3, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))': /simple/pip/
+WARNING: Retrying (Retry(total=2, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))': /simple/pip/
+WARNING: Retrying (Retry(total=1, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))': /simple/pip/
+WARNING: Retrying (Retry(total=0, connect=None, read=None, redirect=None, status=None)) after connection broken by 'SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))': /simple/pip/
+Could not fetch URL https://pypi.org/simple/pip/: There was a problem confirming the ssl certificate: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded with url: /simple/pip/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))) - skipping
+Could not fetch URL https://pypi.org/simple/pip/: There was a problem confirming the ssl certificate: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded with url: /simple/pip/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))) - skipping
+ 
+Installing dependencies from: 
+  Z:\requirements.txt 
+ 
+ERROR: Exception:
+Traceback (most recent call last):
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\cli\base_command.py", line 180, in exc_logging_wrapper
+    status = run_func(*args)
+             ^^^^^^^^^^^^^^^
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\cli\req_command.py", line 245, in wrapper
+    return func(self, options, args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\commands\install.py", line 342, in run
+    reqs = self.get_requirements(args, options, finder, session)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\cli\req_command.py", line 433, in get_requirements
+    for parsed_req in parse_requirements(
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\req\req_file.py", line 156, in parse_requirements
+    for parsed_line in parser.parse(filename, constraint):
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\req\req_file.py", line 337, in parse
+    yield from self._parse_and_recurse(filename, constraint)
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\req\req_file.py", line 342, in _parse_and_recurse
+    for line in self._parse_file(filename, constraint):
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\req\req_file.py", line 373, in _parse_file
+    _, content = get_file_content(filename, self._session)
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\req\req_file.py", line 551, in get_file_content
+    content = auto_decode(f.read())
+              ^^^^^^^^^^^^^^^^^^^^^
+  File "C:\SchoolPoints_venv\Lib\site-packages\pip\_internal\utils\encoding.py", line 34, in auto_decode
+    return data.decode(
+           ^^^^^^^^^^^^
+  File "C:\Users\עמדת קופה\AppData\Local\Programs\Python\Python312\Lib\encodings\cp1255.py", line 15, in decode
+    return codecs.charmap_decode(input,errors,decoding_table)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'charmap' codec can't decode byte 0x9c in position 9: character maps to <undefined>
+decoding with 'cp1255' codec failed
+Could not fetch URL https://pypi.org/simple/pip/: There was a problem confirming the ssl certificate: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded with url: /simple/pip/ (Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1000)'))) - skipping
+ 
+WARNING: Some packages may have failed to install 
+Check log for details 
+ 
+====================================== 
+Installation complete 
+Venv location: C:\SchoolPoints_venv 
+====================================== 

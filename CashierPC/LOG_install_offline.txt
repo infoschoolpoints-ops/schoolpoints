@@ -1,0 +1,44 @@
+====================================== 
+Installing from local wheels (offline) 
+[Thu 01/01/2026 23:30:53.41] 
+====================================== 
+ 
+Venv location: C:\SchoolPoints_venv 
+ 
+Wheels directory not found, using online install... 
+ 
+Installing packages online (may be slow due to NetFree)... 
+ 
+Installing Pillow... 
+Requirement already satisfied: Pillow in c:\schoolpoints_venv\lib\site-packages (12.0.0)
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: C:\SchoolPoints_venv\Scripts\python.exe -m pip install --upgrade pip
+Installing pyserial... 
+Requirement already satisfied: pyserial in c:\schoolpoints_venv\lib\site-packages (3.5)
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: C:\SchoolPoints_venv\Scripts\python.exe -m pip install --upgrade pip
+Installing pywin32... 
+Requirement already satisfied: pywin32 in c:\schoolpoints_venv\lib\site-packages (311)
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: C:\SchoolPoints_venv\Scripts\python.exe -m pip install --upgrade pip
+Installing reportlab... 
+Collecting reportlab
+  Using cached reportlab-4.4.7-py3-none-any.whl.metadata (1.7 kB)
+Requirement already satisfied: pillow>=9.0.0 in c:\schoolpoints_venv\lib\site-packages (from reportlab) (12.0.0)
+Collecting charset-normalizer (from reportlab)
+  Downloading charset_normalizer-3.4.4-cp312-cp312-win_amd64.whl.metadata (38 kB)
+Downloading reportlab-4.4.7-py3-none-any.whl (2.0 MB)
+   ---------------------------------------- 2.0/2.0 MB 2.7 MB/s eta 0:00:00
+Downloading charset_normalizer-3.4.4-cp312-cp312-win_amd64.whl (107 kB)
+   ---------------------------------------- 107.1/107.1 kB 2.1 MB/s eta 0:00:00
+Installing collected packages: charset-normalizer, reportlab
+Successfully installed charset-normalizer-3.4.4 reportlab-4.4.7
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: C:\SchoolPoints_venv\Scripts\python.exe -m pip install --upgrade pip
+Installing openpyxl... 
+Collecting openpyxl
+  Downloading openpyxl-3.1.5-py2.py3-none-any.whl.metadata (2.5 kB)

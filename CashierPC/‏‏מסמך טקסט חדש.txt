@@ -1,0 +1,21 @@
+cd Z:\
+python cashier_station.py
+
+
+PS Z:\> cd Z:\
+PS Z:\> python cashier_station.py
+Traceback (most recent call last):
+  File "Z:\cashier_station.py", line 14, in <module>
+    from PIL import Image, ImageTk
+ModuleNotFoundError: No module named 'PIL'
+PS Z:\>
+
+
+Microsoft Windows [Version 10.0.19045.6466]
+(c) Microsoft Corporation. כל הזכויות שמורות.
+
+C:\Windows\system32>cd Z:\
+The system cannot find the drive specified.
+
+C:\Windows\system32>python cashier_station.py
+

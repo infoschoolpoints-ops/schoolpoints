@@ -1,0 +1,17 @@
+{
+    "logo_path": "",
+    "campaign_name": "מבצע הניקוד",
+    "theme": "high_contrast",
+    "background_image_path": "",
+    "background_mode": "none",
+    "background_color": "#2980b9",
+    "background_interval_sec": 5,
+    "panel_style": "solid",
+    "background_folder": "",
+    "background_layout": "tile",
+    "slideshow_display_mode": "grid_dynamic",
+    "slideshow_grid_cols": 4,
+    "update_manifest_url": "",
+    "update_download_url": "",
+    "update_message": ""
+}

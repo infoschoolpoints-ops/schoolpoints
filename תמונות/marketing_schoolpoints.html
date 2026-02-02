@@ -1,0 +1,602 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>SchoolPoints – מערכת ניקוד בית ספרית</title>
+    <style>
+        body {
+            font-family: "Alef", "Arial", sans-serif;
+            background: #1a102f;
+            color: #fff;
+            margin: 0;
+            padding: 0;
+        }
+        a { color: #ffdd55; }
+        .hero {
+            text-align: center;
+            padding: 40px 20px 10px;
+            background: linear-gradient(180deg,#1a102f,#362055);
+        }
+        .hero h1 {
+            font-size: 42px;
+            margin: 0 0 12px;
+        }
+        .hero h2 {
+            font-size: 24px;
+            font-weight: normal;
+            margin: 0 0 22px;
+        }
+        .hero img.logo {
+            max-height: 170px;
+            margin-bottom: 12px;
+        }
+        .hero .badges span {
+            display: inline-block;
+            background: #ffcc33;
+            color: #4b2c82;
+            padding: 8px 18px;
+            border-radius: 999px;
+            margin: 4px;
+            font-weight: bold;
+            font-size: 16px;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 10px 20px 40px;
+        }
+        .category {
+            background: rgba(0,0,0,0.07);
+            border-radius: 18px;
+            padding: 18px 20px 10px;
+            margin: 18px 0;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+        }
+        .category h3 {
+            margin-top: 0;
+            font-size: 26px;
+            border-bottom: 2px solid rgba(255,255,255,0.25);
+            padding-bottom: 6px;
+        }
+        .category .tagline {
+            color: #ffe7a0;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .features {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px 24px;
+            margin: 8px 0 0;
+            padding: 0;
+            list-style: none;
+        }
+        .features li {
+            flex: 1 1 260px;
+            font-size: 16px;
+            line-height: 1.5;
+            position: relative;
+            padding-right: 18px;
+        }
+        .features li::before {
+            content: "◆";
+            position: absolute;
+            right: 0;
+            top: 0;
+            color: #ffcc33;
+        }
+        .category-body {
+            display: grid;
+            grid-template-columns: 1.45fr 1fr;
+            gap: 24px;
+            align-items: flex-start;
+            margin-top: 8px;
+            direction: rtl;
+        }
+        .category-text {
+            grid-column: 1;
+            direction: rtl;
+        }
+        .category-images-left {
+            grid-column: 2;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .category-images-right {
+            grid-column: 2;
+            direction: rtl;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .category:nth-of-type(even) .category-text {
+            grid-column: 2;
+        }
+        .category:nth-of-type(even) .category-images-left,
+        .category:nth-of-type(even) .category-images-right {
+            grid-column: 1;
+        }
+        .category figure {
+            margin: 0 0 14px;
+            text-align: center;
+        }
+        .category figure img {
+            max-width: 100%;
+            border-radius: 12px;
+            box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+            border: 3px solid #ffcc33;
+        }
+        /* תמונות קטנות יותר לסוגי הכרטיסים והצ'יפים */
+        #cards .category-images {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+        #cards .category-images img {
+            max-width: 60%;
+        }
+        .category figure figcaption {
+            font-size: 17px;
+            font-weight: bold;
+            color: #ffe7a0;
+            margin-top: 8px;
+        }
+        .cta {
+            text-align: center;
+            margin-top: 30px;
+        }
+        .cta .button {
+            display: inline-block;
+            background: #ffcc33;
+            color: #4b2c82;
+            padding: 10px 26px;
+            border-radius: 999px;
+            font-weight: bold;
+            text-decoration: none;
+            font-size: 16px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.4);
+        }
+        .footer {
+            text-align: center;
+            font-size: 13px;
+            color: #f0e6ff;
+            margin-top: 18px;
+            opacity: 0.85;
+        }
+        @media (max-width: 700px) {
+            .hero h1 { font-size: 32px; }
+            .hero h2 { font-size: 20px; }
+            .category-body {
+                display: block;
+                direction: rtl;
+            }
+            .category-text,
+            .category-images,
+            .category-images-left,
+            .category-images-right {
+                grid-column: auto;
+                direction: rtl;
+            }
+        }
+        @media print {
+            body {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .page-break {
+                display: block;
+                height: 0;
+                margin: 0;
+                padding: 0;
+                page-break-before: always;
+                break-before: page;
+            }
+
+            /* לאפשר זרימה בין עמודים כדי לצמצם חללים ריקים */
+            .category,
+            .cta,
+            .footer {
+                page-break-inside: auto;
+                break-inside: auto;
+            }
+
+            /* למנוע מצב שכותרת נשארת לבד בסוף עמוד */
+            .category h3 {
+                break-after: avoid;
+                page-break-after: avoid;
+            }
+
+            /* לשמור תמונה + כיתוב ביחד */
+            .category figure {
+                break-inside: avoid;
+                page-break-inside: avoid;
+            }
+
+            /* בהדפסה: טקסט זורם מסביב לתמונות (בלי חפיפות ובלי "בלוקים" של רקע ריק) */
+            .category-body {
+                display: block;
+            }
+            .category-body::after {
+                content: "";
+                display: block;
+                clear: both;
+            }
+            .category-images-left,
+            .category-images-right {
+                box-sizing: border-box;
+                width: 18.5%;
+                margin: 0 8px 10px 0;
+            }
+            .category-images-left {
+                float: left;
+            }
+            .category-images-right {
+                float: left;
+            }
+
+            /* להקטין רקע ריק: בשני טורים של תמונות באותו צד, והטקסט תופס את רוב הרוחב */
+            .category:nth-of-type(even) .category-images-left,
+            .category:nth-of-type(even) .category-images-right {
+                float: right;
+                margin: 0 0 10px 8px;
+            }
+            .category-text {
+                margin-left: 0;
+                margin-right: 0;
+            }
+
+            /* סעיפים בלי "שמאל" ו"ימין" בפועל – עדיין נשמור על טקסט מרכזי תקין */
+            .category-images-left:empty {
+                display: none;
+            }
+            .category-images-right:empty {
+                display: none;
+            }
+            .category-images-left:empty ~ .category-text {
+                margin-left: 0;
+            }
+            .category-images-right:empty ~ .category-text {
+                margin-right: 0;
+            }
+
+            /* סעיף הכרטיסים נשאר כגריד תמונות צפוף */
+            #cards .category-body {
+                display: block;
+                direction: rtl;
+            }
+            #cards .category-text {
+                margin-left: 0;
+                margin-right: 0;
+            }
+            #cards .category-images-left,
+            #cards .category-images-right {
+                float: none;
+                width: auto;
+            }
+            #cards .category-images {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 10px;
+                margin-top: 10px;
+            }
+            #cards .category-images img {
+                max-width: 100%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <section class="hero">
+        <h1>SchoolPoints – מערכת ניקוד בית ספרית</h1>
+        <h2>הופכים את הניקוד לחוויה חינוכית, צבעונית ומוטיבציונית עבור התלמידים</h2>
+        <div class="badges">
+            <span>עמדת ניהול חכמה</span>
+            <span>עמדה ציבורית מרשימה</span>
+            <span>הודעות, צבעים ובונוסים דינמיים</span>
+        </div>
+    </section>
+
+    <div class="container">
+        <section class="category" id="login">
+            <h3>1. כניסה מאובטחת ובקרת הרשאות</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/1.png" alt="קיצורי דרך לעמדת הניהול ולעמדה הציבורית על שולחן העבודה">
+                        <figcaption>קיצורי דרך על שולחן העבודה –<br>פתיחה מהירה של עמדת הניהול והעמדה הציבורית לאחר ההתקנה.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/2.png" alt="מסך התחברות לעמדת הניהול">
+                        <figcaption>מסך התחברות לעמדת הניהול –<br>כניסה מהירה ומוגנת באמצעות כרטיס מורה.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">המערכת מתחילה במסך התחברות נוח וידידותי למורה, עם הפרדה ברורה בין מנהל למורה רגיל.</p>
+                    <ul class="features">
+                        <li>כניסה באמצעות כרטיס מורה – ללא צורך בסיסמאות מסובכות.</li>
+                        <li>הבחנה בין הרשאות מנהל והרשאות מורה רגיל.</li>
+                        <li>התאמה מלאה לעבודה ברשת בית ספרית.</li>
+                        <li>לאחר התקנת התוכנה נוצרים על שולחן העבודה שני קיצורי דרך: "עמדת ניהול" ו"עמדה ציבורית" להפעלה מהירה.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="category" id="admin-station">
+            <h3>2. עמדת ניהול – כל הניקוד בידיים שלך</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/3.png" alt="עמדת ניהול – מסך ראשי">
+                        <figcaption>עמדת הניהול –<br>כל נתוני התלמידים, הנקודות וההודעות במסך אחד.</figcaption>
+                    </figure>
+                    <figure>
+                        <img src="תמונות/14.png" alt="שורת הפקדים בעמדת הניהול">
+                        <figcaption>שורת הפקדים בעמדת הניהול –<br>צבעים, הודעות כלליות, בונוס מיוחד, בונוס זמנים, ניהול מורים, הגדרות מערכת והוראות.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/15.png" alt="חלון אפשרויות ייצוא לאקסל">
+                        <figcaption>חלון "אפשרויות ייצוא" –<br>בחירת סוג הייצוא: ייצוא תלמידים רגיל, נוכחות לפי יום, נוכחות לפי בונוס זמנים וכל הבונוסים לכל ההיסטוריה.</figcaption>
+                    </figure>
+                    <figure>
+                        <img src="תמונות/19.png" alt="חלון עדכון מהיר של נקודות">
+                        <figcaption>עדכון מהיר –<br>עדכון נקודות לקבוצה/כיתה/טווח או בסריקת כרטיסים, עם בחירת פעולה: הוספה/חיסור/קביעה מוחלטת.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">מסך מרכזי לניהול תלמידים, נקודות, הודעות ותמונות – עם הרשאות מלאות למנהל וגישה ממוקדת לכל מורה רק לכיתות שלו.</p>
+                    <ul class="features">
+                        <li>טבלת תלמידים חכמה עם סינון, חיפוש ומיון לפי כיתה, שם, כרטיס ועוד.</li>
+                        <li>שורת פקדים צבעונית בראש המסך – גישה מהירה ל"שדרוגים" (צבעים/מטבעות/יעדים), הודעות כלליות, בונוס מיוחד, בונוס זמנים, ניהול מורים, הגדרות מערכת והוראות.</li>
+                        <li>עדכון נקודות לתלמידים – ידני בטבלה או באמצעות "עדכון מהיר" (⚡) עם הוספה/חיסור/קביעה מוחלטת, לפי כיתה/טווח/כלל תלמידים או בסריקת כרטיסים.</li>
+                        <li>כפתורי "הוסף תלמיד", "ערוך" ו"מחק" לתפעול מלא של רשימת התלמידים – הוספה, עדכון או מחיקה (כולל היסטוריית הנקודות).</li>
+                        <li>שדה "הודעה פרטית" לכל תלמיד המופיע בעמדה הציבורית בעת סריקה.</li>
+                        <li>עמדת הניהול המלאה מיועדת למנהל; מורה רגיל רואה ומעדכן רק את הכיתות שהוגדרו לו במערכת.</li>
+                        <li>ייבוא ראשוני של רשימות תלמידים מקובץ אקסל – התחלה מהירה של שנה חדשה.</li>
+                        <li>ייצוא ודו"חות אקסל – כפתור "ייצוא" פותח חלון "אפשרויות ייצוא" ליצירת קובץ תלמידים מלא (כולל נקודות, מספר תיקופים וממוצע תיקופים), דו"חות נוכחות לפי יום, דו"חות לפי בונוס זמנים אחד או כל הבונוסים וכל ההיסטוריה (גליון נפרד לכל בונוס); בנוסף כפתור "סינכרון" מהיר שמעדכן רק את עמודות הכרטיס, הנקודות וההודעה הפרטית בקובץ האקסל הקיים.</li>
+                        <li>ניהול תמונות תלמידים לפי מספר תמונה או תיקייה משותפת.</li>
+                        <li>טיפ לזיהוי: ניתן להוסיף סימון בעזרת כוכביות לפני ואחרי בשם הפרטי כדי להבדיל בין תלמידים עם שם זהה (למשל באותה כיתה); הסימון לא מוצג בעמדה הציבורית.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="category" id="colors">
+            <h3>3. צבעים ותצוגה ציבורית מרהיבה</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/4.png" alt="עורך צבעים – טווחי נקודות">
+                        <figcaption>עורך הצבעים –<br>הגדרת צבע, שם, מקסימום ומינימום לכל טווח נקודות.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/4.5.png" alt="עורך מטבעות ויהלומים – הגדרת ערכי הבונוס">
+                        <figcaption>עורך מטבעות ויהלומים –<br>קביעת ערך, שם וצבע לכל מטבע/יהלום לפי מספר נקודות.</figcaption>
+                    </figure>
+                    <figure>
+                        <img src="תמונות/4.6.png" alt="לשונית יעדים – פס התקדמות לתלמיד">
+                        <figcaption>יעדים (פס התקדמות) –<br>הפעלת יעד מוחלט/יחסי, צבעי פס והצגת אחוזים בעמדה הציבורית.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">עורך צבעים ברור לטווחי נקודות – כדי שההצלחות של התלמידים יבלטו מיד.</p>
+                    <ul class="features">
+                        <li>הגדרת טווחי נקודות בצבעים שונים – מירוק מעודד ועד אדום אזהרה.</li>
+                        <li>שם ברור לכל טווח – לדוגמה: "שיפור יפה", "תלמיד מצטיין", "דרוש שיפור".</li>
+                        <li>חיבור מלא לעמדה הציבורית – צבעי הכרטיסים במסך הציבורי נקבעים לפי הטווחים שהוגדרו.</li>
+                        <li>לשונית נפרדת למטבעות ויהלומים (מבוססי נקודות) – קובעים לכל מדרגה ערך, צבע וסוג (מטבע/יהלום), לשימוש בתצוגה הציבורית.</li>
+                        <li>לשונית "יעדים" – הגדרת יעד נקודות (מוחלט או יחסי באחוזים) ופס התקדמות בעמדה הציבורית, כולל צבעים (מלא/ריק/מסגרת) ואפשרות להציג אחוזים.</li>
+                        <li>עדכוני צבע ומטבעות בזמן אמת – כל שינוי נשמר ומשפיע מיד על כל התלמידים.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="category" id="messages">
+            <h3>4. מערכת הודעות חכמה</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/5.png" alt="ניהול הודעות כלליות">
+                        <figcaption>חלון ניהול הודעות כלליות –<br>הגדרה מתי ובאיזו צורה כל הודעה מוצגת.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/6.png" alt="ניהול הודעות לפי טווח נקודות">
+                        <figcaption>הודעות לפי טווח נקודות –<br>מסרים מותאמים לרמת הניקוד של התלמיד.</figcaption>
+                    </figure>
+                    <figure>
+                        <img src="תמונות/6.1.png" alt="ניהול חדשות לטיקר בעמדה הציבורית">
+                        <figcaption>חלון ניהול החדשות –<br>כותרות מתגלגלות בטיקר שבתחתית מסך העמדה הציבורית, עם אפשרות שינוי סדר העדיפות באמצעות חיצי מעלה/מטה.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">הודעות כלליות, הודעות לפי טווח נקודות והודעות אישיות – הכול מנוהל ממקום אחד.</p>
+                    <ul class="features">
+                        <li>הודעות כלליות – הודעות קבועות שמופיעות לכלל התלמידים.</li>
+                        <li>הודעות לפי טווח נקודות – מסרים שונים לרמות ניקוד שונות.</li>
+                        <li>חיבור ישיר לעמדה הציבורית – ההודעה המתאימה נבחרת לפי מצב הניקוד של התלמיד.</li>
+                        <li>כרטיסיית "חדשות" מיוחדת – ניהול כותרות חדשות שיוצגו כרצועת חדשות (טיקר) מתגלגלת בתחתית העמדה הציבורית, כולל כפתורי מעלה/מטה לקביעת סדר העדיפות של כל פריט חדשות.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <div class="page-break"></div>
+
+        <section class="category" id="bonuses">
+            <h3>5. בונוסים אוטומטיים ומבצעי זמן</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/7.png" alt="ניהול בונוס זמנים אוטומטי">
+                        <figcaption>ניהול בונוסי זמן –<br>יצירת מבצעי ניקוד אוטומטיים לפי שעות היום.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/7.5.png" alt="דוגמה לבונוס זמנים לפי כיתות ובונוס 0 לנוכחות">
+                        <figcaption>בונוס זמנים מתקדם –<br>הגדרת שעות שונות לכיתות שונות, כולל אפשרות ל־0 נקודות לצורכי נוכחות בלבד.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">שלושה סוגי בונוסים מובנים – כדי להפוך כל סריקה לחוויה מפתיעה.</p>
+                    <ul class="features">
+                        <li><strong>בונוס זמנים:</strong> ניהול קבוצת בונוסים אוטומטיים לפי שעות (מספר כללים במקביל), כולל אפשרות לקבוע שעות שונות לכל כיתה.</li>
+                        <li><strong>בונוס זמנים (נוכחות):</strong> ניתן להגדיר בונוס עם 0 נקודות – כך שייכלל בייצוא כדף נוכחות, אך לא יוצג בעמדה הציבורית.</li>
+                        <li><strong>בונוס כללי (בונוס מיוחד):</strong> מופעל על ידי מנהל – בלחיצה אחת מעבירים את המערכת למצב "בונוס מיוחד", וכל סריקה מקבלת תוספת קבועה לכל התלמידים.</li>
+                        <li><strong>בונוס מורה:</strong> מופעל על ידי מורה – המורה מעביר קודם את כרטיס המורה ולאחריו את כרטיס התלמיד, והמערכת מוסיפה לתלמיד בונוס ייחוס מהמורה.</li>
+                        <li>היסטוריה ברורה – ניתן לראות אילו תלמידים קיבלו בונוס, ובאילו מצבים.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="category" id="teachers">
+            <h3>6. ניהול מורים והרשאות</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/8.png" alt="ניהול מורים והרשאות">
+                        <figcaption>מסך ניהול מורים והרשאות –<br>מי אחראי על אילו כיתות ובאיזו רמת גישה.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/8.5.png" alt="עריכת מורה – הגדרת כרטיסים והרשאות">
+                        <figcaption>עריכת מורה –<br>הגדרת מספרי כרטיס והרשאות, כולל קישור לכיתות ובונוס מורה.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">שליטה מלאה במי יכול לעדכן נקודות, להפעיל בונוסים ולהיכנס לעמדת הניהול.</p>
+                    <ul class="features">
+                        <li>רשימת מורים מסודרת עם שם, מספרי כרטיס, תפקיד וכיתות משויכות.</li>
+                        <li>הגדרת מנהלים עם הרשאות מלאות מול מורים רגילים.</li>
+                        <li>שיוך כיתות למורה – מסנני גישה ונתונים מותאמים לכל מורה.</li>
+                        <li>הרשאות בונוסים למורים – לכל מורה ניתן להגדיר האם יש לו הרשאת "בונוס מורה" ומה גובה הבונוס שיחולק לתלמידיו בעמדה הציבורית.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="category" id="settings">
+            <h3>7. הגדרות מערכת ורקע לעמדה הציבורית</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/9.png" alt="הגדרות מערכת – חיבור לתיקיית רשת והגדרות עמדת הניקוד">
+                        <figcaption>הגדרות מערכת –<br>תיקיית רשת, לוגו, תיקיית תמונות, שם המבצע ומאפייני הניקוד.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/10.png" alt="הגדרות רקע ומצגת למסך הציבורי">
+                        <figcaption>הגדרות רקע למסך הציבורי –<br>צבע אחיד, תמונה, מצגת או מונטאז' ריבועים מתחלפים.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">מסך הגדרות מרוכז – מחיבור לתיקיית הרשת ועד הבחירה איך ייראה המסך הציבורי.</p>
+                    <ul class="features">
+                        <li>קביעת תיקיית רשת משותפת למסד הנתונים – כל העמדות עובדות על אותם נתונים.</li>
+                        <li>בחירת לוגו לעמדה הציבורית, תיקיית תמונות לתלמידים ושם המבצע המוצג במסך.</li>
+                        <li>גישה לעמדת הניהול רק למנהלים ולמורים שהוגדרו מראש במסך ניהול המורים – אין "מורה אוניברסלי"; כל מורה רואה רק את הכיתות שהוקצו לו.</li>
+                        <li>הגדרת "נקודה טובה" ומספר נקודות למינימום/מקסימום לבונוס ולסטטיסטיקות.</li>
+                        <li>אפשרויות הרקע לעמדה הציבורית: צבע אחיד, תמונה אחת, מצגת מתיקיית תמונות, או מונטאז' ריבועים מתחלפים.</li>
+                        <li>חלון "הגדרות תצוגה" נפרד – בחירת כיוון המסך (אורך/רוחב), ערכת צבעים, רקעי ברירת מחדל וסגנון הפנלים של המסך הציבורי.</li>
+                        <li>שליטה בהצגת סטטיסטיקות, הצגת תמונת התלמיד, זמן מעבר בין שקופיות ומספר שקופיות במצגת.</li>
+                        <li>שמירת כל ההגדרות לקובץ – קל לגבות ולהעביר למחשב חדש.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <div class="page-break"></div>
+
+        <section class="category" id="public-screen">
+            <h3>8. מסך העמדה הציבורית – מה התלמידים רואים</h3>
+            <div class="category-body">
+                <div class="category-images-left">
+                    <figure>
+                        <img src="תמונות/11.png" alt="מסך העמדה הציבורית עם כל המרכיבים">
+                        <figcaption>מסך העמדה הציבורית –<br>לוגו, שם מבצע, הודעות, ממוצעים, כרטיס תלמיד ותמונה.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-images-right">
+                    <figure>
+                        <img src="תמונות/11.5.png" alt="תרשים מרכיבי מסך העמדה הציבורית">
+                        <figcaption>תרשים מסך העמדה הציבורית –<br>חלוקה ברורה של האזורים: לוגו, כותרות, כרטיס תלמיד, מטבעות, תמונה וחדשות.</figcaption>
+                    </figure>
+                </div>
+                <div class="category-text">
+                    <p class="tagline">מסך צבעוני גדול שמציג לתלמידים את מצב הניקוד שלהם בצורה ברורה וחווייתית.</p>
+                    <ul class="features">
+                        <li>לוגו גדול במרכז העליון – אפשר להציב לוגו בית ספר או לוגו המבצע.</li>
+                        <li>שם המבצע וכותרת פתיחה – "ברוכים הבאים למבצע נקודה טובה" וכדומה.</li>
+                        <li>הודעה כללית קבועה לכלל בית הספר – הודעה קבועה המופיעה גם בלא הצגת כרטיס.</li>
+                        <li>כרטיס תלמיד במרכז – שם התלמיד, כיתה ותיבת ניקוד מודגשת.</li>
+                        <li>מספר נקודות גדול וברור, בצבע בהתאם לטווח הנקודות שהוגדר בעורך הצבעים.</li>
+                        <li>בצד המסך – ממוצעי נקודות (לדוגמה: ממוצע כיתה, ממוצע כללי), להשוואה חינוכית.</li>
+                        <li>תמונת התלמיד בצד, מחוברת למספר התמונה/תיקיית התמונות שהוגדרה בהגדרות.</li>
+                        <li>שילוב הודעות פרטיות או לפי טווח נקודות – כפי שהוגדרו במערכת ההודעות.</li>
+                        <li>שורת הניקוד מציגה גם מטבעות ויהלומים לפי ערך – כך שהתלמיד רואה מיד כמה "אוצר" צבר, ולא רק מספר נקודות יבש.</li>
+                        <li>יעדים ופס התקדמות – ניתן להגדיר יעד נקודות והעמדה הציבורית מציגה פס התקדמות שממחיש כמה התלמיד קרוב ליעד.</li>
+                        <li>באנר חדשות (טיקר) בתחתית המסך – כותרות מתגלגלות המנוהלות מחלון החדשות בעמדת הניהול.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <section class="category" id="cards">
+            <h3>9. כרטיסי תלמידים ומורים – כרטיס, צ'יפ, צמיד או מדבקה</h3>
+            <div class="category-body">
+                <div class="category-text">
+                    <p class="tagline">כל תלמיד וכל מורה מצוידים באמצעי זיהוי אלקטרוני לניקוד מהיר ונוח.</p>
+                    <ul class="features">
+                        <li>כרטיס פלסטיק בגודל כרטיס אשראי, הניתן להדפסה עם שם ותמונת התלמיד או המורה.</li>
+                        <li>אפשרות לצ'יפים למחזיק מפתחות, צמידי יד, מדבקות עגולות או כרטיסים חלקים – הכול עובד על אותו תדר.</li>
+                        <li>כרטיסי המורים משמשים לכניסה לעמדת הניהול ולהפעלת בונוסים מיוחדים.</li>
+                        <li>כרטיסי התלמידים משמשים לסריקה בעמדה הציבורית ולעדכון הנקודות האישיות.</li>
+                        <li>לכל תלמיד ולכל מורה מוקצה מספר כרטיס ייחודי השמור במערכת.</li>
+                    </ul>
+                </div>
+                <div class="category-images">
+                    <figure>
+                        <img src="תמונות/15.jpg" alt="תגי צ'יפ צבעוניים למחזיק מפתחות">
+                        <figcaption>תגי צ'יפ למחזיק מפתחות –<br>זיהוי מהיר לתלמידים ולמורים.</figcaption>
+                    </figure>
+                    <figure>
+                        <img src="תמונות/16.jpg" alt="צמידי יד אלקטרוניים בצבעים שונים">
+                        <figcaption>צמידי יד אלקטרוניים –<br>פתרון נוח לתלמידים צעירים.</figcaption>
+                    </figure>
+                    <figure>
+                        <img src="תמונות/17.jpg" alt="מדבקות עגולות לזיהוי אלקטרוני">
+                        <figcaption>מדבקות עגולות –<br>ניתן להצמיד לקלסר, תג שם או כל חפץ אישי.</figcaption>
+                    </figure>
+                    <figure>
+                        <img src="תמונות/18.jpg" alt="כרטיסי פלסטיק לבנים בגודל כרטיס אשראי">
+                        <figcaption>כרטיסי פלסטיק דמויי כרטיס אשראי –<br>בסיס להדפסת כרטיסי תלמידים ומורים.</figcaption>
+                    </figure>
+                </div>
+            </div>
+        </section>
+
+        <div class="cta">
+            <a class="button" href="#login">להצטרפות למערכת הניקוד הבית ספרית – חזרה לראש הדף</a>
+        </div>
+
+        <div class="footer">
+            דף פרסום זה נוצר מתוך צילומי המסך של המערכת ומציג את היכולות המרכזיות של SchoolPoints עבור בתי ספר.
+        </div>
+    </div>
+</body>
+</html>

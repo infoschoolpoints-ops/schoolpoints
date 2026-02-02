@@ -307,10 +307,9 @@ def _sync_status_info() -> Dict[str, Any]:
 
 def _admin_status_bar() -> str:
     status = _sync_status_info()
-    tenant_id = _current_tenant_id() or '—'
     return (
         f"<div style=\"font-size:12px;color:#637381;margin:0 0 10px;\">"
-        f"Tenant: {tenant_id} | מוסדות: {status['inst_total']} | שינויים: {status['changes_total']} | שינוי אחרון: {status['last_received']}"
+        f"עדכון אחרון: {status['last_received']}"
         f"</div>"
     )
 
@@ -713,7 +712,14 @@ def web_logout() -> Response:
 
 
 @app.get('/web/signin', response_class=HTMLResponse)
-def web_signin(request: Request) -> str:
+def web_signin(request: Request) -> Response | str:
+    tenant_id = _web_tenant_from_cookie(request)
+    teacher_id = _web_teacher_from_cookie(request)
+    if tenant_id and teacher_id:
+        return RedirectResponse(url='/web/admin', status_code=302)
+    if tenant_id:
+        return RedirectResponse(url='/web/teacher-login', status_code=302)
+
     nxt = _web_next_from_request(request, '/web/teacher-login')
     body = f"""
     <h2>כניסת מוסד</h2>
@@ -929,18 +935,169 @@ def web_assets(asset_path: str) -> Response:
         rel = rel[len('guide_images/'):]
     elif rel_l.startswith('equipment_required_files/'):
         base = os.path.join(ROOT_DIR, 'equipment_required_files')
-        rel = rel[len('equipment_required_files/'):] 
-
-    path = os.path.abspath(os.path.join(base, rel))
-    base_abs = os.path.abspath(base)
-    if not path.startswith(base_abs):
+        rel = rel[len('equipment_required_files/'):]
+    
+    full_path = os.path.join(base, rel)
+    if not os.path.isfile(full_path):
         raise HTTPException(status_code=404, detail='Not found')
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail='Not found')
-    return FileResponse(path)
+    return FileResponse(full_path)
 
 
 def _public_web_shell(title: str, body_html: str) -> str:
+    style_block = """
+      <style>
+        :root {
+          --navy: #1a2639;
+          --navy-light: #2c3e50;
+          --accent-green: #00b894;
+          --accent-blue: #0984e3;
+          --accent-purple: #6c5ce7;
+          --accent-orange: #fdcb6e;
+          --accent-red: #d63031;
+          
+          --glass-bg: rgba(255, 255, 255, 0.08);
+          --glass-bg-hover: rgba(255, 255, 255, 0.12);
+          --glass-border: rgba(255, 255, 255, 0.15);
+          --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+          
+          --text-main: rgba(255, 255, 255, 0.95);
+          --text-dim: rgba(255, 255, 255, 0.75);
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body { height: 100%; margin: 0; }
+        
+        body {
+          font-family: 'Heebo', 'Segoe UI', Arial, sans-serif;
+          color: var(--text-main);
+          direction: rtl;
+          background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+          background-attachment: fixed;
+          overflow-x: hidden;
+        }
+
+        a { text-decoration: none; color: inherit; transition: all 0.2s ease; }
+
+        /* Glassmorphism Utilities */
+        .glass {
+          background: var(--glass-bg);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border: 1px solid var(--glass-border);
+          box-shadow: var(--glass-shadow);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+
+        /* Topbar */
+        .topbar {
+          position: sticky;
+          top: 0;
+          z-index: 100;
+          background: rgba(15, 32, 39, 0.75);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          border-bottom: 1px solid var(--glass-border);
+        }
+
+        .topbar-inner {
+          max-width: 1400px;
+          margin: 0 auto;
+          padding: 10px 20px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          height: 64px;
+        }
+
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .brand img { width: 40px; height: 40px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .brand-text { display: flex; flex-direction: column; }
+        .brand-title { font-weight: 900; font-size: 18px; letter-spacing: 0.5px; line-height: 1; }
+        .brand-sub { font-size: 11px; color: var(--text-dim); letter-spacing: 1px; margin-top: 4px; text-transform: uppercase; }
+
+        .top-nav { display: flex; align-items: center; gap: 12px; }
+        
+        .btn-glass {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 16px;
+          border-radius: 12px;
+          font-weight: 700;
+          font-size: 14px;
+          background: rgba(255,255,255,0.1);
+          border: 1px solid rgba(255,255,255,0.2);
+          transition: all 0.2s;
+        }
+        .btn-glass:hover { background: rgba(255,255,255,0.2); transform: translateY(-1px); }
+        .btn-glass.primary { background: linear-gradient(135deg, var(--accent-blue), #00cec9); border: none; box-shadow: 0 4px 15px rgba(9, 132, 227, 0.4); }
+        .btn-glass.primary:hover { filter: brightness(1.1); box-shadow: 0 6px 20px rgba(9, 132, 227, 0.5); }
+
+        /* Layout */
+        .layout-container {
+          max-width: 1400px;
+          margin: 24px auto;
+          padding: 0 20px;
+          display: flex;
+          gap: 24px;
+          align-items: flex-start;
+          justify-content: center;
+        }
+
+        /* Main Content */
+        .main-content { flex: 1; min-width: 0; max-width: 800px; }
+        
+        .page-card {
+          background: var(--glass-bg);
+          backdrop-filter: blur(24px);
+          -webkit-backdrop-filter: blur(24px);
+          border: 1px solid var(--glass-border);
+          border-radius: 20px;
+          padding: 24px;
+          box-shadow: var(--glass-shadow);
+          min-height: 400px;
+        }
+
+        .page-header {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          margin-bottom: 24px;
+          padding-bottom: 16px;
+          border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .page-title { margin: 0; font-size: 24px; font-weight: 900; background: linear-gradient(135deg, #fff, #b2bec3); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        
+        .footerbar {
+          margin-top: 16px;
+          padding-top: 14px;
+          border-top: 1px solid rgba(255,255,255,0.18);
+          display: flex;
+          gap: 12px;
+          flex-wrap: wrap;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .footer-title { font-weight: 950; opacity: .96; }
+        .whoami { margin-top: 6px; font-weight: 800; }
+        .whoami a { text-decoration: none; font-weight: 900; }
+        .whoami-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .whoami-name { font-weight: 950; }
+        .footer-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .layout-container { flex-direction: column; }
+        }
+      </style>
+    """
+
     footer = """
       <div class="footerbar">
         <div class="footer-left">
@@ -950,8 +1107,8 @@ def _public_web_shell(title: str, body_html: str) -> str:
           </div>
         </div>
         <div class="footer-actions">
-          <a class="btn blue" href="/web">דף הבית</a>
-          <a class="btn gray" href="javascript:history.back()">אחורה</a>
+          <a class="btn-glass" href="/web">דף הבית</a>
+          <a class="btn-glass" href="javascript:history.back()">אחורה</a>
         </div>
       </div>
       <script>
@@ -976,6 +1133,7 @@ def _public_web_shell(title: str, body_html: str) -> str:
         })();
       </script>
     """
+
     return f"""
     <!doctype html>
     <html lang="he">
@@ -985,523 +1143,427 @@ def _public_web_shell(title: str, body_html: str) -> str:
       <title>{title}</title>
       <link rel="icon" href="/web/assets/icons/public.png" />
       <link rel="shortcut icon" href="/web/assets/icons/public.png" />
+      <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700;900&display=swap" rel="stylesheet">
+      {style_block}
+    </head>
+    <body>
+      <!-- Topbar -->
+      <nav class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <img src="/web/assets/icons/public.png" alt="Logo">
+            <div class="brand-text">
+                <div class="brand-title">SchoolPoints</div>
+                <div class="brand-sub">עמדת ניהול מתקדמת</div>
+            </div>
+          </div>
+          <div class="top-nav">
+             <a href="/web/signin" class="btn-glass primary">
+                <span>🔑</span>
+                <span>כניסה</span>
+             </a>
+             <a href="/web/download" class="btn-glass">
+                <span>⬇️</span>
+                <span>הורדה</span>
+             </a>
+          </div>
+        </div>
+      </nav>
+
+      <!-- Layout -->
+      <div class="layout-container">
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="page-card">
+                <div class="page-header">
+                    <h2 class="page-title">{title}</h2>
+                </div>
+                
+                <div class="content-body">
+                    {body_html}
+                    {footer}
+                </div>
+            </div>
+        </main>
+      </div>
+    </body>
+    </html>
+    """
+
+def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
+    style_block = """
       <style>
-        :root {{
-          --navy:#20324b;
-          --navy2:#2f3e70;
-          --mint:#1abc9c;
-          --sky:#3498db;
-          --violet:#8e44ad;
-          --orange:#f39c12;
-          --line: rgba(255,255,255,.18);
-          --glass: rgba(255,255,255,.12);
-          --glass2: rgba(255,255,255,.18);
-          --shadow: 0 18px 40px rgba(0,0,0,.22);
-          --text: rgba(255,255,255,.92);
-        }}
-        html, body {{ height:100%; }}
-        body {{
-          margin:0;
-          font-family: "Segoe UI", Arial, sans-serif;
-          color: var(--text);
+        :root {
+          --navy: #1a2639;
+          --navy-light: #2c3e50;
+          --accent-green: #00b894;
+          --accent-blue: #0984e3;
+          --accent-purple: #6c5ce7;
+          --accent-orange: #fdcb6e;
+          --accent-red: #d63031;
+          
+          --glass-bg: rgba(255, 255, 255, 0.08);
+          --glass-bg-hover: rgba(255, 255, 255, 0.12);
+          --glass-border: rgba(255, 255, 255, 0.15);
+          --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+          
+          --text-main: rgba(255, 255, 255, 0.95);
+          --text-dim: rgba(255, 255, 255, 0.75);
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body { height: 100%; margin: 0; }
+        
+        body {
+          font-family: 'Heebo', 'Segoe UI', Arial, sans-serif;
+          color: var(--text-main);
           direction: rtl;
-          background:
-            radial-gradient(1200px 700px at 20% 10%, rgba(52,152,219,.55), rgba(0,0,0,0) 55%),
-            radial-gradient(900px 600px at 90% 35%, rgba(142,68,173,.45), rgba(0,0,0,0) 55%),
-            radial-gradient(800px 520px at 55% 92%, rgba(243,156,18,.30), rgba(0,0,0,0) 60%),
-            linear-gradient(180deg, #0f1b2b, #162642 55%, #0f1b2b);
-        }}
-        a {{ color: rgba(255,255,255,.92); }}
-        .topbar {{
-          position: sticky;
-          top: 0;
-          z-index: 10;
-          backdrop-filter: blur(14px);
-          -webkit-backdrop-filter: blur(14px);
-          background: rgba(255,255,255,.10);
-          border-bottom: 1px solid var(--line);
-        }}
-        .topbar-inner {{
-          max-width: 1100px;
-          margin: 0 auto;
-          padding: 14px 16px;
-          display:flex;
-          align-items:center;
-          justify-content:space-between;
-          gap: 14px;
-        }}
-        .brand {{ display:flex; align-items:center; gap: 10px; min-width: 0; }}
-        .brand img {{ width: 38px; height: 38px; border-radius: 10px; box-shadow: 0 10px 22px rgba(0,0,0,.25); }}
-        .brand-title {{ font-weight: 950; letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .brand-sub {{ font-size: 12px; opacity: .86; margin-top: 2px; }}
-        .brand-col {{ display:flex; flex-direction:column; min-width: 0; }}
-        .top-actions {{ display:flex; align-items:center; gap: 10px; flex-wrap: wrap; justify-content:flex-end; }}
-        .btn {{
-          display:inline-flex;
-          align-items:center;
-          justify-content:center;
-          gap: 8px;
-          padding: 10px 14px;
-          border-radius: 14px;
-          text-decoration:none;
-          font-weight: 900;
-          box-shadow: 0 14px 28px rgba(0,0,0,.24);
-          border: 1px solid rgba(255,255,255,.16);
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
-        }}
-        .btn:active {{ transform: translateY(1px); }}
-        .btn.green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
-        .btn.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
-        .btn.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
-        .btn.purple {{ background: linear-gradient(135deg, #8e44ad, #5b2c83); }}
-        .btn.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
-        .wrap {{ max-width: 1100px; margin: 18px auto 26px; padding: 0 16px; }}
-        .card {{
-          background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.09));
-          border-radius: 18px;
-          padding: 18px;
-          border: 1px solid rgba(255,255,255,.18);
-          box-shadow: var(--shadow);
+          background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+          background-attachment: fixed;
+          overflow-x: hidden;
+        }
+
+        a { text-decoration: none; color: inherit; transition: all 0.2s ease; }
+
+        /* Glassmorphism Utilities */
+        .glass {
+          background: var(--glass-bg);
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
-        }}
-        .titlebar {{
-          background: linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
-          border: 1px solid rgba(255,255,255,.18);
-          color: rgba(255,255,255,.96);
-          padding: 14px 16px;
-          border-radius: 14px;
-          margin: 0 0 14px;
-          display:flex;
-          align-items:center;
-          justify-content:space-between;
-          gap: 12px;
-        }}
-        .titlebar h2 {{ margin:0; font-size:20px; font-weight: 950; letter-spacing: .2px; }}
-        .content {{ color: rgba(255,255,255,.92); }}
-        .actionbar {{ margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }}
-        .actionbar a {{ padding:10px 14px; border-radius:14px; color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.16); font-weight:900; box-shadow: 0 14px 28px rgba(0,0,0,.22); }}
-        .actionbar .green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
-        .actionbar .blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
-        .actionbar .gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
-        .small {{ font-size:13px; opacity:.86; text-align:center; margin-top:10px; }}
-        .footerbar {{
+          border: 1px solid var(--glass-border);
+          box-shadow: var(--glass-shadow);
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.1); }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+
+        /* Topbar */
+        .topbar {
+          position: sticky;
+          top: 0;
+          z-index: 100;
+          background: rgba(15, 32, 39, 0.75);
+          backdrop-filter: blur(20px);
+          -webkit-backdrop-filter: blur(20px);
+          border-bottom: 1px solid var(--glass-border);
+        }
+
+        .topbar-inner {
+          max-width: 1400px;
+          margin: 0 auto;
+          padding: 10px 20px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          height: 64px;
+        }
+
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .brand img { width: 40px; height: 40px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .brand-text { display: flex; flex-direction: column; }
+        .brand-title { font-weight: 900; font-size: 18px; letter-spacing: 0.5px; line-height: 1; }
+        .brand-sub { font-size: 11px; color: var(--text-dim); letter-spacing: 1px; margin-top: 4px; text-transform: uppercase; }
+
+        .top-nav { display: flex; align-items: center; gap: 12px; }
+        
+        .btn-glass {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 16px;
+          border-radius: 12px;
+          font-weight: 700;
+          font-size: 14px;
+          background: rgba(255,255,255,0.1);
+          border: 1px solid rgba(255,255,255,0.2);
+          transition: all 0.2s;
+        }
+        .btn-glass:hover { background: rgba(255,255,255,0.2); transform: translateY(-1px); }
+        .btn-glass.primary { background: linear-gradient(135deg, var(--accent-blue), #00cec9); border: none; box-shadow: 0 4px 15px rgba(9, 132, 227, 0.4); }
+        .btn-glass.primary:hover { filter: brightness(1.1); box-shadow: 0 6px 20px rgba(9, 132, 227, 0.5); }
+
+        /* Layout */
+        .layout-container {
+          max-width: 1400px;
+          margin: 24px auto;
+          padding: 0 20px;
+          display: flex;
+          gap: 24px;
+          align-items: flex-start;
+          justify-content: center;
+        }
+
+        /* Main Content */
+        .main-content { flex: 1; min-width: 0; max-width: 800px; }
+        
+        .page-card {
+          background: var(--glass-bg);
+          backdrop-filter: blur(24px);
+          -webkit-backdrop-filter: blur(24px);
+          border: 1px solid var(--glass-border);
+          border-radius: 20px;
+          padding: 24px;
+          box-shadow: var(--glass-shadow);
+          min-height: 400px;
+        }
+
+        .page-header {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          margin-bottom: 24px;
+          padding-bottom: 16px;
+          border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .page-title { margin: 0; font-size: 24px; font-weight: 900; background: linear-gradient(135deg, #fff, #b2bec3); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        
+        .footerbar {
           margin-top: 16px;
           padding-top: 14px;
-          border-top: 1px solid rgba(255,255,255,.18);
-          display:flex;
+          border-top: 1px solid rgba(255,255,255,0.18);
+          display: flex;
           gap: 12px;
           flex-wrap: wrap;
           justify-content: space-between;
           align-items: center;
-        }}
-        .footer-title {{ font-weight: 950; opacity: .96; }}
-        .whoami {{ margin-top: 6px; font-weight: 800; }}
-        .whoami a {{ text-decoration: none; font-weight: 900; }}
-        .whoami-row {{ display:flex; gap: 10px; align-items:center; flex-wrap:wrap; }}
-        .whoami-name {{ font-weight: 950; }}
-        .footer-actions {{ display:flex; gap: 10px; flex-wrap: wrap; justify-content:flex-end; }}
-        @media (max-width: 740px) {{
-          .topbar-inner {{ flex-direction: column; align-items: stretch; }}
-          .top-actions {{ justify-content: center; }}
-          .titlebar {{ flex-direction: column; align-items: flex-start; }}
-        }}
+        }
+        .footer-title { font-weight: 950; opacity: .96; }
+        .whoami { margin-top: 6px; font-weight: 800; }
+        .whoami a { text-decoration: none; font-weight: 900; }
+        .whoami-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .whoami-name { font-weight: 950; }
+        .footer-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .layout-container { flex-direction: column; }
+        }
       </style>
-    </head>
-    <body>
-      <div class="topbar">
-        <div class="topbar-inner">
-          <div class="brand">
-            <img src="/web/assets/icons/public.png" alt="SchoolPoints" />
-            <div class="brand-col">
-              <div class="brand-title">נקודות בית ספר</div>
-              <div class="brand-sub">SchoolPoints</div>
-            </div>
-          </div>
-          <div class="top-actions">
-            <a class="btn blue" href="/web">דף הבית</a>
-            <a class="btn green" href="/web/signin">כניסה</a>
-            <a class="btn orange" href="/web/download">הורדה</a>
-            <a class="btn purple" href="/web/contact">צור קשר</a>
-          </div>
-        </div>
-      </div>
-      <div class="wrap">
-        <div class="card">
-          <div class="titlebar"><h2>{title}</h2></div>
-          <div class="content">
-            {body_html}
-            {footer}
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
     """
 
-
-def _basic_web_shell(title: str, body_html: str, request: Request | None = None) -> str:
-    status = _sync_status_info()
-    teacher: Dict[str, Any] = {}
-    if request is not None:
-        try:
-            teacher = _web_current_teacher(request) or {}
-        except Exception:
-            teacher = {}
-
-    is_admin = False
-    try:
-        is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
-    except Exception:
-        is_admin = False
-
-    admin_only_style = '' if is_admin else 'display:none;'
-    teacher_only_style = 'display:none;' if is_admin else ''
+    footer = """
+      <div class="footerbar">
+        <div class="footer-left">
+          <div class="footer-title">אזור אישי</div>
+          <div id="whoami" class="whoami">
+            <a href="/web/signin">התחברות</a>
+          </div>
+        </div>
+        <div class="footer-actions">
+          <a class="btn-glass" href="/web/admin">לוח בקרה</a>
+          <a class="btn-glass" href="javascript:history.back()">אחורה</a>
+        </div>
+      </div>
+      <script>
+        (async function() {
+          const el = document.getElementById('whoami');
+          if (!el) return;
+          try {
+            const resp = await fetch('/web/whoami', { credentials: 'same-origin' });
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (!data || !data.tenant_id) return;
+            const name = (data.institution_name || data.tenant_id || '').toString();
+            el.innerHTML = `
+              <div class="whoami-row">
+                <span class="whoami-name">${name}</span>
+                <a href="/web/account">תפריט מוסד</a>
+                <a href="/web/logout">יציאה</a>
+              </div>
+            `;
+          } catch (e) {
+          }
+        })();
+      </script>
+    """
 
     return f"""
     <!doctype html>
-    <html lang=\"he\">
+    <html lang="he">
     <head>
-      <meta charset=\"utf-8\" />
-      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>{title}</title>
-      <link rel=\"icon\" href=\"/web/assets/icons/public.png\" />
-      <link rel=\"shortcut icon\" href=\"/web/assets/icons/public.png\" />
-      <style>
-        :root {{
-          --navy:#20324b;
-          --navy2:#2f3e70;
-          --mint:#1abc9c;
-          --sky:#3498db;
-          --violet:#8e44ad;
-          --orange:#f39c12;
-          --line: rgba(255,255,255,.18);
-          --glass: rgba(255,255,255,.12);
-          --glass2: rgba(255,255,255,.18);
-          --shadow: 0 18px 40px rgba(0,0,0,.22);
-          --text: rgba(255,255,255,.92);
-        }}
-        html, body {{ height:100%; }}
-        body {{
-          margin:0;
-          font-family: \"Segoe UI\", Arial, sans-serif;
-          color: var(--text);
-          direction: rtl;
-          background:
-            radial-gradient(1200px 700px at 20% 10%, rgba(52,152,219,.55), rgba(0,0,0,0) 55%),
-            radial-gradient(900px 600px at 90% 35%, rgba(142,68,173,.45), rgba(0,0,0,0) 55%),
-            radial-gradient(800px 520px at 55% 92%, rgba(243,156,18,.30), rgba(0,0,0,0) 60%),
-            linear-gradient(180deg, #0f1b2b, #162642 55%, #0f1b2b);
-        }}
-        a {{ color: rgba(255,255,255,.92); }}
-        .topbar {{
-          position: sticky;
-          top: 0;
-          z-index: 10;
-          backdrop-filter: blur(14px);
-          -webkit-backdrop-filter: blur(14px);
-          background: rgba(255,255,255,.10);
-          border-bottom: 1px solid var(--line);
-        }}
-        .topbar-inner {{
-          max-width: 1180px;
-          margin: 0 auto;
-          padding: 14px 16px;
-          display:flex;
-          align-items:center;
-          justify-content:space-between;
-          gap: 14px;
-        }}
-        .brand {{ display:flex; align-items:center; gap: 10px; min-width: 0; }}
-        .brand img {{ width: 38px; height: 38px; border-radius: 10px; box-shadow: 0 10px 22px rgba(0,0,0,.25); }}
-        .brand-title {{ font-weight: 950; letter-spacing: .3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
-        .brand-sub {{ font-size: 12px; opacity: .86; margin-top: 2px; }}
-        .brand-col {{ display:flex; flex-direction:column; min-width: 0; }}
-        .top-actions {{ display:flex; align-items:center; gap: 10px; flex-wrap: wrap; justify-content:flex-end; }}
-        .btn {{
-          display:inline-flex;
-          align-items:center;
-          justify-content:center;
-          gap: 8px;
-          padding: 10px 14px;
-          border-radius: 14px;
-          text-decoration:none;
-          font-weight: 900;
-          box-shadow: 0 14px 28px rgba(0,0,0,.24);
-          border: 1px solid rgba(255,255,255,.16);
-          backdrop-filter: blur(10px);
-          -webkit-backdrop-filter: blur(10px);
-        }}
-        .btn:active {{ transform: translateY(1px); }}
-        .btn.green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
-        .btn.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
-        .btn.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
-        .btn.purple {{ background: linear-gradient(135deg, #8e44ad, #5b2c83); }}
-        .btn.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
-        .wrap {{ max-width: 1180px; margin: 18px auto 26px; padding: 0 16px; }}
-        .layout {{ display:flex; gap:14px; align-items:flex-start; }}
-        .sidebar {{ width: 260px; position: sticky; top: 16px; }}
-        .content {{ flex: 1; min-width: 0; }}
-        .card {{
-          background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,.09));
-          border-radius: 18px;
-          padding: 18px;
-          border: 1px solid rgba(255,255,255,.18);
-          box-shadow: var(--shadow);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-        }}
-        .titlebar {{
-          background: linear-gradient(135deg, rgba(255,255,255,.14), rgba(255,255,255,.06));
-          border: 1px solid rgba(255,255,255,.18);
-          color: rgba(255,255,255,.96);
-          padding: 14px 16px;
-          border-radius: 14px;
-          margin: 0 0 14px;
-          display:flex;
-          align-items:center;
-          justify-content:space-between;
-          gap: 12px;
-        }}
-        .titlebar h2 {{ margin:0; font-size:20px; }}
-        .nav {{ display:flex; flex-direction:column; gap:10px; }}
-        .navgroup {{
-          background: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.08));
-          border: 1px solid rgba(255,255,255,.18);
-          border-radius: 16px;
-          padding: 12px;
-          box-shadow: 0 14px 28px rgba(0,0,0,.18);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-        }}
-        .navtitle {{ font-weight:950; color: rgba(255,255,255,.92); margin:2px 0 10px; font-size:14px; }}
-        .navbtn {{ display:block; text-decoration:none; color:#fff; padding:12px 14px; border-radius:12px; font-weight:900; font-size:14px; box-shadow:0 10px 22px rgba(0,0,0,.10); }}
-        .navbtn:active {{ transform: translateY(1px); }}
-        .navbtn.green {{ background: linear-gradient(135deg, #2ecc71, #1abc9c); }}
-        .navbtn.blue {{ background: linear-gradient(135deg, #3498db, #2f80ed); }}
-        .navbtn.purple {{ background: linear-gradient(135deg, #8e44ad, #5b2c83); }}
-        .navbtn.orange {{ background: linear-gradient(135deg, #f39c12, #e67e22); }}
-        .navbtn.gray {{ background: linear-gradient(135deg, #95a5a6, #7f8c8d); }}
-        .navbtn.navy {{ background: linear-gradient(135deg, #2f3e4e, #22313f); }}
-        .small {{ font-size:12px; opacity:.92; font-weight:700; }}
-        .actionbar {{ margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end; }}
-        .actionbar a, .actionbar button {{ padding:8px 12px; border-radius:6px; color:#fff; text-decoration:none; border:none; font-weight:600; }}
-        .actionbar .green {{ background:#2ecc71; }}
-        .actionbar .blue {{ background:#3498db; }}
-        .actionbar .orange {{ background:#f39c12; }}
-        .actionbar .gray {{ background:#95a5a6; }}
-        .actionbar .purple {{ background:#8e44ad; }}
-        .links {{ margin-top:12px; font-size:13px; opacity:.92; }}
-        .links a {{ color: rgba(255,255,255,.92); text-decoration:none; margin-left:10px; font-weight:800; }}
-        @media (max-width: 980px) {{
-          .layout {{ flex-direction: column; }}
-          .sidebar {{ width: 100%; position: relative; top: auto; }}
-          .nav {{ flex-direction: row; overflow:auto; padding-bottom: 6px; }}
-          .navgroup {{ min-width: 320px; flex: 0 0 auto; }}
-        }}
-        @media (max-width: 740px) {{
-          .topbar-inner {{ flex-direction: column; align-items: stretch; }}
-          .top-actions {{ justify-content: center; }}
-        }}
-      </style>
+      <link rel="icon" href="/web/assets/icons/public.png" />
+      <link rel="shortcut icon" href="/web/assets/icons/public.png" />
+      <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;700;900&display=swap" rel="stylesheet">
+      {style_block}
     </head>
     <body>
-      <div class=\"topbar\">
-        <div class=\"topbar-inner\">
-          <div class=\"brand\">
-            <img src=\"/web/assets/icons/public.png\" alt=\"SchoolPoints\" />
-            <div class=\"brand-col\">
-              <div class=\"brand-title\">עמדת ניהול</div>
-              <div class=\"brand-sub\">SchoolPoints</div>
+      <!-- Topbar -->
+      <nav class="topbar">
+        <div class="topbar-inner">
+          <div class="brand">
+            <img src="/web/assets/icons/public.png" alt="Logo">
+            <div class="brand-text">
+                <div class="brand-title">SchoolPoints</div>
+                <div class="brand-sub">עמדת ניהול מתקדמת</div>
             </div>
           </div>
-          <div class=\"top-actions\">
-            <a class=\"btn blue\" href=\"/web/admin\">תלמידים</a>
-            <a class=\"btn gray\" href=\"/web/guide\">מדריך</a>
-            <a class=\"btn gray\" href=\"/web\">דף הבית</a>
-            <a class=\"btn gray\" href=\"/web/logout\">יציאה</a>
+          <div class="top-nav">
+             <a href="/web/admin" class="btn-glass primary">
+                <span>🏠</span>
+                <span>לוח בקרה</span>
+             </a>
+             <a href="/web/logout" class="btn-glass">
+                <span>🚪</span>
+                <span>יציאה</span>
+             </a>
           </div>
         </div>
-      </div>
-      <div class=\"wrap\">
-        <div class=\"layout\">
-          <div class=\"sidebar\">
-            <div class=\"nav\">
-              <div class=\"navgroup\" style=\"{teacher_only_style}\">
-                <div class=\"navtitle\">תלמידים</div>
-                <a class=\"navbtn navy\" href=\"/web/admin\">תלמידים</a>
-              </div>
-              <div class=\"navgroup\" style=\"{admin_only_style}\">
-                <div class=\"navtitle\">ניהול</div>
-                <a class=\"navbtn navy\" href=\"/web/admin\">תלמידים</a>
-                <a class=\"navbtn blue\" href=\"/web/teachers\">ניהול מורים</a>
-                <a class=\"navbtn orange\" href=\"/web/cashier\">קופה</a>
-                <a class=\"navbtn gray\" href=\"/web/reports\">דוחות</a>
-              </div>
-              <div class=\"navgroup\" style=\"{admin_only_style}\">
-                <div class=\"navtitle\">תצוגה ותוכן</div>
-                <a class=\"navbtn blue\" href=\"/web/display-settings\">הגדרות תצוגה <span class=\"small\">(צבעים/צלילים/מטבעות)</span></a>
-                <a class=\"navbtn green\" href=\"/web/messages\">הודעות</a>
-                <a class=\"navbtn purple\" href=\"/web/special-bonus\">בונוס מיוחד</a>
-                <a class=\"navbtn purple\" href=\"/web/time-bonus\">בונוס זמנים</a>
-                <a class=\"navbtn orange\" href=\"/web/bonuses\">בונוסים</a>
-                <a class=\"navbtn orange\" href=\"/web/holidays\">חגים/חופשות</a>
-              </div>
-              <div class=\"navgroup\">
-                <div class=\"navtitle\">מערכת</div>
-                <a class=\"navbtn blue\" style=\"{admin_only_style}\" href=\"/web/system-settings\">הגדרות מערכת</a>
-                <a class=\"navbtn gray\" style=\"{admin_only_style}\" href=\"/web/logs\">לוגים</a>
-                <a class=\"navbtn gray\" style=\"{admin_only_style}\" href=\"/web/upgrades\">שדרוגים</a>
-                <a class=\"navbtn gray\" href=\"/web/logout\">יציאה</a>
-              </div>
+      </nav>
+
+      <!-- Layout -->
+      <div class="layout-container">
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="page-card">
+                <div class="page-header">
+                    <h2 class="page-title">{title}</h2>
+                </div>
+                
+                <div class="content-body">
+                    {body_html}
+                    {footer}
+                </div>
             </div>
-          </div>
-          <div class=\"content\">
-            <div class=\"card\">
-              <div class=\"titlebar\"><h2>{title}</h2></div>
-              <div style=\"font-size:12px;opacity:.86;margin-bottom:8px;\">
-                מוסדות: {status['inst_total']} | שינויים: {status['changes_total']} | שינוי אחרון: {status['last_received']}
-              </div>
-              {body_html}
-              <div class=\"links\">
-                <a href=\"/web/admin\">עמדת ניהול</a>
-                <a href=\"/web/logout\">יציאה</a>
-              </div>
-            </div>
-          </div>
-        </div>
+        </main>
       </div>
     </body>
     </html>
     """
 
-
-def _init_db() -> None:
+def _init_db():
     conn = _db()
-    cur = conn.cursor()
-    if USE_POSTGRES:
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS institutions (
-                id BIGSERIAL PRIMARY KEY,
-                tenant_id TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                api_key TEXT NOT NULL,
-                password_hash TEXT,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS institutions (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    api_key TEXT NOT NULL,
+                    password_hash TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS changes (
-                id BIGSERIAL PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                station_id TEXT,
-                entity_type TEXT NOT NULL,
-                entity_id TEXT,
-                action_type TEXT NOT NULL,
-                payload_json TEXT,
-                created_at TEXT,
-                received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS changes (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    station_id TEXT,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS sync_events (
-                id BIGSERIAL PRIMARY KEY,
-                tenant_id TEXT NOT NULL,
-                event_id TEXT NOT NULL,
-                station_id TEXT,
-                change_local_id BIGINT,
-                entity_type TEXT NOT NULL,
-                entity_id TEXT,
-                action_type TEXT NOT NULL,
-                payload_json TEXT,
-                created_at TEXT,
-                received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(tenant_id, event_id)
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS sync_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    station_id TEXT,
+                    change_local_id BIGINT,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(tenant_id, event_id)
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS contact_messages (
-                id BIGSERIAL PRIMARY KEY,
-                name TEXT,
-                email TEXT,
-                subject TEXT,
-                message TEXT,
-                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS contact_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT,
+                    email TEXT,
+                    subject TEXT,
+                    message TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-    else:
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS institutions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                api_key TEXT NOT NULL,
-                password_hash TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        else:
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS institutions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    api_key TEXT NOT NULL,
+                    password_hash TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        try:
-            cur.execute('ALTER TABLE institutions ADD COLUMN password_hash TEXT')
-        except Exception:
-            pass
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS changes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id TEXT NOT NULL,
-                station_id TEXT,
-                entity_type TEXT NOT NULL,
-                entity_id TEXT,
-                action_type TEXT NOT NULL,
-                payload_json TEXT,
-                created_at TEXT,
-                received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            try:
+                cur.execute('ALTER TABLE institutions ADD COLUMN password_hash TEXT')
+            except Exception:
+                pass
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    station_id TEXT,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS sync_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id TEXT NOT NULL,
-                event_id TEXT NOT NULL,
-                station_id TEXT,
-                change_local_id INTEGER,
-                entity_type TEXT NOT NULL,
-                entity_id TEXT,
-                action_type TEXT NOT NULL,
-                payload_json TEXT,
-                created_at TEXT,
-                received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(tenant_id, event_id)
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS sync_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    station_id TEXT,
+                    change_local_id INTEGER,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(tenant_id, event_id)
+                )
+                '''
             )
-            '''
-        )
-        cur.execute(
-            '''
-            CREATE TABLE IF NOT EXISTS contact_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                email TEXT,
-                subject TEXT,
-                message TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS contact_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT,
+                    email TEXT,
+                    subject TEXT,
+                    message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
             )
-            '''
-        )
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @app.get('/web/whoami')
@@ -3971,6 +4033,15 @@ def sync_snapshot_get(
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=401, detail='invalid api_key')
+        
+        # Get last change ID for sync continuity
+        cur.execute('SELECT MAX(id) FROM changes')
+        row = cur.fetchone()
+        last_change_id = 0
+        if row:
+            val = row[0] if not isinstance(row, dict) else list(row.values())[0]
+            last_change_id = _safe_int(val, 0)
+            
     finally:
         try:
             conn.close()
@@ -3981,6 +4052,7 @@ def sync_snapshot_get(
     try:
         tables = [
             'teachers',
+            'teacher_classes',
             'students',
             'messages',
             'static_messages',
@@ -4002,6 +4074,7 @@ def sync_snapshot_get(
             'scheduled_service_dates',
             'scheduled_service_slots',
             'scheduled_service_reservations',
+            'points_log',
             'web_settings',
         ]
         data: Dict[str, Any] = {}
@@ -4010,7 +4083,12 @@ def sync_snapshot_get(
                 data[t] = _fetch_table_rows(tconn, t)
             except Exception:
                 data[t] = []
-        return {'ok': True, 'tenant_id': tenant_id, 'snapshot': data}
+        return {
+            'ok': True, 
+            'tenant_id': tenant_id, 
+            'snapshot': data,
+            'last_change_id': last_change_id
+        }
     finally:
         try:
             tconn.close()
@@ -4184,11 +4262,22 @@ def app_version() -> Dict[str, Any]:
 @app.get("/web/equipment-required", response_class=HTMLResponse)
 def web_equipment_required() -> str:
     path = os.path.join(ROOT_DIR, 'equipment_required.html')
-    html = _read_text_file(path)
-    if not html:
+    html_content = _read_text_file(path)
+    if not html_content:
         body = "<h2>רשימת ציוד נדרש</h2><p>העמוד עדיין לא זמין.</p>"
         return _public_web_shell("רשימת ציוד נדרש", body)
-    return web_equipment_required_content()
+    
+    # Extract body content
+    body_content = html_content
+    m = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
+    if m:
+        body_content = m.group(1)
+        
+    # Fix relative paths
+    body_content = body_content.replace('src="equipment_required_files/', 'src="/web/assets/equipment_required_files/')
+    body_content = body_content.replace("src='equipment_required_files/", "src='/web/assets/equipment_required_files/")
+    
+    return _public_web_shell("רשימת ציוד נדרש", body_content)
 
 
 @app.get("/web/equipment-required/content", response_class=HTMLResponse)
@@ -4209,21 +4298,27 @@ def web_equipment_required_content() -> str:
 @app.get('/web/guide', response_class=HTMLResponse)
 def web_guide() -> str:
     path = os.path.join(ROOT_DIR, 'guide_user_embedded.html')
-    html = _read_text_file(path)
-    if not html:
+    html_content = _read_text_file(path)
+    if not html_content:
         path = os.path.join(ROOT_DIR, 'guide_index.html')
-        html = _read_text_file(path)
-    if not html:
+        html_content = _read_text_file(path)
+    if not html_content:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
         return _public_web_shell('מדריך', body)
-    html = str(html)
-    html = html.replace('file:///C:/ProgramData/SchoolPoints/equipment_required.html', '/web/equipment-required')
-    html = html.replace('file:///C:/%D7%9E%D7%99%D7%A6%D7%93/SchoolPoints/equipment_required.html', '/web/equipment-required')
-    html = html.replace('equipment_required.html', '/web/equipment-required')
-    html = _replace_guide_base64_images(html)
-    if '</head>' in html:
-        html = html.replace('</head>', '<link rel="icon" href="/web/assets/icons/public.png" /></head>')
-    return html
+    
+    html_content = str(html_content)
+    html_content = html_content.replace('file:///C:/ProgramData/SchoolPoints/equipment_required.html', '/web/equipment-required')
+    html_content = html_content.replace('file:///C:/%D7%9E%D7%99%D7%A6%D7%93/SchoolPoints/equipment_required.html', '/web/equipment-required')
+    html_content = html_content.replace('equipment_required.html', '/web/equipment-required')
+    html_content = _replace_guide_base64_images(html_content)
+    
+    # Extract body
+    body_content = html_content
+    m = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
+    if m:
+        body_content = m.group(1)
+        
+    return _public_web_shell('מדריך', body_content)
 
 
 @app.get('/web/contact', response_class=HTMLResponse)
@@ -4329,6 +4424,33 @@ def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[
     finally:
         try: conn.close()
         except: pass
+
+
+@app.get('/web/account', response_class=HTMLResponse)
+def web_account(request: Request):
+    guard = _web_require_tenant(request)
+    if guard: return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    inst = _get_institution(tenant_id)
+    name = inst.get('name') or tenant_id
+    body = f"""
+    <h2>אזור אישי / פרטי מוסד</h2>
+    <div class="card" style="max-width:600px; margin:0 auto; padding:24px; background:rgba(255,255,255,0.05); border-radius:16px;">
+      <div style="margin-bottom:16px;">
+        <div style="font-size:14px; opacity:0.7;">שם המוסד</div>
+        <div style="font-size:20px; font-weight:bold;">{name}</div>
+      </div>
+      <div style="margin-bottom:24px;">
+        <div style="font-size:14px; opacity:0.7;">מזהה מערכת (Tenant ID)</div>
+        <div style="font-size:18px; font-family:monospace;">{tenant_id}</div>
+      </div>
+      <div class="actionbar">
+        <a class="btn-glass" href="/web/logout" style="background:rgba(231,76,60,0.2);">יציאה</a>
+        <a class="btn-glass" href="/web/admin">חזרה ללוח בקרה</a>
+      </div>
+    </div>
+    """
+    return _basic_web_shell("חשבון", body, request=request)
 
 
 @app.get("/web/settings", response_class=HTMLResponse)
@@ -8781,6 +8903,7 @@ def web_admin(request: Request):
     return _basic_web_shell("לוח בקרה", body, request=request)
 
 
+@app.get('/web/students', response_class=HTMLResponse)
 def web_students(request: Request):
     try:
         guard = _web_require_teacher(request)

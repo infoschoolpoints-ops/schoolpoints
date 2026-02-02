@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="utf-8" />
+    <title>התקנה ראשונית - SchoolPoints = נקודות בית ספר</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #1a102f 0%, #362055 100%);
+            font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+            direction: rtl;
+            color: #f4f1ff;
+        }
+        .page {
+            max-width: 900px;
+            margin: 40px auto;
+            background: rgba(0,0,0,0.35);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+            border-radius: 16px;
+            padding: 36px 40px;
+        }
+        h1 {
+            margin-top: 0;
+            text-align: center;
+            color: #ffffff;
+            font-size: 30px;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #ffe7a0;
+            margin-bottom: 26px;
+            font-size: 15px;
+        }
+        .badge {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 999px;
+            font-size: 13px;
+            color: #3b216b;
+            background: #ffcc33;
+            margin: 0 4px;
+        }
+        .section-header {
+            margin-top: 26px;
+            margin-bottom: 14px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            color: #fff;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 10px;
+            background: linear-gradient(135deg, #5e3ba5 0%, #7b4fd1 100%);
+            box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+        }
+        .section-header .icon {
+            font-size: 18px;
+        }
+        h2 {
+            margin: 0;
+            font-size: 19px;
+        }
+        p {
+            margin: 6px 0 10px;
+            color: #f4f1ff;
+            line-height: 1.7;
+        }
+        ul {
+            list-style: none;
+            padding-right: 0;
+            margin: 6px 0 14px;
+        }
+        li {
+            position: relative;
+            padding-right: 1.6em;
+            margin-bottom: 6px;
+            color: #f4f1ff;
+            line-height: 1.7;
+        }
+        li .bullet {
+            position: absolute;
+            right: 0;
+            top: 0.25em;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        .b-blue { color: #2980b9; }
+        .b-green { color: #27ae60; }
+        .b-orange { color: #e67e22; }
+        .block-note {
+            margin-top: 18px;
+            padding: 14px 16px;
+            border-radius: 10px;
+            background: rgba(255,204,51,0.12);
+            border-right: 4px solid #ffcc33;
+            color: #ffe7a0;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .block-note strong {
+            color: #ffdd55;
+        }
+        code {
+            background-color: #2b2140;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+        .footer-text {
+            margin-top: 24px;
+            font-size: 14px;
+            color: #d0c8ff;
+            line-height: 1.7;
+        }
+    </style>
+</head>
+<body>
+<div class="page">
+
+    <h1>🚀 התקנה ראשונית של SchoolPoints</h1>
+    <div class="subtitle">
+        SchoolPoints = <strong>נקודות בית ספר</strong><br />
+        מדריך קצר ופשוט להפעלה ראשונה של המערכת.
+    </div>
+
+    <div class="section-header">
+        <span class="icon">①</span>
+        <h2>שלב 1 – יצירת תיקיית "נתוני תוכנת הנקודות"</h2>
+    </div>
+    <p>תחילה נבחר איפה יישמרו נתוני התוכנה – במחשב אחד שיתפקד כמארח הנתונים.</p>
+    <ul>
+        <li><span class="bullet b-blue">■</span>
+            בחרו מחשב מרכזי או שרת שבו ישמרו הקבצים של המערכת.<br />
+            אם יש לכם עמדה ציבורית אחת מרכזית – מומלץ שהמחשב הזה יהיה <strong>מחשב העמדה הציבורית</strong>,
+            כדי שקריאת הכרטיסים והצגת הנתונים על המסך יהיו מהירות ככל האפשר.
+        </li>
+        <li><span class="bullet b-blue">■</span>
+            <strong>ברירת מחדל (מומלץ לרוב המשתמשים):</strong> אין צורך ליצור כעת תיקיית רשת ידנית.
+            בשלב 3 האשף שבתוכנה יוכל ליצור עבורכם <strong>תיקיית שיתוף אוטומטית</strong> במחשב שבחרתם.
+        </li>
+        <li><span class="bullet b-blue">■</span>
+            <strong>לאנשי מחשבים / מתקדמים בלבד:</strong> אפשר כבר עכשיו ליצור במחשב זה תיקייה ייעודית
+            (למשל <strong>"נתוני תוכנת הנקודות"</strong>), להגדיר אותה כתיקיית רשת משותפת עם הרשאות קריאה/כתיבה
+            לכל העמדות, ולרשום לעצמכם את נתיב הרשת, לדוגמה:
+            <code>\\SERVER\נתוני תוכנת הנקודות</code> או <code>\\שם-מחשב\נתוני תוכנת הנקודות</code>.
+        </li>
+    </ul>
+
+    <div class="block-note">
+        <strong>חשוב:</strong> כל מסדי הנתונים, ההגדרות והרשיונות נשמרים בתיקייה זו.
+        מומלץ לבחור מקום יציב עם גיבוי קבוע.
+    </div>
+
+    <div class="section-header">
+        <span class="icon">②</span>
+        <h2>שלב 2 – התקנת התוכנה במחשב הניהול</h2>
+    </div>
+    <ul>
+        <li><span class="bullet b-green">●</span>
+            במחשב הניהול (למשל מחשב המזכירות או המשרד), העתיקו את קובץ ההתקנה שקיבלתם.
+        </li>
+        <li><span class="bullet b-green">●</span>
+            הריצו את קובץ ההתקנה ופעלו לפי ההוראות על המסך.
+        </li>
+        <li><span class="bullet b-green">●</span>
+            בסיום ההתקנה יופיע קיצור דרך של <strong>"עמדת ניהול SchoolPoints"</strong>
+            בתפריט ההתחל או על שולחן העבודה.
+        </li>
+    </ul>
+
+    <div class="section-header">
+        <span class="icon">③</span>
+        <h2>שלב 3 – הפעלה ראשונה וחיבור לתיקיית הנתונים</h2>
+    </div>
+    <ul>
+        <li><span class="bullet b-orange">◆</span>
+            הפעילו את <strong>"עמדת ניהול SchoolPoints"</strong>.
+        </li>
+        <li><span class="bullet b-orange">◆</span>
+            בהפעלה הראשונה ייפתח חלון להגדרת <strong>תיקיית נתונים משותפת</strong>.
+            ניתן לבחור אחת משתי האפשרויות הבאות:
+            <ul>
+                <li>
+                    אם כבר יש לכם תיקיית רשת משותפת שהגדרתם בשלב 1 – הקלידו או הדביקו את נתיב התיקייה בשדה,
+                    לדוגמה <code>\\SERVER\נתוני תוכנת הנקודות</code> או <code>\\SERVER\SchoolPoints$</code>.
+                </li>
+                <li>
+                    אם אין לכם תיקיית רשת מוכנה – מומלץ ללחוץ על <strong>"הפעל מחדש כמנהל"</strong>,
+                    ולאחר שהעמדה נפתחה שוב לבחור בכפתור <strong>"צור תיקיית שיתוף אוטומטית"</strong>.
+                    התוכנה תיצור עבורכם תיקיית שיתוף מומלצת ותמלא בעצמה את נתיב הרשת.
+                </li>
+            </ul>
+        </li>
+        <li><span class="bullet b-orange">◆</span>
+            מומלץ להעתיק (Ctrl+C) את נתיב התיקייה כפי שהוא מופיע בחלון ההגדרה, ולשמור אותו.
+            בעמדות נוספות תוכלו פשוט להדביק (Ctrl+V) את אותו נתיב בשדה "תיקיית רשת משותפת" במקום לחפש מחדש את התיקייה.
+        </li>
+        <li><span class="bullet b-orange">◆</span>
+            לאחר שמאשרים את החלון, התוכנה תיצור בתיקייה המשותפת את כל קובצי הנתונים הדרושים.
+        </li>
+        <li><span class="bullet b-orange">◆</span>
+            <strong>הגדרת כרטיס מאסטר לכניסה לעמדת הניהול על ידי מנהל</strong>:
+            <ul>
+                <li>מתוך עמדת הניהול, פתחו את תפריט ההגדרות ובחרו <strong>"עדכון כרטיס מאסטר"</strong>.</li>
+                <li>סרקו כרטיס מגנטי / ברקוד שתרצו שישמש את המנהל, או הקלידו את מספר הכרטיס ולחצו "שמור".</li>
+                <li>ניתן להשתמש באותו כרטיס בהמשך גם להגדרה של כרטיס מאסטר המשמש ליציאה ממצב עמדה ציבורית.</li>
+            </ul>
+        </li>
+    </ul>
+
+    <div class="section-header">
+        <span class="icon">④</span>
+        <h2>שלב 4 – התקנת והפעלת עמדה ציבורית (אם יש)</h2>
+    </div>
+    <ul>
+        <li><span class="bullet b-green">●</span>
+            בכל מחשב שישמש כעמדה ציבורית, התקינו את התוכנה באותו אופן כמו במחשב הניהול.
+        </li>
+        <li><span class="bullet b-green">●</span>
+            הפעילו את <strong>"עמדה ציבורית SchoolPoints"</strong>.
+        </li>
+        <li><span class="bullet b-green">●</span>
+            בפעם הראשונה התוכנה תבקש שוב לבחור תיקיית נתונים משותפת – בחרו את אותה
+            תיקייה <strong>"נתוני תוכנת הנקודות"</strong> שהוגדרה בשלב 1.
+        </li>
+        <li><span class="bullet b-green">●</span>
+            מרגע זה, גם עמדת הניהול וגם העמדות הציבוריות משתמשות באותם נתונים.
+        </li>
+    </ul>
+
+    <div class="footer-text">
+        כעת אתם יכולים להיכנס לתוכנה עם כרטיס המאסטר שהגדרתם,
+        ולראות את ההוראות המפורטות מתוך התוכנה עצמה –
+        בלחיצה על כפתור <strong>"הוראות"</strong> בעמדת הניהול.
+    </div>
+
+</div>
+</body>
+</html>

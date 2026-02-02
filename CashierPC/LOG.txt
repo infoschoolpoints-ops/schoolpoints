@@ -1,0 +1,142 @@
+'\\Yankl-pc\c\מיצד\SchoolPoints\CashierPC'
+CMD.EXE was started with the above path as the current directory.
+UNC paths are not supported.  Defaulting to Windows directory.
+======================================
+SchoolPoints - Install deps from network
+Project: \\Yankl-pc\c\╫₧╫ש╫ª╫ף\SchoolPoints
+Venv:    C:\Users\עמדת קופה\AppData\Local\SchoolPoints\venv
+======================================
+
+Python 3.12.3
+ERROR: requirements.txt not found:
+\\Yankl-pc\c\╫₧╫ש╫ª╫ף\SchoolPoints
+Press any key to continue . . .
+
+
+'\\Yankl-pc\c\מיצד\SchoolPoints\CashierPC'
+CMD.EXE was started with the above path as the current directory.
+UNC paths are not supported.  Defaulting to Windows directory.
+ERROR: venv missing. Run first:
+  01_install_deps_from_network.bat
+Press any key to continue . . .
+
+
+'\\Yankl-pc\c\מיצד\SchoolPoints\CashierPC'
+CMD.EXE was started with the above path as the current directory.
+UNC paths are not supported.  Defaulting to Windows directory.
+ERROR: not found:
+\\Yankl-pc\c\╫₧╫ש╫ª╫ף\SchoolPoints\test_display.bat
+Press any key to continue . . .
+
+
+'\\Yankl-pc\c\מיצד\SchoolPoints\CashierPC'
+CMD.EXE was started with the above path as the current directory.
+UNC paths are not supported.  Defaulting to Windows directory.
+======================================
+Printer Test
+======================================
+
+1) Run Cashier (02_run_cashier_from_network.bat)
+2) Open Settings inside cashier
+3) Choose default printer
+4) Click: "☺e8☺f6☺e8☺f6☺e8☺f6☺e8☺f6 ☺d8☺c1☺d8☺c1☺d8☺c1☺d8☺c1 ☺d1☺e4☺d1☺e4☺d1☺e4☺d1☺e4" (Test Print)
+
+NOTE: This BAT only explains the steps (the test is inside the app).
+
+Press any key to continue . . .
+
+
+
+======================================
+[Thu 01/01/2026 20:51:55.68] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:52:01.52] 02_run_cashier_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:52:07.26] 03_test_display_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:54:33.25] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:54:47.75] 05_diagnose_keep_window_open
+======================================
+
+======================================
+[Thu 01/01/2026 20:54:47.84] 02_run_cashier_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:57:43.00] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:57:50.53] 02_run_cashier_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:57:56.23] 03_test_display_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 20:58:10.67] 05_diagnose_keep_window_open
+======================================
+
+======================================
+[Thu 01/01/2026 20:58:10.78] 02_run_cashier_from_network
+======================================
+
+"Z:\CashierPC\LOG.txt"
+
+Opening persistent debug window...
+
+'\"Z:\CashierPC\06_run_cashier_with_transcript.bat\"' is not recognized as an internal or external command,
+operable program or batch file.
+
+Z:\CashierPC>
+
+
+Missing closing '}' in statement block or type definition.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : MissingEndCurlyBrace
+
+
+Missing closing '}' in statement block or type definition.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : MissingEndCurlyBrace
+======================================
+[Thu 01/01/2026 21:25:26.96] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 21:27:54.48] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 21:28:33.55] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 22:10:57.18] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 22:17:27.97] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 22:54:33.81] 01_install_deps_from_network
+======================================
+
+======================================
+[Thu 01/01/2026 22:56:03.22] 01_install_deps_from_network
+======================================
+
+======================================
+[Sat 01/03/2026 21:05:45.25] 02_run_cashier_from_network
+======================================

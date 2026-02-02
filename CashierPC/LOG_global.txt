@@ -1,0 +1,12 @@
+====================================== 
+Run with Global Python (no venv) 
+[Thu 01/01/2026 22:17:39.25] 
+====================================== 
+ 
+Found: Z:\cashier_station.py 
+ 
+Using global Python... 
+Python 3.12.3
+ 
+Starting cashier... 
+====================================== 

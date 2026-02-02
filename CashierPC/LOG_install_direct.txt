@@ -1,0 +1,45 @@
+====================================== 
+Installing Python packages directly 
+[Thu 01/01/2026 23:19:08.38] 
+====================================== 
+ 
+Venv location: C:\SchoolPoints_venv 
+ 
+Installing packages with --trusted-host to bypass SSL... 
+This may take several minutes... 
+ 
+[1/7] Installing Pillow... 
+Collecting Pillow
+  Downloading pillow-12.0.0-cp312-cp312-win_amd64.whl.metadata (9.0 kB)
+Downloading pillow-12.0.0-cp312-cp312-win_amd64.whl (7.0 MB)
+   ---------------------------------------- 7.0/7.0 MB 4.1 MB/s eta 0:00:00
+Installing collected packages: Pillow
+Successfully installed Pillow-12.0.0
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: C:\SchoolPoints_venv\Scripts\python.exe -m pip install --upgrade pip
+[2/7] Installing pyserial... 
+Collecting pyserial
+  Downloading pyserial-3.5-py2.py3-none-any.whl.metadata (1.6 kB)
+Downloading pyserial-3.5-py2.py3-none-any.whl (90 kB)
+   ---------------------------------------- 90.6/90.6 kB 1.7 MB/s eta 0:00:00
+Installing collected packages: pyserial
+Successfully installed pyserial-3.5
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: C:\SchoolPoints_venv\Scripts\python.exe -m pip install --upgrade pip
+[3/7] Installing pywin32... 
+Collecting pywin32
+  Downloading pywin32-311-cp312-cp312-win_amd64.whl.metadata (10 kB)
+Downloading pywin32-311-cp312-cp312-win_amd64.whl (9.5 MB)
+   ---------------------------------------- 9.5/9.5 MB 4.2 MB/s eta 0:00:00
+Installing collected packages: pywin32
+Successfully installed pywin32-311
+
+[notice] A new release of pip is available: 24.0 -> 25.3
+[notice] To update, run: C:\SchoolPoints_venv\Scripts\python.exe -m pip install --upgrade pip
+[4/7] Installing reportlab... 
+Collecting reportlab
+  Downloading reportlab-4.4.7-py3-none-any.whl.metadata (1.7 kB)
+Requirement already satisfied: pillow>=9.0.0 in c:\schoolpoints_venv\lib\site-packages (from reportlab) (12.0.0)
+^C

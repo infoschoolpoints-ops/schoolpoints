@@ -1,0 +1,31 @@
+{
+  "enabled": true,
+  "first_warning": {
+    "validations_count": 15,
+    "time_window_minutes": 1,
+    "warning_message": "שים לב! תיקפת את הכרטיס {count} פעמים בדקה האחרונה.\nאם תמשיך, הכרטיס ייחסם זמנית."
+  },
+  "first_block": {
+    "validations_count": 20,
+    "time_window_minutes": 1,
+    "block_duration_minutes": 60,
+    "block_message": "הכרטיס נחסם לשעה אחת עקב ניצול יתר של המערכת.\nתוכל לחזור בעוד {time_left}."
+  },
+  "second_warning": {
+    "validations_count": 10,
+    "time_window_minutes": 1,
+    "warning_message": "אזהרה חמורה! זו העבירה השנייה שלך.\nאם תמשיך, הכרטיס ייחסם ליום שלם."
+  },
+  "second_block": {
+    "validations_count": 15,
+    "time_window_minutes": 1,
+    "block_duration_minutes": 1440,
+    "block_message": "הכרטיס נחסם ל-24 שעות עקב ניצול חוזר של המערכת.\nתוכל לחזור בעוד {time_left}."
+  },
+  "third_block": {
+    "validations_count": 10,
+    "time_window_minutes": 1,
+    "block_duration_minutes": 10080,
+    "block_message": "הכרטיס נחסם לשבוע עקב ניצול חוזר ונשנה.\nפנה למנהל המערכת."
+  }
+}

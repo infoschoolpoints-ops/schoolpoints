@@ -1,0 +1,282 @@
+import React, { useState, useRef } from 'react';
+import { Download, FileImage, FileText, Info } from 'lucide-react';
+
+export default function ThermalPrinterGenerator() {
+  const [imageFile, setImageFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
+  const [hebrewText, setHebrewText] = useState('חנות רות שלי\nנופית');
+  const [status, setStatus] = useState('');
+  const canvasRef = useRef(null);
+
+  // המרת תמונה ל-bitmap תרמי
+  const convertImageToBitmap = async (imgFile) => {
+    return new Promise((resolve, reject) => {
+      const img = new window.Image();
+      const reader = new FileReader();
+      
+      reader.onload = (e) => {
+        img.onload = () => {
+          const canvas = canvasRef.current;
+          const ctx = canvas.getContext('2d');
+          
+          // גודל סטנדרטי למדפסת 80mm (576 פיקסלים רוחב)
+          const maxWidth = 576;
+          const scale = maxWidth / img.width;
+          const width = maxWidth;
+          const height = Math.floor(img.height * scale);
+          
+          canvas.width = width;
+          canvas.height = height;
+          
+          // המרה לשחור-לבן
+          ctx.fillStyle = 'white';
+          ctx.fillRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          
+          const imageData = ctx.getImageData(0, 0, width, height);
+          const pixels = imageData.data;
+          
+          // סף להמרה לשחור-לבן
+          const threshold = 128;
+          const bitmap = [];
+          
+          // המרה לפורמט bitmap של מדפסת (כל 8 פיקסלים = 1 בייט)
+          for (let y = 0; y < height; y++) {
+            const row = [];
+            for (let x = 0; x < width; x += 8) {
+              let byte = 0;
+              for (let bit = 0; bit < 8; bit++) {
+                if (x + bit < width) {
+                  const i = ((y * width) + x + bit) * 4;
+                  const brightness = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+                  if (brightness < threshold) {
+                    byte |= (1 << (7 - bit));
+                  }
+                }
+              }
+              row.push(byte);
+            }
+            bitmap.push(row);
+          }
+          
+          resolve({ width, height, bitmap });
+        };
+        img.src = e.target.result;
+      };
+      
+      reader.onerror = reject;
+      reader.readAsDataURL(imgFile);
+    });
+  };
+
+  // המרת טקסט עברי ל-CP862
+  const hebrewToCP862 = (text) => {
+    const cp862Map = {
+      'א': 0x80, 'ב': 0x81, 'ג': 0x82, 'ד': 0x83, 'ה': 0x84,
+      'ו': 0x85, 'ז': 0x86, 'ח': 0x87, 'ט': 0x88, 'י': 0x89,
+      'ך': 0x8A, 'כ': 0x8B, 'ל': 0x8C, 'ם': 0x8D, 'מ': 0x8E,
+      'ן': 0x8F, 'נ': 0x90, 'ס': 0x91, 'ע': 0x92, 'ף': 0x93,
+      'פ': 0x94, 'ץ': 0x95, 'צ': 0x96, 'ק': 0x97, 'ר': 0x98,
+      'ש': 0x99, 'ת': 0x9A, ' ': 0x20, '\n': 0x0A
+    };
+    
+    const bytes = [];
+    for (let char of text) {
+      if (cp862Map[char] !== undefined) {
+        bytes.push(cp862Map[char]);
+      } else if (char.charCodeAt(0) < 128) {
+        bytes.push(char.charCodeAt(0));
+      }
+    }
+    return bytes;
+  };
+
+  // יצירת קובץ הדפסה
+  const generatePrintFile = async () => {
+    try {
+      setStatus('מעבד...');
+      const commands = [];
+      
+      // אתחול
+      commands.push(0x1B, 0x40); // ESC @
+      
+      // אם יש תמונה
+      if (imageFile) {
+        const { width, height, bitmap } = await convertImageToBitmap(imageFile);
+        
+        // פקודת גרפיקה GS * - רוחב ב-bytes, גובה
+        const widthBytes = Math.ceil(width / 8);
+        commands.push(0x1D, 0x2A, widthBytes & 0xFF, (height >> 8) & 0xFF);
+        
+        // הוספת נתוני ה-bitmap
+        bitmap.forEach(row => {
+          row.forEach(byte => commands.push(byte));
+        });
+        
+        commands.push(0x1B, 0x70, 0x00, 0x3C, 0x78, 0x0A); // הדפסה וניתוק נייר
+      }
+      
+      // הוספת טקסט
+      commands.push(0x1B, 0x21, 0x00, 0x0A); // טקסט רגיל
+      
+      // טקסט מודגש וגדול
+      commands.push(0x1B, 0x21, 0x08); // מודגש
+      commands.push(0x1B, 0x21, 0x30); // גדול
+      
+      const textBytes = hebrewToCP862(hebrewText);
+      textBytes.forEach(b => commands.push(b));
+      
+      // איפוס עיצוב
+      commands.push(0x0A, 0x1B, 0x21, 0x00);
+      
+      // חיתוך נייר
+      commands.push(0x0A, 0x0A, 0x0A);
+      commands.push(0x1D, 0x56, 0x31, 0x0A); // GS V 1
+      
+      // המרה ל-Uint8Array והורדה
+      const uint8Array = new Uint8Array(commands);
+      const blob = new Blob([uint8Array], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'thermal_print.bin';
+      a.click();
+      
+      URL.revokeObjectURL(url);
+      setStatus('הקובץ נוצר בהצלחה!');
+    } catch (error) {
+      setStatus('שגיאה: ' + error.message);
+      console.error(error);
+    }
+  };
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      setImageFile(file);
+      const reader = new FileReader();
+      reader.onload = (e) => setImagePreview(e.target.result);
+      reader.readAsDataURL(file);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-6" dir="rtl">
+      <div className="max-w-4xl mx-auto">
+        <div className="bg-white rounded-2xl shadow-xl p-8">
+          <h1 className="text-3xl font-bold text-gray-800 mb-2 flex items-center gap-3">
+            <FileText className="text-indigo-600" size={32} />
+            מחולל קבצי הדפסה תרמית
+          </h1>
+          <p className="text-gray-600 mb-8">צור קבצי הדפסה למדפסות תרמיות ESC/POS</p>
+
+          {/* אזור מידע */}
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+            <div className="flex items-start gap-3">
+              <Info className="text-blue-600 mt-1 flex-shrink-0" size={20} />
+              <div className="text-sm text-blue-800">
+                <p className="font-semibold mb-1">איך זה עובד?</p>
+                <ul className="list-disc list-inside space-y-1">
+                  <li>העלה לוגו או תמונה (יומר אוטומטית לשחור-לבן)</li>
+                  <li>כתוב טקסט בעברית</li>
+                  <li>הקובץ יומר לפורמט ESC/POS עם קידוד CP862</li>
+                  <li>ההדפסה תתבצע במדפסות תרמיות 80mm</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          {/* העלאת תמונה */}
+          <div className="mb-6">
+            <label className="block text-lg font-semibold text-gray-700 mb-3 flex items-center gap-2">
+              <FileImage size={20} />
+              לוגו / תמונה (אופציונלי)
+            </label>
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-indigo-400 transition-colors">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+                id="imageUpload"
+              />
+              <label
+                htmlFor="imageUpload"
+                className="cursor-pointer flex flex-col items-center gap-3"
+              >
+                {imagePreview ? (
+                  <img
+                    src={imagePreview}
+                    alt="Preview"
+                    className="max-h-48 rounded border border-gray-300"
+                  />
+                ) : (
+                  <>
+                    <FileImage size={48} className="text-gray-400" />
+                    <span className="text-gray-600">לחץ להעלאת תמונה</span>
+                  </>
+                )}
+              </label>
+            </div>
+          </div>
+
+          {/* טקסט עברי */}
+          <div className="mb-6">
+            <label className="block text-lg font-semibold text-gray-700 mb-3">
+              טקסט עברי
+            </label>
+            <textarea
+              value={hebrewText}
+              onChange={(e) => setHebrewText(e.target.value)}
+              className="w-full h-32 p-4 border-2 border-gray-300 rounded-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all text-right font-semibold text-lg"
+              placeholder="הכנס טקסט עברי..."
+              dir="rtl"
+            />
+          </div>
+
+          {/* Canvas נסתר לעיבוד תמונות */}
+          <canvas ref={canvasRef} className="hidden" />
+
+          {/* כפתור יצירה */}
+          <button
+            onClick={generatePrintFile}
+            className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 text-white py-4 rounded-lg font-bold text-lg hover:from-indigo-700 hover:to-blue-700 transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-3"
+          >
+            <Download size={24} />
+            צור קובץ הדפסה
+          </button>
+
+          {/* סטטוס */}
+          {status && (
+            <div className={`mt-4 p-4 rounded-lg text-center font-semibold ${
+              status.includes('שגיאה') 
+                ? 'bg-red-100 text-red-700' 
+                : 'bg-green-100 text-green-700'
+            }`}>
+              {status}
+            </div>
+          )}
+
+          {/* הסבר טכני */}
+          <div className="mt-8 pt-6 border-t border-gray-200">
+            <h3 className="font-bold text-gray-800 mb-3">פרטים טכניים:</h3>
+            <div className="bg-gray-50 rounded-lg p-4 text-sm space-y-2 text-gray-700">
+              <p><strong>פרוטוקול:</strong> ESC/POS (Epson Standard Code for POS Printers)</p>
+              <p><strong>קידוד עברי:</strong> CP862 (DOS Hebrew)</p>
+              <p><strong>רוחב הדפסה:</strong> 576 פיקסלים (80mm)</p>
+              <p><strong>פורמט תמונה:</strong> Bitmap מונוכרומטי (1 bit per pixel)</p>
+              <p><strong>פקודות עיקריות:</strong></p>
+              <ul className="list-disc list-inside mr-4">
+                <li>1B 40 - אתחול מדפסת</li>
+                <li>1D 2A - הדפסת גרפיקה</li>
+                <li>1B 21 - עיצוב טקסט</li>
+                <li>1D 56 - חיתוך נייר</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
