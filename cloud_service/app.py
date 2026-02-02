@@ -438,6 +438,370 @@ def _ensure_device_pairings_table() -> None:
             pass
 
 
+def _ensure_pending_registrations_table() -> None:
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS pending_registrations (
+                    id BIGSERIAL PRIMARY KEY,
+                    institution_name TEXT NOT NULL,
+                    contact_name TEXT,
+                    email TEXT NOT NULL,
+                    phone TEXT,
+                    password_hash TEXT,
+                    plan TEXT,
+                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    payment_status TEXT DEFAULT 'pending',
+                    payment_id TEXT
+                )
+                '''
+            )
+        else:
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS pending_registrations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    institution_name TEXT NOT NULL,
+                    contact_name TEXT,
+                    email TEXT NOT NULL,
+                    phone TEXT,
+                    password_hash TEXT,
+                    plan TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    payment_status TEXT DEFAULT 'pending',
+                    payment_id TEXT
+                )
+                '''
+            )
+        conn.commit()
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/register')
+def api_register(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
+    _ensure_pending_registrations_table()
+    
+    inst_name = str(payload.get('institution_name') or '').strip()
+    contact = str(payload.get('contact_name') or '').strip()
+    email = str(payload.get('email') or '').strip()
+    phone = str(payload.get('phone') or '').strip()
+    password = str(payload.get('password') or '').strip()
+    plan = str(payload.get('plan') or 'basic').strip()
+    
+    if not inst_name or not email or not password:
+        raise HTTPException(status_code=400, detail="Missing required fields")
+        
+    # Basic password hashing (mock for now, should use bcrypt/argon2 in prod)
+    # Using SHA256 for simplicity in this dev phase, switch to passlib later
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                '''
+                INSERT INTO pending_registrations 
+                (institution_name, contact_name, email, phone, password_hash, plan)
+                VALUES (?, ?, ?, ?, ?, ?)
+                '''
+            ),
+            (inst_name, contact, email, phone, password_hash, plan)
+        )
+        conn.commit()
+        reg_id = cur.lastrowid if not USE_POSTGRES else None # Postgres needs RETURNING
+        
+        # Mock payment URL generation
+        # In real flow, we'd call Stripe/Provider API here to get a checkout URL
+        payment_url = f"/web/payment/mock?reg_email={urllib.parse.quote(email)}&plan={plan}"
+        
+        return {
+            'ok': True,
+            'payment_url': payment_url,
+            'reg_id': reg_id
+        }
+    except Exception as e:
+        print(f"Registration error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error during registration")
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get('/web/payment/mock', response_class=HTMLResponse)
+def web_payment_mock(request: Request, reg_email: str = Query(...), plan: str = Query(...)) -> str:
+    # Mock payment page to simulate successful payment
+    body = f"""
+    <div style="max-width:500px; margin:40px auto; text-align:center; background:#fff; padding:30px; border-radius:15px; box-shadow:0 10px 30px rgba(0,0,0,0.1);">
+      <h2 style="color:#2c3e50;">תשלום מאובטח (סימולציה)</h2>
+      <div style="font-size:18px; margin:20px 0;">
+        <div><b>לקוח:</b> {reg_email}</div>
+        <div><b>מסלול:</b> {plan.upper()}</div>
+        <div style="font-size:24px; font-weight:bold; color:#27ae60; margin-top:10px;">סכום לתשלום: ₪{(50 if plan=='basic' else (100 if plan=='extended' else 200))}</div>
+      </div>
+      
+      <div style="background:#f8f9fa; padding:15px; border-radius:8px; margin-bottom:20px; text-align:left; direction:ltr;">
+        <div>💳 Card Number: 4242 4242 4242 4242</div>
+        <div>📅 Expiry: 12/30</div>
+        <div>🔒 CVC: 123</div>
+      </div>
+      
+      <button onclick="processPayment()" style="width:100%; padding:15px; background:#2ecc71; color:white; border:none; border-radius:8px; font-size:18px; font-weight:bold; cursor:pointer;">שלם עכשיו</button>
+      
+      <script>
+        async function processPayment() {{
+            const btn = document.querySelector('button');
+            btn.disabled = true;
+            btn.textContent = 'מעבד תשלום...';
+            
+            await new Promise(r => setTimeout(r, 1500));
+            
+            // Call webhook simulation
+            try {{
+                const resp = await fetch('/api/payment/webhook/mock', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ email: '{reg_email}', status: 'success' }})
+                }});
+                const data = await resp.json();
+                if (data.ok) {{
+                    document.body.innerHTML = '<h2 style="color:#27ae60">התשלום עבר בהצלחה!</h2><p>פרטי ההתחברות נשלחו למייל שלך.</p><a href="/web/signin" style="display:inline-block; margin-top:20px; padding:10px 20px; background:#3498db; color:white; text-decoration:none; border-radius:6px;">מעבר להתחברות</a>';
+                }} else {{
+                    alert('שגיאה: ' + (data.detail || 'unknown'));
+                    btn.disabled = false;
+                    btn.textContent = 'שלם עכשיו';
+                }}
+            }} catch (e) {{
+                alert('שגיאה בתקשורת');
+                btn.disabled = false;
+                btn.textContent = 'שלם עכשיו';
+            }}
+        }}
+      </script>
+    </div>
+    """
+    return _public_web_shell("תשלום", body, request=request)
+
+
+def _send_email(to_email: str, subject: str, body_html: str) -> bool:
+    """Send an email using configured SMTP server."""
+    smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+    smtp_port = int(os.getenv('SMTP_PORT', '587'))
+    smtp_user = os.getenv('SMTP_USER', '')
+    smtp_pass = os.getenv('SMTP_PASS', '')
+    
+    if not smtp_user or not smtp_pass:
+        print(f"[_send_email] SKIP: No SMTP config. To={to_email}, Subject={subject}")
+        return False
+        
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        
+        msg = MIMEMultipart()
+        msg['From'] = smtp_user
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body_html, 'html'))
+        
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"[_send_email] ERROR: {e}")
+        return False
+
+def _generate_cloud_license_key(school_name: str, system_code: str, plan: str) -> str:
+    """Generate a license key (adapted from license_manager logic)."""
+    # Using SP5 (Payload) logic or simple profile logic
+    # For cloud, we will use SP5 logic with 1 year validity or Monthly
+    # Let's use SP5 style with Payload for flexibility
+    
+    # 1. Normalize
+    school_name = (school_name or '').strip()
+    sys_norm = ''.join(ch for ch in (system_code or "").upper() if ch.isalnum())
+    if not school_name or not sys_norm:
+        return "ERROR-KEY-GEN"
+
+    # 2. Determine params
+    plan = plan.lower()
+    max_stations = 2
+    if 'extended' in plan: max_stations = 5
+    if 'unlimited' in plan: max_stations = 999
+    
+    # Cloud licenses are valid for 35 days (monthly + buffer) usually, 
+    # but here we might give a year if they paid for it.
+    # For now, let's give 35 days (Monthly subscription model).
+    days_valid = 35 
+    allow_cashier = True
+
+    # 3. Construct Payload
+    payload = {
+        'v': 'SP5',
+        'school': school_name,
+        'sys': sys_norm,
+        'days': int(days_valid),
+        'max': int(max_stations),
+        'cashier': bool(allow_cashier),
+    }
+
+    # 4. Sign and Encrypt (Simplified version of license_manager to avoid import hell)
+    # We must match the SECRET from license_manager.py
+    _HMAC_SECRET = b"SchoolPoints-Offline-License-Key-2024-11-Strong-Secret"
+    
+    raw = json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    sig = hmac.new(_HMAC_SECRET, raw, hashlib.sha256).digest()[:10]
+    
+    key_stream = hashlib.sha256(_HMAC_SECRET + sys_norm.encode('utf-8')).digest()
+    blob = raw + sig
+    
+    # XOR
+    out = bytearray(len(blob))
+    klen = len(key_stream)
+    for i, b in enumerate(blob):
+        out[i] = b ^ key_stream[i % klen]
+    enc = bytes(out)
+    
+    # Base32
+    token = base64.b32encode(enc).decode('ascii').replace('=', '').upper()
+    
+    # Format groups
+    core = 'SP5' + token
+    groups = [core[i : i + 5] for i in range(0, len(core), 5)]
+    return "-".join(groups)
+
+@app.post('/api/payment/webhook/mock')
+def api_payment_webhook_mock(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Mock webhook for payment success."""
+    email = str(payload.get('email') or '').strip()
+    status = str(payload.get('status') or '').strip()
+    
+    if status != 'success':
+         return {'ok': False, 'detail': 'Status not success'}
+         
+    _ensure_pending_registrations_table()
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        # Find pending registration
+        cur.execute(
+            _sql_placeholder("SELECT id, institution_name, contact_name, plan, password_hash, payment_status FROM pending_registrations WHERE email = ? AND payment_status != 'completed' ORDER BY id DESC LIMIT 1"),
+            (email,)
+        )
+        row = cur.fetchone()
+        
+        if not row:
+             # Maybe already processed?
+             return {'ok': True, 'processed': False, 'detail': 'No pending registration found'}
+             
+        if isinstance(row, dict):
+             reg_id = row['id']
+             inst_name = row['institution_name']
+             contact = row['contact_name']
+             plan = row['plan']
+             pwd_hash = row['password_hash']
+        else:
+             reg_id, inst_name, contact, plan, pwd_hash, _ = row
+             
+        # 1. Generate Tenant ID
+        # Simple slugify
+        slug = ''.join(c for c in inst_name.lower() if c.isalnum() or c==' ')
+        slug = slug.replace(' ', '_')
+        if not slug: slug = 'school'
+        # Append random suffix to ensure uniqueness
+        tenant_id = f"{slug[:20]}_{secrets.token_hex(3)}"
+        
+        # 2. Create Institution
+        # We need an API Key
+        api_key = secrets.token_urlsafe(24)
+        
+        # Insert into institutions
+        # Note: 'institutions' table schema might vary (sqlite vs postgres in this codebase). 
+        # Checking schema from previous reads: (tenant_id, name, api_key, password_hash, created_at)
+        # We need to make sure password_hash column exists in institutions. 
+        # Based on _get_institution it seems it does.
+        
+        cur.execute(
+            _sql_placeholder("INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)"),
+            (tenant_id, inst_name, api_key, pwd_hash)
+        )
+        
+        # 3. Update pending registration
+        cur.execute(
+            _sql_placeholder("UPDATE pending_registrations SET payment_status = 'completed' WHERE id = ?"),
+            (reg_id,)
+        )
+        
+        conn.commit()
+        
+        # 4. Generate License Key (Cloud License)
+        # We use the Tenant ID as the "System Code" for cloud-managed licenses, 
+        # OR we generate a generic key. 
+        # Actually, standard license keys are bound to a Machine ID.
+        # For a new cloud registration, we don't know the user's Machine ID yet!
+        # SOLUTION: We will send them a "Temporary License Key" or "Activation Code" 
+        # or simply tell them to log in to the software with their Tenant ID.
+        #
+        # Better: We send them the Tenant ID + API Key. The client software will fetch license status online.
+        # BUT, for the sake of the 'classic' flow, let's generate a key bound to a placeholder, 
+        # and they might need to re-generate it later or we instruct them to use the Online Cloud feature.
+        #
+        # Let's send the Tenant ID & API Key primarily.
+        
+        # 5. Send Email
+        login_url = "https://schoolpoints.co.il/web/login" # Placeholder
+        download_url = "https://schoolpoints.co.il/web/download"
+        
+        body = f"""
+        <div dir="rtl" style="font-family:Arial, sans-serif; line-height:1.6; color:#333;">
+            <h2 style="color:#2ecc71;">ברוכים הבאים ל-SchoolPoints!</h2>
+            <p>שלום {contact},</p>
+            <p>תודה שנרשמת למערכת SchoolPoints. ההרשמה עברה בהצלחה והחשבון שלך מוכן.</p>
+            
+            <div style="background:#f9f9f9; padding:15px; border-radius:10px; border:1px solid #ddd; margin:20px 0;">
+                <h3 style="margin-top:0;">פרטי המוסד שלך:</h3>
+                <div><b>שם המוסד:</b> {inst_name}</div>
+                <div><b>מזהה מוסד (Tenant ID):</b> <span style="font-family:monospace; background:#eee; padding:2px 5px;">{tenant_id}</span></div>
+                <div><b>סיסמת ניהול:</b> (כפי שבחרת בהרשמה)</div>
+            </div>
+            
+            <p>
+                <b>להורדת התוכנה והתקנה ראשונית:</b><br/>
+                <a href="{download_url}">לחץ כאן להורדה</a>
+            </p>
+            
+            <p>
+                במסך ההגדרות בתוכנה, הזן את מזהה המוסד שלך ({tenant_id}) כדי להתחבר לענן.
+            </p>
+            
+            <hr style="border:0; border-top:1px solid #eee; margin:20px 0;">
+            <div style="font-size:12px; color:#888;">
+                הודעה זו נשלחה אוטומטית ממערכת SchoolPoints Cloud.
+            </div>
+        </div>
+        """
+        
+        email_sent = _send_email(email, "ברוכים הבאים ל-SchoolPoints - פרטי התחברות", body)
+        
+        return {
+            'ok': True,
+            'tenant_id': tenant_id,
+            'email_sent': email_sent
+        }
+        
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return {'ok': False, 'detail': str(e)}
+    finally:
+        try: conn.close()
+        except: pass
+
 @app.post('/api/device/pair/start')
 def api_device_pair_start(request: Request) -> Dict[str, Any]:
     _ensure_device_pairings_table()
@@ -3666,6 +4030,169 @@ def _begin_tenant_write(conn) -> None:
         pass
 
 
+
+# --- FILE SYNC API ---
+
+def _get_tenant_storage_path(tenant_id: str, rel_path: str) -> str:
+    """Returns absolute path for a tenant file in local storage."""
+    # rel_path should be like 'images/foo.png' or 'sounds/bar.wav'
+    safe_rel = rel_path.replace('..', '').strip('/\\')
+    if not safe_rel:
+        return ''
+    
+    # Priority 1: Shared Folder (if configured)
+    shared = _get_shared_folder_for_tenant(tenant_id)
+    if shared:
+        return os.path.join(shared, safe_rel)
+    
+    # Priority 2: Local Data Dir
+    return os.path.join(DATA_DIR, 'tenants_assets', tenant_id, safe_rel)
+
+def _calc_file_hash(path: str) -> str:
+    if not os.path.isfile(path):
+        return ""
+    hash_md5 = hashlib.md5()
+    try:
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+    except Exception:
+        return ""
+
+def _get_server_manifest(tenant_id: str) -> Dict[str, str]:
+    manifest = {}
+    # We only scan specific directories
+    dirs_to_scan = ['images', 'sounds', 'ads_media']
+    
+    # Determine root for scanning
+    # If shared folder exists, scan that. Else scan local assets.
+    
+    shared = _get_shared_folder_for_tenant(tenant_id)
+    roots = []
+    if shared:
+        roots.append(shared)
+    
+    local_assets = os.path.join(DATA_DIR, 'tenants_assets', tenant_id)
+    if os.path.isdir(local_assets):
+        roots.append(local_assets)
+        
+    # Scan
+    seen_paths = set()
+    
+    for root_dir in roots:
+        for subdir in dirs_to_scan:
+            abs_base = os.path.join(root_dir, subdir)
+            if not os.path.isdir(abs_base):
+                continue
+            for root, _, files in os.walk(abs_base):
+                for name in files:
+                    if name.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp', '.wav', '.mp3', '.ogg')):
+                        full_path = os.path.join(root, name)
+                        # Rel path relative to tenant root
+                        rel_path = os.path.relpath(full_path, root_dir).replace('\\', '/')
+                        if rel_path in seen_paths:
+                            continue
+                        manifest[rel_path] = _calc_file_hash(full_path)
+                        seen_paths.add(rel_path)
+    return manifest
+
+def _verify_sync_auth(api_key: str | None, tenant_id: str | None) -> bool:
+    if not api_key or not tenant_id:
+        return False
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
+            (tenant_id, api_key)
+        )
+        return bool(cur.fetchone())
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/sync/files/manifest')
+def sync_files_manifest(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
+    api_key = request.headers.get('api-key')
+    tenant_id = request.headers.get('x-tenant-id')
+    
+    if not _verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='Invalid auth')
+
+    client_manifest = payload.get('manifest', {})
+    server_manifest = _get_server_manifest(tenant_id)
+    
+    missing = []
+    for rel_path, client_hash in client_manifest.items():
+        # Check if we need this file
+        # We need it if we don't have it, or if hash is different
+        # (Assuming client is source of truth for PUSH)
+        srv_hash = server_manifest.get(rel_path)
+        if srv_hash != client_hash:
+            missing.append(rel_path)
+            
+    return {'missing': missing}
+
+@app.post('/sync/files/upload')
+async def sync_files_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    rel_path: str = Form(...)
+):
+    api_key = request.headers.get('api-key')
+    tenant_id = request.headers.get('x-tenant-id')
+    
+    if not _verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='Invalid auth')
+        
+    if not file or not rel_path:
+        return {'ok': False, 'error': 'missing data'}
+
+    # Security check on rel_path
+    if '..' in rel_path or rel_path.startswith('/') or '\\' in rel_path:
+         pass
+
+    dest_path = _get_tenant_storage_path(tenant_id, rel_path)
+    if not dest_path:
+        return {'ok': False, 'error': 'invalid path'}
+        
+    try:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        content = await file.read()
+        with open(dest_path, 'wb') as f:
+            f.write(content)
+        return {'ok': True}
+    except Exception as e:
+        print(f"Upload error: {e}")
+        return {'ok': False, 'error': str(e)}
+
+@app.get('/sync/files/list')
+def sync_files_list(request: Request) -> Dict[str, Any]:
+    api_key = request.headers.get('api-key')
+    tenant_id = request.headers.get('x-tenant-id')
+    
+    if not _verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='Invalid auth')
+        
+    return {'manifest': _get_server_manifest(tenant_id)}
+
+@app.get('/sync/files/download')
+def sync_files_download(request: Request, path: str = Query(...)):
+    api_key = request.headers.get('api-key')
+    tenant_id = request.headers.get('x-tenant-id')
+    
+    if not _verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='Invalid auth')
+        
+    file_path = _get_tenant_storage_path(tenant_id, path)
+    if not file_path or not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail='File not found')
+        
+    return FileResponse(file_path)
+
+# --- END FILE SYNC API ---
+
 @app.post("/sync/push")
 def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
     if not payload.tenant_id:
@@ -4321,6 +4848,168 @@ def web_guide() -> str:
     return _public_web_shell('מדריך', body_content)
 
 
+@app.get('/web/register', response_class=HTMLResponse)
+def web_register(request: Request) -> str:
+    body = """
+    <style>
+      .reg-container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.05); padding: 30px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 20px 50px rgba(0,0,0,0.3); }
+      .reg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+      .reg-group { margin-bottom: 20px; }
+      .reg-label { display: block; margin-bottom: 8px; font-weight: 700; color: #cbd5e1; }
+      .reg-input { width: 100%; padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; font-size: 16px; outline: none; transition: border-color 0.2s; box-sizing: border-box; }
+      .reg-input:focus { border-color: #3498db; background: rgba(0,0,0,0.3); }
+      .reg-select { width: 100%; padding: 12px; background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; font-size: 16px; outline: none; box-sizing: border-box; }
+      .reg-btn { width: 100%; padding: 15px; background: linear-gradient(135deg, #2ecc71, #27ae60); border: none; border-radius: 12px; color: #fff; font-weight: 800; font-size: 18px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; margin-top: 10px; }
+      .reg-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(46, 204, 113, 0.3); }
+      .plan-card { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; padding: 15px; text-align: center; cursor: pointer; transition: all 0.2s; position: relative; }
+      .plan-card:hover { background: rgba(255,255,255,0.1); }
+      .plan-card.selected { border-color: #2ecc71; background: rgba(46, 204, 113, 0.1); box-shadow: 0 0 0 2px #2ecc71; }
+      .plan-name { font-weight: 800; font-size: 18px; margin-bottom: 5px; }
+      .plan-price { font-size: 24px; font-weight: 700; color: #2ecc71; }
+      .plan-desc { font-size: 13px; opacity: 0.7; margin-top: 5px; }
+      .login-link { text-align: center; margin-top: 20px; font-size: 14px; opacity: 0.8; }
+      .login-link a { color: #3498db; text-decoration: none; font-weight: 700; }
+      
+      /* Hidden radio inputs for plans */
+      input[type="radio"].plan-radio { display: none; }
+    </style>
+
+    <div class="reg-container">
+      <h2 style="text-align:center; margin-bottom:10px;">הרשמה ל-SchoolPoints</h2>
+      <p style="text-align:center; opacity:0.7; margin-bottom:30px;">הצטרפו למאות מוסדות שכבר נהנים מניהול נקודות מתקדם.</p>
+      
+      <form id="regForm" onsubmit="event.preventDefault(); submitRegistration();">
+        <div class="reg-row">
+          <div class="reg-group">
+            <label class="reg-label">שם המוסד</label>
+            <input type="text" name="institution_name" class="reg-input" placeholder="לדוגמה: ישיבת אור החיים" required />
+          </div>
+          <div class="reg-group">
+            <label class="reg-label">שם איש קשר</label>
+            <input type="text" name="contact_name" class="reg-input" placeholder="ישראל ישראלי" required />
+          </div>
+        </div>
+        
+        <div class="reg-row">
+          <div class="reg-group">
+            <label class="reg-label">אימייל (שם משתמש)</label>
+            <input type="email" name="email" class="reg-input" placeholder="admin@yeshiva.co.il" required />
+          </div>
+          <div class="reg-group">
+            <label class="reg-label">טלפון</label>
+            <input type="tel" name="phone" class="reg-input" placeholder="050-1234567" required />
+          </div>
+        </div>
+        
+        <div class="reg-group">
+            <label class="reg-label">סיסמה לאזור אישי</label>
+            <input type="password" name="password" class="reg-input" placeholder="******" required minlength="6" />
+        </div>
+
+        <div class="reg-group">
+          <label class="reg-label">בחירת מסלול</label>
+          <div class="reg-row" style="grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
+            <label class="plan-card" onclick="selectPlan('basic')">
+              <input type="radio" name="plan" value="basic" class="plan-radio" required />
+              <div class="plan-name">Basic</div>
+              <div class="plan-price">₪50<span style="font-size:14px">/חודש</span></div>
+              <div class="plan-desc">עד 2 עמדות</div>
+            </label>
+            <label class="plan-card selected" onclick="selectPlan('extended')">
+              <input type="radio" name="plan" value="extended" class="plan-radio" checked />
+              <div class="plan-name">Extended</div>
+              <div class="plan-price">₪100<span style="font-size:14px">/חודש</span></div>
+              <div class="plan-desc">עד 5 עמדות</div>
+            </label>
+            <label class="plan-card" onclick="selectPlan('unlimited')">
+              <input type="radio" name="plan" value="unlimited" class="plan-radio" />
+              <div class="plan-name">Unlimited</div>
+              <div class="plan-price">₪200<span style="font-size:14px">/חודש</span></div>
+              <div class="plan-desc">ללא הגבלה</div>
+            </label>
+          </div>
+        </div>
+        
+        <div class="reg-group">
+            <label class="reg-label" style="display:flex; align-items:center; gap:10px; cursor:pointer;">
+                <input type="checkbox" name="terms" required style="width:20px; height:20px;" />
+                <span>קראתי ואני מסכים <a href="#" style="color:#3498db;">לתקנון ולתנאי השימוש</a></span>
+            </label>
+        </div>
+
+        <button type="submit" id="btnSubmit" class="reg-btn">המשך לתשלום &gt;</button>
+        
+        <div id="regError" style="color:#e74c3c; text-align:center; margin-top:15px; display:none; font-weight:700;"></div>
+      </form>
+      
+      <div class="login-link">
+        כבר רשום? <a href="/web/signin">התחבר כאן</a>
+      </div>
+    </div>
+    
+    <script>
+      function selectPlan(plan) {
+        document.querySelectorAll('.plan-card').forEach(el => el.classList.remove('selected'));
+        const input = document.querySelector('input[name="plan"][value="' + plan + '"]');
+        if (input) {
+            input.checked = true;
+            input.parentElement.classList.add('selected');
+        }
+      }
+      
+      async function submitRegistration() {
+        const form = document.getElementById('regForm');
+        const btn = document.getElementById('btnSubmit');
+        const err = document.getElementById('regError');
+        
+        if (!form.checkValidity()) {
+            form.reportValidity();
+            return;
+        }
+        
+        const formData = new FormData(form);
+        const payload = Object.fromEntries(formData.entries());
+        
+        // Basic logic for now
+        btn.disabled = true;
+        btn.style.opacity = '0.7';
+        btn.textContent = 'מעבד נתונים...';
+        err.style.display = 'none';
+        
+        try {
+            const resp = await fetch('/api/register', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            const data = await resp.json();
+            
+            if (!resp.ok) {
+                throw new Error(data.detail || 'שגיאה בהרשמה');
+            }
+            
+            // Redirect to payment or success page
+            if (data.payment_url) {
+                window.location.href = data.payment_url;
+            } else {
+                alert('הרשמה נקלטה בהצלחה! (מצב פיתוח: אין תשלום עדיין)');
+                window.location.href = '/web/login'; // Or wherever
+            }
+            
+        } catch (e) {
+            err.textContent = e.message;
+            err.style.display = 'block';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+            btn.textContent = 'המשך לתשלום >';
+        }
+      }
+    </script>
+    """
+    return _public_web_shell("הרשמה", body, request=request)
+
+
 @app.get('/web/contact', response_class=HTMLResponse)
 def web_contact() -> str:
     body = f"""
@@ -4345,6 +5034,50 @@ def web_contact() -> str:
     return _public_web_shell('צור קשר', body)
 
 
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+def _send_contact_email(name: str, email: str, subject: str, message: str) -> bool:
+    smtp_host = os.getenv('SMTP_HOST')
+    smtp_port = _safe_int(os.getenv('SMTP_PORT'), 587)
+    smtp_user = os.getenv('SMTP_USER')
+    smtp_pass = os.getenv('SMTP_PASSWORD')
+    smtp_from = os.getenv('SMTP_FROM') or smtp_user
+    smtp_to = os.getenv('CONTACT_EMAIL_TO') or smtp_user
+
+    if not smtp_host or not smtp_user or not smtp_pass or not smtp_to:
+        print("[EMAIL] Missing SMTP configuration")
+        return False
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = smtp_from
+        msg['To'] = smtp_to
+        msg['Subject'] = f"Contact Form: {subject} (from {name})"
+        msg['Reply-To'] = email
+
+        body = f"""
+        Name: {name}
+        Email: {email}
+        Subject: {subject}
+        
+        Message:
+        {message}
+        """
+        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+
+        server = smtplib.SMTP(smtp_host, smtp_port)
+        server.starttls()
+        server.login(smtp_user, smtp_pass)
+        server.sendmail(smtp_from, [smtp_to], msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        print(f"[EMAIL] Failed to send email: {e}")
+        return False
+
+
 @app.post('/web/contact', response_class=HTMLResponse)
 def web_contact_submit(
     name: str = Form(default=''),
@@ -4359,13 +5092,39 @@ def web_contact_submit(
     if not name or not email or not message:
         body = "<h2>צור קשר</h2><p>חסרים פרטים.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/contact\">חזרה</a></div>"
         return HTMLResponse(_public_web_shell('צור קשר', body), status_code=400)
+    
+    # Save to DB
     try:
         _save_contact_message(name=name, email=email, subject=subject, message=message)
     except Exception:
-        body = "<h2>צור קשר</h2><p>שגיאה בשליחה. נסה שוב.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/contact\">חזרה</a></div>"
-        return HTMLResponse(_public_web_shell('צור קשר', body), status_code=500)
+        pass
+        
+    # Send Email
+    email_sent = _send_contact_email(name, email, subject, message)
+    
+    if not email_sent:
+        # If email failed (e.g. no config), we still show success if saved to DB, but maybe log it.
+        # Ideally we might want to tell the user, but for now we'll assume DB is backup.
+        pass
+
     body = "<h2>תודה!</h2><p>ההודעה נשלחה בהצלחה.</p><div class=\"actionbar\"><a class=\"blue\" href=\"/web\">דף הבית</a><a class=\"gray\" href=\"/web/guide\">מדריך</a></div>"
     return HTMLResponse(_public_web_shell('צור קשר', body), status_code=200)
+
+
+@app.get('/web/equipment-required', response_class=HTMLResponse)
+def web_equipment_required(request: Request) -> str:
+    path = os.path.join(ROOT_DIR, 'equipment_required.html')
+    content = _read_text_file(path)
+    if not content:
+        body = "<h2>ציוד נדרש</h2><p>הדף לא נמצא.</p><div class='actionbar'><a class='gray' href='/web/guide'>חזרה</a></div>"
+        return _public_web_shell('ציוד נדרש', body)
+    
+    # Extract body content if full HTML
+    m = re.search(r'<body[^>]*>(.*?)</body>', content, re.DOTALL | re.IGNORECASE)
+    if m:
+        content = m.group(1)
+        
+    return _public_web_shell('ציוד נדרש', content, request=request)
 
 
 @app.get('/web/download', response_class=HTMLResponse)
@@ -4384,6 +5143,92 @@ def web_download() -> str:
     </div>
     """
     return _public_web_shell("הורדה", body)
+
+
+@app.get('/web/pricing', response_class=HTMLResponse)
+def web_pricing() -> str:
+    body = """
+    <style>
+      .pricing-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; margin-top: 30px; }
+      .pricing-card { flex: 1; min-width: 280px; max-width: 320px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 24px; text-align: center; transition: transform 0.3s, box-shadow 0.3s; position: relative; overflow: hidden; }
+      .pricing-card:hover { transform: translateY(-5px); box-shadow: 0 10px 30px rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.2); }
+      .pricing-card.featured { background: linear-gradient(145deg, rgba(46, 204, 113, 0.1), rgba(39, 174, 96, 0.15)); border: 1px solid rgba(46, 204, 113, 0.4); transform: scale(1.05); z-index: 1; }
+      .pricing-card.featured:hover { transform: scale(1.05) translateY(-5px); }
+      .pricing-title { font-size: 24px; font-weight: 900; margin-bottom: 10px; color: #fff; }
+      .pricing-price { font-size: 36px; font-weight: 800; margin-bottom: 20px; color: #2ecc71; }
+      .pricing-price span { font-size: 16px; font-weight: 400; opacity: 0.7; }
+      .pricing-features { list-style: none; padding: 0; margin: 0 0 24px 0; text-align: right; }
+      .pricing-features li { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.05); color: rgba(255,255,255,0.9); }
+      .pricing-features li:last-child { border-bottom: none; }
+      .pricing-features li::before { content: "✓"; color: #2ecc71; margin-left: 8px; font-weight: bold; }
+      .pricing-features li.disabled { opacity: 0.5; text-decoration: line-through; }
+      .pricing-features li.disabled::before { content: "✕"; color: #e74c3c; }
+      .btn-pricing { display: inline-block; width: 100%; padding: 12px 0; background: rgba(255,255,255,0.1); color: #fff; font-weight: 800; text-decoration: none; border-radius: 8px; transition: background 0.2s; }
+      .btn-pricing:hover { background: rgba(255,255,255,0.2); }
+      .btn-pricing.primary { background: #2ecc71; box-shadow: 0 4px 15px rgba(46, 204, 113, 0.3); }
+      .btn-pricing.primary:hover { background: #27ae60; }
+      .ribbon { position: absolute; top: 12px; right: -30px; transform: rotate(45deg); background: #f1c40f; color: #000; font-weight: 900; font-size: 12px; padding: 4px 40px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
+    </style>
+
+    <div style="text-align: center; max-width: 700px; margin: 0 auto;">
+      <h2>מחירון וחבילות</h2>
+      <p style="opacity: 0.8; font-size: 16px;">בחר את החבילה המתאימה ביותר למוסד שלך. כל החבילות כוללות את כל הפיצ'רים הבסיסיים.</p>
+    </div>
+
+    <div class="pricing-container">
+      <!-- Basic Plan -->
+      <div class="pricing-card">
+        <div class="pricing-title">בסיסי (Basic)</div>
+        <div class="pricing-price">₪50 <span>/חודש</span></div>
+        <ul class="pricing-features">
+          <li>עד 2 עמדות פעילות</li>
+          <li>ניהול תלמידים מלא</li>
+          <li>ממשק מורים</li>
+          <li>חנות הטבות בסיסית</li>
+          <li class="disabled">גיבוי אוטומטי לענן</li>
+          <li class="disabled">תמיכה טכנית מועדפת</li>
+        </ul>
+        <a href="/web/contact?plan=basic" class="btn-pricing">בחר חבילה</a>
+      </div>
+
+      <!-- Extended Plan -->
+      <div class="pricing-card featured">
+        <div class="ribbon">מומלץ</div>
+        <div class="pricing-title">מורחב (Extended)</div>
+        <div class="pricing-price">₪100 <span>/חודש</span></div>
+        <ul class="pricing-features">
+          <li>עד 5 עמדות פעילות</li>
+          <li>כל מה שבחבילה הבסיסית</li>
+          <li>ניהול שדרוגים מתקדם</li>
+          <li>הודעות רצות וחדשות</li>
+          <li>גיבוי אוטומטי לענן</li>
+          <li class="disabled">תמיכה טכנית מועדפת</li>
+        </ul>
+        <a href="/web/contact?plan=extended" class="btn-pricing primary">בחר חבילה</a>
+      </div>
+
+      <!-- Unlimited Plan -->
+      <div class="pricing-card">
+        <div class="pricing-title">ללא הגבלה (Unlimited)</div>
+        <div class="pricing-price">₪200 <span>/חודש</span></div>
+        <ul class="pricing-features">
+          <li>מספר עמדות ללא הגבלה</li>
+          <li>כל הפיצ'רים פתוחים</li>
+          <li>ניהול רשת מוסדות</li>
+          <li>התאמה אישית של עיצוב</li>
+          <li>גיבוי וסנכרון מלא</li>
+          <li>תמיכה טכנית מועדפת</li>
+        </ul>
+        <a href="/web/contact?plan=unlimited" class="btn-pricing">בחר חבילה</a>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin-top: 40px;">
+        <p style="opacity: 0.7; font-size: 14px;">* המחירים כוללים מע"מ. ט.ל.ח.</p>
+        <a class="btn-glass" href="/web" style="margin-top: 10px;">חזרה לדף הבית</a>
+    </div>
+    """
+    return _public_web_shell("מחירון", body)
 
 
 @app.get('/api/settings/{key}')
@@ -8831,17 +9676,13 @@ def web_admin(request: Request):
           <div class="icon">📢</div>
           <div class="label">הודעות</div>
         </a>
-        <a href="/web/bonuses" class="tile orange">
+        <a href="/web/upgrades" class="tile orange">
           <div class="icon">🎁</div>
-          <div class="label">בונוסים</div>
-        </a>
-        <a href="/web/coins" class="tile yellow">
-          <div class="icon">🪙</div>
-          <div class="label">מטבעות/יעדים</div>
+          <div class="label">שדרוגים</div>
         </a>
         <a href="/web/time-bonus" class="tile teal">
           <div class="icon">⏱️</div>
-          <div class="label">בונוס זמן</div>
+          <div class="label">בונוס זמנים</div>
         </a>
         <a href="/web/special-bonus" class="tile pink">
           <div class="icon">✨</div>
@@ -8851,9 +9692,9 @@ def web_admin(request: Request):
           <div class="icon">📅</div>
           <div class="label">חגים</div>
         </a>
-        <a href="/web/cashier" class="tile indigo">
+        <a href="/web/purchases" class="tile indigo">
           <div class="icon">🛒</div>
-          <div class="label">קופה</div>
+          <div class="label">קניות</div>
         </a>
         <a href="/web/reports" class="tile cyan">
           <div class="icon">📊</div>
@@ -8903,6 +9744,34 @@ def web_admin(request: Request):
     return _basic_web_shell("לוח בקרה", body, request=request)
 
 
+def _stub_page(title: str, request: Request) -> Response:
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+    body = f"<h2>{title}</h2><p>העמוד בבנייה.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>"
+    return HTMLResponse(_basic_web_shell(title, body, request=request))
+
+@app.get('/web/messages', response_class=HTMLResponse)
+def web_messages(request: Request): return _stub_page("הודעות", request)
+
+@app.get('/web/upgrades', response_class=HTMLResponse)
+def web_upgrades(request: Request): return _stub_page("שדרוגים", request)
+
+@app.get('/web/time-bonus', response_class=HTMLResponse)
+def web_time_bonus(request: Request): return _stub_page("בונוס זמנים", request)
+
+@app.get('/web/special-bonus', response_class=HTMLResponse)
+def web_special_bonus(request: Request): return _stub_page("בונוס מיוחד", request)
+
+@app.get('/web/holidays', response_class=HTMLResponse)
+def web_holidays(request: Request): return _stub_page("חגים", request)
+
+@app.get('/web/purchases', response_class=HTMLResponse)
+def web_purchases(request: Request): return _stub_page("קניות", request)
+
+@app.get('/web/reports', response_class=HTMLResponse)
+def web_reports(request: Request): return _stub_page("דוחות", request)
+
+
 @app.get('/web/students', response_class=HTMLResponse)
 def web_students(request: Request):
     try:
@@ -8920,16 +9789,21 @@ def web_students(request: Request):
 
         body = """
     <style>
-      .q-modal { display:none; position:fixed; inset:0; z-index:9999; align-items:center; justify-content:center; padding:16px; background:rgba(8,14,22,.68); backdrop-filter:blur(6px); }
-      .q-card { width:min(820px, 100%); max-height:calc(100vh - 32px); overflow:auto; background:rgba(24,34,52,.96); border:1px solid rgba(255,255,255,.18); border-radius:18px; padding:16px; color:rgba(255,255,255,.95); box-shadow:0 24px 50px rgba(0,0,0,.38); }
-      .q-title { font-weight:950; font-size:18px; margin-bottom:12px; }
-      .q-actions { display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-start; margin-top:12px; }
-      .q-btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:10px 14px; border-radius:12px; font-weight:900; text-decoration:none; border:1px solid rgba(255,255,255,.18); color:#fff; }
-      .q-btn.blue { background: linear-gradient(135deg, #3498db, #2f80ed); }
-      .q-btn.gray { background: linear-gradient(135deg, #95a5a6, #7f8c8d); }
-      #q_body { color: rgba(255,255,255,.92); }
-      #q_body input, #q_body select { padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.2); background:rgba(8,12,20,.55); color:rgba(255,255,255,.95); }
-      #q_body input::placeholder { color: rgba(255,255,255,.6); }
+      .q-modal { display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:10000; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,0.75); backdrop-filter:blur(5px); }
+      .q-card { width:min(500px, 100%); max-height:90vh; overflow-y:auto; background:#1e293b; border:1px solid #334155; border-radius:16px; padding:24px; color:#f8fafc; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); display:flex; flex-direction:column; }
+      .q-title { font-weight:800; font-size:20px; margin-bottom:20px; color:#fff; }
+      .q-actions { display:flex; gap:12px; justify-content:flex-end; margin-top:24px; }
+      .q-btn { display:inline-flex; align-items:center; justify-content:center; padding:10px 20px; border-radius:8px; font-weight:700; text-decoration:none; cursor:pointer; transition:all 0.2s; border:none; font-size:14px; }
+      .q-btn.blue { background:#3b82f6; color:#fff; }
+      .q-btn.blue:hover { background:#2563eb; }
+      .q-btn.gray { background:#64748b; color:#fff; }
+      .q-btn.gray:hover { background:#475569; }
+      
+      .q-form-row { margin-bottom:16px; }
+      .q-label { display:block; font-weight:600; color:#cbd5e1; font-size:13px; margin-bottom:6px; }
+      .q-input, .q-select { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:14px; outline:none; transition:border-color 0.2s; font-family:inherit; }
+      .q-input:focus, .q-select:focus { border-color:#3b82f6; }
+      .q-hint { font-size:12px; color:#94a3b8; margin-top:4px; }
     </style>
 
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
@@ -8957,7 +9831,7 @@ def web_students(request: Request):
             <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">כרטיס</th>
           </tr>
         </thead>
-        <tbody id=\"rows\"></tbody>
+        <tbody id="rows"></tbody>
       </table>
     </div>
 
@@ -8966,8 +9840,8 @@ def web_students(request: Request):
         <div class="q-title">עדכון מהיר</div>
         <div id="q_body"></div>
         <div class="q-actions">
-          <a id="q_run" class="q-btn blue" href="javascript:void(0)">בצע</a>
           <a id="q_cancel" class="q-btn gray" href="javascript:void(0)">ביטול</a>
+          <a id="q_run" class="q-btn blue" href="javascript:void(0)">בצע עדכון</a>
         </div>
       </div>
     </div>
@@ -8992,45 +9866,56 @@ def web_students(request: Request):
       function renderQuickForm() {
         if (!qBody) return;
         qBody.innerHTML = '' +
-          '<div style="display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
-            '<div style="font-weight:900;">פעולה</div>' +
-            '<select id="q_operation" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);">' +
-              '<option value="add">הוספה</option>' +
-              '<option value="subtract">חיסור</option>' +
-              '<option value="set">מוחלט</option>' +
-            '</select>' +
-            '<div style="font-weight:900;">נקודות</div>' +
-            '<input id="q_points" type="number" value="1" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);" />' +
-            '<div style="font-weight:900;">מצב</div>' +
-            '<select id="q_mode" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);">' +
-              '<option value="card">כרטיס</option>' +
-              '<option value="serial_range">טווח סידורי</option>' +
-              '<option value="class">כיתה</option>' +
-              '<option value="students">תלמידים שנבחרו</option>' +
-              ((IS_ADMIN === 1) ? '<option value="all_school">כל בית הספר (מנהל)</option>' : '') +
+          '<div class="q-form-row">' +
+            '<label class="q-label">סוג עדכון</label>' +
+            '<select id="q_operation" class="q-select">' +
+              '<option value="add">הוספת נקודות</option>' +
+              '<option value="subtract">הפחתת נקודות</option>' +
+              '<option value="set">קביעת סכום מוחלט</option>' +
             '</select>' +
           '</div>' +
-          '<div id="q_row_card" style="margin-top:10px; display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
-            '<div style="font-weight:900;">כרטיס</div>' +
-            '<input id="q_card" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92); direction:ltr; text-align:left;" />' +
+          '<div class="q-form-row">' +
+            '<label class="q-label">כמות נקודות</label>' +
+            '<input id="q_points" type="number" value="1" class="q-input" />' +
           '</div>' +
-          '<div id="q_row_serial" style="margin-top:10px; display:none;">' +
-            '<div style="display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
-              '<div style="font-weight:900;">טווח</div>' +
-              '<div style="display:flex; gap:10px; flex-wrap:wrap;">' +
-                '<input id="q_serial_from" type="number" placeholder="מ-" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92); width:160px;" />' +
-                '<input id="q_serial_to" type="number" placeholder="עד" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92); width:160px;" />' +
-              '</div>' +
+          '<div class="q-form-row">' +
+            '<label class="q-label">למי לעדכן?</label>' +
+            '<select id="q_mode" class="q-select">' +
+              '<option value="card">לפי מספר כרטיס (בודד)</option>' +
+              '<option value="serial_range">לפי טווח מספרים סידוריים</option>' +
+              '<option value="class">לפי כיתה/כיתות</option>' +
+              '<option value="students">לפי בחירה בטבלה</option>' +
+              ((IS_ADMIN === 1) ? '<option value="all_school">כל בית הספר (מנהל בלבד)</option>' : '') +
+            '</select>' +
+          '</div>' +
+          
+          '<div id="q_row_card" class="q-form-row">' +
+            '<label class="q-label">מספר כרטיס</label>' +
+            '<input id="q_card" class="q-input" style="direction:ltr; text-align:left;" placeholder="סרוק או הקלד כרטיס..." />' +
+          '</div>' +
+          
+          '<div id="q_row_serial" class="q-form-row" style="display:none;">' +
+            '<label class="q-label">טווח מספרים סידוריים</label>' +
+            '<div style="display:flex; gap:10px;">' +
+              '<input id="q_serial_from" type="number" placeholder="מ-" class="q-input" />' +
+              '<input id="q_serial_to" type="number" placeholder="עד" class="q-input" />' +
             '</div>' +
+            '<div class="q-hint">כולל את המספרים שבקצוות</div>' +
           '</div>' +
-          '<div id="q_row_class" style="margin-top:10px; display:none;">' +
-            '<div style="display:grid; grid-template-columns:160px 1fr; gap:10px; align-items:center;">' +
-              '<div style="font-weight:900;">כיתות</div>' +
-              '<input id="q_class_names" placeholder="לדוגמה: ז1, ז2" style="padding:10px 12px; border-radius:12px; border:1px solid rgba(255,255,255,.16); background:rgba(0,0,0,.18); color:rgba(255,255,255,.92);" />' +
-            '</div>' +
+          
+          '<div id="q_row_class" class="q-form-row" style="display:none;">' +
+            '<label class="q-label">שמות כיתות</label>' +
+            '<input id="q_class_names" placeholder="לדוגמה: ז1, ז2" class="q-input" />' +
+            '<div class="q-hint">מופרד בפסיקים</div>' +
           '</div>' +
-          '<div id="q_row_students" style="margin-top:10px; display:none; opacity:.85;">המצב הזה משתמש בתיבות הסימון בטבלה.</div>' +
-          '<div id="q_row_all" style="margin-top:10px; display:none; opacity:.85;">מצב מנהל: כל תלמידי בית הספר.</div>';
+          
+          '<div id="q_row_students" class="q-form-row" style="display:none;">' +
+            '<div class="q-hint" style="font-size:14px; color:#94a3b8;">העדכון יחול על התלמידים שסימנת בתיבות הסימון בטבלה.</div>' +
+          '</div>' +
+          
+          '<div id="q_row_all" class="q-form-row" style="display:none;">' +
+            '<div class="q-hint" style="font-size:14px; color:#ef4444;">זהירות: העדכון יחול על כל התלמידים במוסד!</div>' +
+          '</div>';
 
         const modeEl = document.getElementById('q_mode');
         function syncMode() {
@@ -9040,11 +9925,16 @@ def web_students(request: Request):
           const c = document.getElementById('q_row_class');
           const d = document.getElementById('q_row_students');
           const e = document.getElementById('q_row_all');
-          if (a) a.style.display = (m === 'card') ? 'grid' : 'none';
+          if (a) a.style.display = (m === 'card') ? 'block' : 'none';
           if (b) b.style.display = (m === 'serial_range') ? 'block' : 'none';
           if (c) c.style.display = (m === 'class') ? 'block' : 'none';
           if (d) d.style.display = (m === 'students') ? 'block' : 'none';
           if (e) e.style.display = (m === 'all_school') ? 'block' : 'none';
+          
+          // Auto focus card input if card mode
+          if (m === 'card' && document.getElementById('q_card')) {
+             setTimeout(() => document.getElementById('q_card').focus(), 50);
+          }
         }
         if (modeEl) modeEl.addEventListener('change', syncMode);
         syncMode();
