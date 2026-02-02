@@ -318,6 +318,64 @@ def _admin_expected_key() -> str:
     return str(os.getenv('ADMIN_KEY') or '').strip()
 
 
+def _master_login_secret() -> str:
+    s = str(os.getenv('MASTER_LOGIN_SECRET') or '').strip()
+    if s:
+        return s
+    return _admin_expected_key()
+
+
+def _master_token_sig(tenant_id: str, exp: int) -> str:
+    secret = _master_login_secret()
+    if not secret:
+        return ''
+    msg = f"{tenant_id}|{int(exp)}".encode('utf-8')
+    return hmac.new(secret.encode('utf-8'), msg, hashlib.sha256).hexdigest()
+
+
+def _master_token_create(tenant_id: str, ttl_sec: int = 60 * 60 * 6) -> str:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        return ''
+    secret = _master_login_secret()
+    if not secret:
+        return ''
+    exp = int(datetime.datetime.utcnow().timestamp()) + int(ttl_sec or 0)
+    sig = _master_token_sig(tenant_id, exp)
+    if not sig:
+        return ''
+    return f"{tenant_id}|{exp}|{sig}"
+
+
+def _master_token_valid(token: str, tenant_id: str) -> bool:
+    token = str(token or '').strip()
+    tenant_id = str(tenant_id or '').strip()
+    if not token or not tenant_id:
+        return False
+    secret = _master_login_secret()
+    if not secret:
+        return False
+    parts = token.split('|')
+    if len(parts) != 3:
+        return False
+    t, exp_s, sig = parts
+    if str(t or '').strip() != tenant_id:
+        return False
+    try:
+        exp = int(str(exp_s or '').strip())
+    except Exception:
+        return False
+    if exp <= int(datetime.datetime.utcnow().timestamp()):
+        return False
+    expected = _master_token_sig(tenant_id, exp)
+    if not expected:
+        return False
+    try:
+        return hmac.compare_digest(str(sig or ''), str(expected))
+    except Exception:
+        return False
+
+
 def _admin_key_from_request(request: Request, admin_key: str) -> str:
     if admin_key:
         return str(admin_key)
@@ -330,7 +388,7 @@ def _admin_key_from_request(request: Request, admin_key: str) -> str:
 def _admin_require(request: Request, admin_key: str) -> Response | None:
     expected = _admin_expected_key()
     if not expected:
-        return None
+        return HTMLResponse('<h3>Admin not configured</h3><p>Missing ADMIN_KEY.</p>', status_code=503)
     provided = _admin_key_from_request(request, admin_key).strip()
     if provided != expected:
         return RedirectResponse(url="/admin/login", status_code=302)
@@ -1206,6 +1264,17 @@ def _web_teacher_from_cookie(request: Request) -> str:
     return str(request.cookies.get('web_teacher') or '').strip()
 
 
+def _web_master_ok(request: Request) -> bool:
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return False
+    try:
+        token = str(request.cookies.get('web_master') or '').strip()
+    except Exception:
+        token = ''
+    return _master_token_valid(token, tenant_id)
+
+
 def _web_next_from_request(request: Request, default: str = '/web/admin') -> str:
     try:
         q = request.query_params
@@ -1256,6 +1325,8 @@ def _web_require_teacher(request: Request) -> Response | None:
         return tenant_guard
     if _web_teacher_from_cookie(request):
         return None
+    if _web_master_ok(request):
+        return None
     return _web_redirect_with_next('/web/teacher-login', request=request)
 
 
@@ -1271,6 +1342,8 @@ def web_home() -> str:
       </div>
       <div class=\"actionbar\" style=\"justify-content:center; margin-top:16px;\">
         <a class=\"green\" href=\"/web/signin\">כניסה</a>
+        <a class=\"blue\" href=\"/web/register\">הרשמה</a>
+        <a class=\"blue\" href=\"/web/pricing\">תמחור</a>
         <a class=\"blue\" href=\"/web/download\">הורדה</a>
         <a class=\"gray\" href=\"/web/guide\">מדריך</a>
         <a class=\"gray\" href=\"/web/contact\">צור קשר</a>
@@ -1294,6 +1367,7 @@ def web_logout() -> Response:
     resp.delete_cookie('web_teacher')
     resp.delete_cookie('web_tenant')
     resp.delete_cookie('web_user')
+    resp.delete_cookie('web_master')
     return resp
 
 
@@ -1358,6 +1432,8 @@ def web_teacher_login(request: Request) -> Response:
     guard = _web_require_tenant(request)
     if guard:
         return guard
+    if _web_master_ok(request):
+        return RedirectResponse(url='/web/admin', status_code=302)
     nxt = _web_next_from_request(request, '/web/admin')
     body = f"""
     <h2>כניסת מורה</h2>
@@ -1564,6 +1640,35 @@ def _public_web_shell(title: str, body_html: str) -> str:
         }
 
         a { text-decoration: none; color: inherit; transition: all 0.2s ease; }
+
+        .actionbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+
+        .green, .blue, .gray {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 10px 14px;
+          border-radius: 10px;
+          font-weight: 900;
+          text-decoration: none;
+          border: 0;
+          cursor: pointer;
+          color: #fff;
+          min-height: 42px;
+        }
+        .green { background: #2ecc71; }
+        .blue { background: #3498db; }
+        .gray { background: #95a5a6; }
+
+        .page-card input, .page-card select, .page-card textarea {
+          color: #1f2d3a;
+          background: #ffffff;
+          border: 1px solid rgba(0,0,0,0.18);
+        }
+
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
+        table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
+        table thead th { position: sticky; top: 64px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -1811,6 +1916,35 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
         }
 
         a { text-decoration: none; color: inherit; transition: all 0.2s ease; }
+
+        .actionbar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+
+        .green, .blue, .gray {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 10px 14px;
+          border-radius: 10px;
+          font-weight: 900;
+          text-decoration: none;
+          border: 0;
+          cursor: pointer;
+          color: #fff;
+          min-height: 42px;
+        }
+        .green { background: #2ecc71; }
+        .blue { background: #3498db; }
+        .gray { background: #95a5a6; }
+
+        .card { color: #1f2d3a; }
+        .card input, .card select, .card textarea {
+          color: #1f2d3a;
+          background: #ffffff;
+        }
+
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
+        table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
+        table thead th { position: sticky; top: 64px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -3897,7 +4031,11 @@ def _fetch_message_row(conn, table: str, row_id: int) -> Dict[str, Any] | None:
 def _web_current_teacher(request: Request) -> Dict[str, Any] | None:
     tenant_id = _web_tenant_from_cookie(request)
     teacher_id = _web_teacher_from_cookie(request)
-    if not tenant_id or not teacher_id:
+    if not tenant_id:
+        return None
+    if not teacher_id:
+        if _web_master_ok(request):
+            return {'id': 0, 'name': 'מנהל על', 'is_admin': 1}
         return None
     try:
         tid = int(str(teacher_id).strip() or '0')
@@ -3923,7 +4061,23 @@ def _web_current_teacher(request: Request) -> Dict[str, Any] | None:
 def _web_current_teacher_permissions(request: Request) -> Dict[str, Any]:
     tenant_id = _web_tenant_from_cookie(request)
     teacher_id = _web_teacher_from_cookie(request)
-    if not tenant_id or not teacher_id:
+    if not tenant_id:
+        return {
+            'id': 0,
+            'name': '',
+            'is_admin': 0,
+            'can_edit_student_card': 0,
+            'can_edit_student_photo': 0,
+        }
+    if not teacher_id:
+        if _web_master_ok(request):
+            return {
+                'id': 0,
+                'name': 'מנהל על',
+                'is_admin': 1,
+                'can_edit_student_card': 1,
+                'can_edit_student_photo': 1,
+            }
         return {
             'id': 0,
             'name': '',
@@ -5261,15 +5415,18 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 def _send_contact_email(name: str, email: str, subject: str, message: str) -> bool:
-    smtp_host = os.getenv('SMTP_HOST')
+    smtp_host = (os.getenv('SMTP_HOST') or os.getenv('SMTP_SERVER') or '').strip()
     smtp_port = _safe_int(os.getenv('SMTP_PORT'), 587)
-    smtp_user = os.getenv('SMTP_USER')
-    smtp_pass = os.getenv('SMTP_PASSWORD')
-    smtp_from = os.getenv('SMTP_FROM') or smtp_user
-    smtp_to = os.getenv('CONTACT_EMAIL_TO') or smtp_user
+    smtp_user = (os.getenv('SMTP_USER') or '').strip()
+    smtp_pass = (os.getenv('SMTP_PASSWORD') or os.getenv('SMTP_PASS') or '').strip()
+    smtp_from = (os.getenv('SMTP_FROM') or smtp_user).strip()
+    smtp_to = (os.getenv('CONTACT_EMAIL_TO') or smtp_user).strip()
 
     if not smtp_host or not smtp_user or not smtp_pass or not smtp_to:
-        print("[EMAIL] Missing SMTP configuration")
+        print(
+            "[EMAIL] Missing SMTP configuration for contact email: "
+            f"host={bool(smtp_host)} user={bool(smtp_user)} pass={bool(smtp_pass)} to={bool(smtp_to)}"
+        )
         return False
 
     try:
@@ -5325,9 +5482,8 @@ def web_contact_submit(
     email_sent = _send_contact_email(name, email, subject, message)
     
     if not email_sent:
-        # If email failed (e.g. no config), we still show success if saved to DB, but maybe log it.
-        # Ideally we might want to tell the user, but for now we'll assume DB is backup.
-        pass
+        body = "<h2>קיבלנו את ההודעה</h2><p>ההודעה נשמרה במערכת, אך שליחת אימייל נכשלה (בדוק הגדרות SMTP בשרת).</p><div class=\"actionbar\"><a class=\"blue\" href=\"/web\">דף הבית</a><a class=\"gray\" href=\"/web/contact\">שליחה נוספת</a></div>"
+        return HTMLResponse(_public_web_shell('צור קשר', body), status_code=200)
 
     body = "<h2>תודה!</h2><p>ההודעה נשלחה בהצלחה.</p><div class=\"actionbar\"><a class=\"blue\" href=\"/web\">דף הבית</a><a class=\"gray\" href=\"/web/guide\">מדריך</a></div>"
     return HTMLResponse(_public_web_shell('צור קשר', body), status_code=200)
@@ -9905,7 +10061,10 @@ def web_admin(request: Request):
     
     teacher = _web_current_teacher(request)
     if not teacher:
-        return RedirectResponse(url="/web/teacher-login", status_code=302)
+        if _web_master_ok(request):
+            teacher = {'id': 0, 'name': 'מנהל על', 'is_admin': 1}
+        else:
+            return RedirectResponse(url="/web/teacher-login", status_code=302)
         
     is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
     
