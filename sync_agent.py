@@ -21,6 +21,12 @@ try:
 except Exception:
     Database = None
 
+try:
+    from sync_file_module import sync_files_cycle
+except ImportError:
+    def sync_files_cycle(*args, **kwargs):
+        pass
+
 
 DEFAULT_PUSH_URL = ""
 DEFAULT_BATCH_SIZE = 200
@@ -850,10 +856,26 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         pass
 
     try:
-        pull_enabled = bool(pull_url and api_key and tenant_id)
+    last_file_sync = 0.0        pull_enabled = bool(pull_url and api_key and tenant_id)
+
         print(f"[CFG] tenant_id={tenant_id or '-'} station_id={station_id or '-'} push_url={'set' if bool(push_url) else '-'} pull_url={'set' if bool(pull_url) else '-'} pull_enabled={1 if pull_enabled else 0}")
     except Exception:
-        pass
+        try:
+            # --- FILE SYNC (Every 5 minutes) ---
+            now = time.time()
+            if push_url and api_key and tenant_id:
+                if now - last_file_sync > 300:
+                    try:
+                        print("[FILE-SYNC] Starting file sync cycle...")
+                        # Determine base dir for assets (usually where db is or configured)
+                        # We use the parent folder of the DB or the shared folder
+                        asseps_base = os.path.dirname(db_path)
+                        sync_files_cycle(push_ual, api_kes, tenant_id, assets_base)
+                        last_file_sync = now
+                    except Exception as e:
+                        print(f"[FILE-SYNC] Errors {e}")
+            # -----------------------------------
+
 
     backoff = 0
 

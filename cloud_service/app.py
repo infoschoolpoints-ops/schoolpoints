@@ -802,6 +802,228 @@ def api_payment_webhook_mock(payload: Dict[str, Any]) -> Dict[str, Any]:
         try: conn.close()
         except: pass
 
+
+def _approve_pending_registration(reg_id: int) -> Dict[str, Any]:
+    """Approve a pending registration: create tenant, send email, mark completed."""
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder("SELECT id, institution_name, contact_name, plan, password_hash, email, payment_status FROM pending_registrations WHERE id = ? LIMIT 1"),
+            (reg_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return {'ok': False, 'detail': 'Registration not found'}
+        
+        if isinstance(row, dict):
+             r = row
+        else:
+             r = {
+                 'id': row[0], 'institution_name': row[1], 'contact_name': row[2], 
+                 'plan': row[3], 'password_hash': row[4], 'email': row[5], 'payment_status': row[6]
+             }
+             
+        if r['payment_status'] == 'completed':
+            return {'ok': True, 'already_completed': True}
+
+        inst_name = r['institution_name']
+        contact = r['contact_name']
+        email = r['email']
+        pwd_hash = r['password_hash']
+        
+        # 1. Generate Tenant ID
+        slug = ''.join(c for c in inst_name.lower() if c.isalnum() or c==' ')
+        slug = slug.replace(' ', '_')
+        if not slug: slug = 'school'
+        tenant_id = f"{slug[:20]}_{secrets.token_hex(3)}"
+        
+        # 2. Create Institution
+        api_key = secrets.token_urlsafe(24)
+        
+        cur.execute(
+            _sql_placeholder("INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)"),
+            (tenant_id, inst_name, api_key, pwd_hash)
+        )
+        
+        # 3. Update pending registration
+        cur.execute(
+            _sql_placeholder("UPDATE pending_registrations SET payment_status = 'completed', payment_id = ? WHERE id = ?"),
+            (f"MANUAL_{secrets.token_hex(4)}", reg_id)
+        )
+        conn.commit()
+        
+        # 4. Send Email
+        download_url = "https://schoolpoints.co.il/web/download"
+        
+        body = f"""
+        <div dir="rtl" style="font-family:Arial, sans-serif; line-height:1.6; color:#333;">
+            <h2 style="color:#2ecc71;">ברוכים הבאים ל-SchoolPoints!</h2>
+            <p>שלום {contact},</p>
+            <p>תודה שנרשמת למערכת SchoolPoints. ההרשמה עברה בהצלחה והחשבון שלך מוכן.</p>
+            
+            <div style="background:#f9f9f9; padding:15px; border-radius:10px; border:1px solid #ddd; margin:20px 0;">
+                <h3 style="margin-top:0;">פרטי המוסד שלך:</h3>
+                <div><b>שם המוסד:</b> {inst_name}</div>
+                <div><b>מזהה מוסד (Tenant ID):</b> <span style="font-family:monospace; background:#eee; padding:2px 5px;">{tenant_id}</span></div>
+                <div><b>סיסמת ניהול:</b> (כפי שבחרת בהרשמה)</div>
+            </div>
+            
+            <p>
+                <b>להורדת התוכנה והתקנה ראשונית:</b><br/>
+                <a href="{download_url}">לחץ כאן להורדה</a>
+            </p>
+            
+            <p>
+                במסך ההגדרות בתוכנה, הזן את מזהה המוסד שלך ({tenant_id}) כדי להתחבר לענן.
+            </p>
+            
+            <hr style="border:0; border-top:1px solid #eee; margin:20px 0;">
+            <div style="font-size:12px; color:#888;">
+                הודעה זו נשלחה אוטומטית ממערכת SchoolPoints Cloud.
+            </div>
+        </div>
+        """
+        
+        email_sent = _send_email(email, "ברוכים הבאים ל-SchoolPoints - פרטי התחברות", body)
+        
+        return {
+            'ok': True,
+            'tenant_id': tenant_id,
+            'email_sent': email_sent
+        }
+    except Exception as e:
+        print(f"Approve error: {e}")
+        return {'ok': False, 'detail': str(e)}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.post('/api/payment/webhook/mock')
+def api_payment_webhook_mock(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Mock webhook for payment success."""
+    email = str(payload.get('email') or '').strip()
+    status = str(payload.get('status') or '').strip()
+    
+    if status != 'success':
+         return {'ok': False, 'detail': 'Status not success'}
+         
+    _ensure_pending_registrations_table()
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder("SELECT id FROM pending_registrations WHERE email = ? AND payment_status != 'completed' ORDER BY id DESC LIMIT 1"),
+            (email,)
+        )
+        row = cur.fetchone()
+        if not row:
+             return {'ok': True, 'processed': False, 'detail': 'No pending registration found'}
+             
+        reg_id = row[0] if not isinstance(row, dict) else row['id']
+    finally:
+        try: conn.close()
+        except: pass
+
+    # Delegate to core logic
+    return _approve_pending_registration(reg_id)
+
+
+@app.get("/admin/registrations", response_class=HTMLResponse)
+def admin_registrations(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    
+    _ensure_pending_registrations_table()
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute('SELECT id, institution_name, contact_name, email, phone, plan, created_at, payment_status FROM pending_registrations ORDER BY id DESC')
+    rows = cur.fetchall() or []
+    conn.close()
+    
+    items = ""
+    for r in rows:
+        d = dict(r) if isinstance(r, dict) else {
+            'id': r[0], 'institution_name': r[1], 'contact_name': r[2], 'email': r[3], 
+            'phone': r[4], 'plan': r[5], 'created_at': r[6], 'payment_status': r[7]
+        }
+        
+        status_color = "#f39c12" # pending
+        if d['payment_status'] == 'completed': status_color = "#2ecc71"
+        if d['payment_status'] == 'failed': status_color = "#e74c3c"
+        
+        actions = ""
+        if d['payment_status'] != 'completed':
+            actions = f"""
+            <form method="post" action="/admin/registrations/approve" style="display:inline;" onsubmit="return confirm('האם לאשר ידנית? פעולה זו תיצור מוסד ותשלח מייל.');">
+                <input type="hidden" name="reg_id" value="{d['id']}" />
+                <button style="background:#3498db; font-size:12px; padding:5px 10px;">אשר ידנית</button>
+            </form>
+            """
+        
+        items += f"""
+        <tr>
+          <td>{d['id']}</td>
+          <td>{d['created_at']}</td>
+          <td style="font-weight:600;">{d['institution_name']}</td>
+          <td>
+            <div>{d['contact_name']}</div>
+            <div style="font-size:12px; opacity:0.7;">{d['email']}</div>
+            <div style="font-size:12px; opacity:0.7;">{d['phone']}</div>
+          </td>
+          <td>{d['plan']}</td>
+          <td><span style="background:{status_color}; color:#fff; padding:2px 6px; border-radius:4px; font-size:12px;">{d['payment_status']}</span></td>
+          <td>{actions}</td>
+        </tr>
+        """
+        
+    body = f"""
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>בקשות הרשמה ({len(rows)})</h2>
+      <a href="/admin/institutions"><button class="btn-gray">חזרה למוסדות</button></a>
+    </div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse;">
+        <thead style="background:#f8f9fa;">
+          <tr>
+            <th>ID</th>
+            <th>תאריך</th>
+            <th>מוסד</th>
+            <th>איש קשר</th>
+            <th>מסלול</th>
+            <th>סטטוס</th>
+            <th>פעולות</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items}
+        </tbody>
+      </table>
+    </div>
+    """
+    return _super_admin_shell("בקשות הרשמה", body, request)
+
+@app.post("/admin/registrations/approve", response_class=HTMLResponse)
+def admin_registrations_approve(request: Request, reg_id: int = Form(...), admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    
+    res = _approve_pending_registration(reg_id)
+    if res.get('ok'):
+        msg = f"ההרשמה אושרה בהצלחה! נוצר Tenant: {res.get('tenant_id')}"
+    else:
+        msg = f"שגיאה באישור: {res.get('detail')}"
+        
+    body = f"""
+    <div class="card">
+        <h2>תוצאת אישור</h2>
+        <p>{msg}</p>
+        <a href="/admin/registrations"><button>חזרה לרשימה</button></a>
+    </div>
+    """
+    return _super_admin_shell("תוצאה", body, request)
+
 @app.post('/api/device/pair/start')
 def api_device_pair_start(request: Request) -> Dict[str, Any]:
     _ensure_device_pairings_table()
@@ -4849,7 +5071,7 @@ def web_guide() -> str:
 
 
 @app.get('/web/register', response_class=HTMLResponse)
-def web_register(request: Request) -> str:
+def web_register(request: Request) -> Response:
     body = """
     <style>
       .reg-container { max-width: 600px; margin: 0 auto; background: rgba(255,255,255,0.05); padding: 30px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 20px 50px rgba(0,0,0,0.3); }
@@ -8724,6 +8946,7 @@ def admin_changes(request: Request, admin_key: str = '') -> str:
           <div class="links">
             <a href="/admin/sync-status">סטטוס סינכרון</a>
             <a href="/admin/institutions">מוסדות</a>
+            <a href="/admin/registrations" style="color:#e67e22; font-weight:bold;">בקשות הרשמה</a>
             <a href="/admin/logout">יציאה</a>
             <a href="/web/admin">עמדת ניהול ווב</a>
           </div>
@@ -8877,6 +9100,9 @@ def admin_institutions(request: Request, admin_key: str = '') -> str:
           <td>{has_pw}</td>
           <td>{created}</td>
           <td>
+            <a href='/admin/institutions/login?tenant_id={r['tenant_id']}' style="text-decoration:none; margin-left:5px;">
+              <button style="padding:6px 12px; font-size:12px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer;">🚀 כניסה</button>
+            </a>
             <a href='/admin/institutions/password?tenant_id={r['tenant_id']}' style="text-decoration:none;">
               <button style="padding:6px 12px; font-size:12px;">🔑 סיסמה</button>
             </a>
@@ -8887,7 +9113,10 @@ def admin_institutions(request: Request, admin_key: str = '') -> str:
     body = f"""
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
       <h2>מוסדות ({len(rows)})</h2>
-      <a href="/admin/setup"><button class="btn-green">+ חדש</button></a>
+      <div>
+        <a href="/admin/registrations" style="margin-left:10px;"><button class="btn-gray">בקשות הרשמה</button></a>
+        <a href="/admin/setup"><button class="btn-green">+ חדש</button></a>
+      </div>
     </div>
     <div class="card" style="padding:0; overflow:hidden;">
       <table>
@@ -8990,6 +9219,30 @@ def admin_institution_password_submit(
     </div>
     """
     return _super_admin_shell("עדכון בוצע", body, request)
+
+
+@app.get("/admin/institutions/login")
+def admin_institution_login(request: Request, tenant_id: str, admin_key: str = '') -> Response:
+    guard = _admin_require(request, admin_key)
+    if guard:
+        return guard  # type: ignore[return-value]
+    
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT 1 FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id.strip(),))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return HTMLResponse("<h3>Tenant not found</h3>", status_code=404)
+        
+    resp = RedirectResponse(url='/web/teacher-login', status_code=302)
+    resp.set_cookie('web_tenant', tenant_id.strip(), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    # Clear teacher cookie to ensure fresh login state
+    resp.delete_cookie('web_teacher')
+    return resp
 
 
 @app.get("/api/students")
