@@ -9238,6 +9238,8 @@ def _super_admin_shell(title: str, body: str, request: Request = None) -> str:
     </html>
     """
 
+
+@app.get("/admin/dashboard", response_class=HTMLResponse)
 def admin_dashboard(request: Request, admin_key: str = '') -> str:
     guard = _admin_require(request, admin_key)
     if guard:
@@ -9300,17 +9302,56 @@ def admin_global_settings(request: Request, admin_key: str = '') -> str:
     if guard:
         return guard
 
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute('SELECT tenant_id, name FROM institutions ORDER BY name')
+    rows = cur.fetchall() or []
+    conn.close()
+
+    items = ""
+    for r in rows:
+        tenant_id = (r.get('tenant_id') if isinstance(r, dict) else r['tenant_id'])
+        name = (r.get('name') if isinstance(r, dict) else r['name'])
+        try:
+            tid = urllib.parse.quote(str(tenant_id or '').strip(), safe='')
+        except Exception:
+            tid = str(tenant_id or '').strip()
+        items += (
+            "<tr>"
+            f"<td style=\"font-weight:700;\">{html.escape(str(name or ''))}</td>"
+            f"<td><code>{html.escape(str(tenant_id or ''))}</code></td>"
+            "<td>"
+            f"<a href=\"/admin/institutions/login?tenant_id={tid}&next=%2Fweb%2Fsystem-settings\" style=\"text-decoration:none;\">"
+            "<button style=\"padding:6px 12px; font-size:12px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer;\">⚙️ לוח הבקרה &gt; הגדרות</button>"
+            "</a>"
+            "</td>"
+            "</tr>"
+        )
+
     body = f"""
-    <h2>הגדרות שרת</h2>
-    <div class="card">
+    <h2>הגדרות</h2>
+    <div class="card" style="margin-bottom:18px;">
       <div style="line-height:1.9;">
         <div><b>Build:</b> {APP_BUILD_TAG}</div>
         <div><b>DB:</b> {'Postgres' if USE_POSTGRES else 'SQLite'}</div>
       </div>
-      <div style="margin-top:16px; display:flex; gap:10px; flex-wrap:wrap;">
-        <a href="/web/system-settings"><button>פתיחת הגדרות מערכת (Web)</button></a>
-        <a href="/admin/dashboard"><button class="btn-gray">חזרה לדשבורד</button></a>
-      </div>
+    </div>
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table>
+        <thead>
+          <tr>
+            <th>שם מוסד</th>
+            <th>Tenant</th>
+            <th>הגדרות</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items}
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:14px;">
+      <a href="/admin/dashboard"><button class="btn-gray">חזרה לדשבורד</button></a>
     </div>
     """
     return _super_admin_shell("הגדרות שרת", body, request)
@@ -9461,7 +9502,7 @@ def admin_institution_password_submit(
 
 
 @app.get("/admin/institutions/login")
-def admin_institution_login(request: Request, tenant_id: str, admin_key: str = '') -> Response:
+def admin_institution_login(request: Request, tenant_id: str, next: str = '', admin_key: str = '') -> Response:
     guard = _admin_require(request, admin_key)
     if guard:
         return guard  # type: ignore[return-value]
@@ -9477,7 +9518,11 @@ def admin_institution_login(request: Request, tenant_id: str, admin_key: str = '
     if not row:
         return HTMLResponse("<h3>Tenant not found</h3>", status_code=404)
         
-    resp = RedirectResponse(url='/web/admin', status_code=302)
+    target = str(next or '').strip()
+    if not target.startswith('/web'):
+        target = '/web/admin'
+
+    resp = RedirectResponse(url=target, status_code=302)
     resp.set_cookie('web_tenant', tenant_id.strip(), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
     resp.delete_cookie('web_teacher')
     try:
