@@ -1297,8 +1297,8 @@ def web_logout() -> Response:
     return resp
 
 
-@app.get('/web/signin', response_class=HTMLResponse)
-def web_signin(request: Request) -> Response | str:
+@app.get('/web/signin', response_class=HTMLResponse, response_model=None)
+def web_signin(request: Request):
     tenant_id = _web_tenant_from_cookie(request)
     teacher_id = _web_teacher_from_cookie(request)
     if tenant_id and teacher_id:
