@@ -4087,6 +4087,10 @@ class TeacherSavePayload(BaseModel):
     bonus_max_total_runs: int | None = None
 
 
+class TeacherDeletePayload(BaseModel):
+    teacher_id: int
+
+
 class TeacherAllowedClassesPayload(BaseModel):
     teacher_id: int
     classes: List[str] = []
