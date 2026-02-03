@@ -55,6 +55,7 @@ def create_voucher_image(voucher_data: dict, logo_path: str = None) -> Image.Ima
         ('C:/Windows/Fonts/tahomabd.ttf', 'C:/Windows/Fonts/tahoma.ttf'),
     ]
     
+    font_extra_large_bold = None
     font_large_bold = None
     font_medium_bold = None
     font_medium = None
@@ -63,6 +64,7 @@ def create_voucher_image(voucher_data: dict, logo_path: str = None) -> Image.Ima
     for bold_path, regular_path in font_paths:
         try:
             if os.path.exists(bold_path):
+                font_extra_large_bold = ImageFont.truetype(bold_path, 60)
                 font_large_bold = ImageFont.truetype(bold_path, 48)
                 font_medium_bold = ImageFont.truetype(bold_path, 32)
             if os.path.exists(regular_path):
@@ -72,8 +74,8 @@ def create_voucher_image(voucher_data: dict, logo_path: str = None) -> Image.Ima
         except:
             pass
     
-    if not font_large_bold:
-        font_large_bold = font_medium_bold = font_medium = font_small = ImageFont.load_default()
+    if not font_extra_large_bold:
+        font_extra_large_bold = font_large_bold = font_medium_bold = font_medium = font_small = ImageFont.load_default()
     
     y = 30
     
@@ -149,11 +151,12 @@ def create_voucher_image(voucher_data: dict, logo_path: str = None) -> Image.Ima
     item_name = voucher_data.get('item_name', '')
     if item_name:
         text = reverse_hebrew_for_image(item_name)
-        bbox = draw.textbbox((0, 0), text, font=font_medium_bold)
+        # Use extra large font for item name
+        bbox = draw.textbbox((0, 0), text, font=font_extra_large_bold)
         text_width = bbox[2] - bbox[0]
         x = (width - text_width) // 2
-        draw.text((x, y), text, fill='black', font=font_medium_bold)
-        y += 45
+        draw.text((x, y), text, fill='black', font=font_extra_large_bold)
+        y += 70  # More space for larger font
     
     # Quantity (if > 1)
     qty = voucher_data.get('qty', 1)

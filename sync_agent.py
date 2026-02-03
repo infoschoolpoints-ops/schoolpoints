@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import atexit
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 
 try:
     from database import Database
@@ -277,6 +278,12 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
         'scheduled_service_reservations',
         'points_log',
         'web_settings',
+        'card_blocks',
+        'card_validations',
+        'anti_spam_events',
+        'points_history',
+        'refunds_log',
+        'time_bonus_given',
     ]
     applied: Dict[str, int] = {}
     cur = conn.cursor()
@@ -291,8 +298,11 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
             except Exception:
                 applied[t] = 0
         
-        # Update last_change_id if present
-        last_id = snapshot.get('last_change_id')
+        # Update pull cursor if present (server-side event cursor)
+        last_id = snapshot.get('last_event_id')
+        if last_id is None:
+            # Backward compatibility (older server returned last_change_id)
+            last_id = snapshot.get('last_change_id')
         if last_id is not None:
             try:
                 _set_sync_state(conn, 'pull_since_id', str(last_id))
@@ -424,7 +434,6 @@ def _set_sync_state(conn: sqlite3.Connection, key: str, value: str) -> None:
         pass
 
 
-
 def _resolve_db_path(base_dir: str, cfg: Dict[str, Any]) -> str:
     if Database is not None:
         try:
@@ -551,7 +560,7 @@ def build_snapshot(conn: sqlite3.Connection) -> Dict[str, Any]:
             conn,
             """
             SELECT id, serial_number, last_name, first_name, class_name, points, card_number,
-                   id_number, photo_number, private_message, created_at, updated_at
+                   id_number, photo_number, private_message, is_free_fix_blocked, created_at, updated_at
               FROM students
             ORDER BY id ASC
             """
@@ -689,6 +698,18 @@ def _mark_event_applied(conn: sqlite3.Connection, event_id: str) -> None:
             pass
 
 
+def _parse_dt_maybe(ts: str | None) -> Optional[datetime]:
+    s = str(ts or '').strip()
+    if not s:
+        return None
+    try:
+        # common: 'YYYY-MM-DD HH:MM:SS'
+        s2 = s.replace('Z', '').replace('T', ' ')
+        return datetime.fromisoformat(s2)
+    except Exception:
+        return None
+
+
 def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> int:
     if not items:
         return 0
@@ -712,8 +733,323 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
 
             if entity_type == 'student_points' and action_type == 'update':
                 sid = int(entity_id or '0')
+                if sid <= 0:
+                    continue
+                old_points = int(payload.get('old_points') or 0)
                 new_points = int(payload.get('new_points') or 0)
-                cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (int(new_points), int(sid)))
+                delta = int(new_points - old_points)
+                if delta == 0:
+                    if event_id:
+                        _mark_event_applied(conn, event_id)
+                    continue
+                cur.execute('SELECT points FROM students WHERE id = ? LIMIT 1', (int(sid),))
+                r0 = cur.fetchone()
+                if not r0:
+                    continue
+                try:
+                    cur_points = int((r0.get('points') if isinstance(r0, dict) else r0['points']))
+                except Exception:
+                    try:
+                        cur_points = int(r0[0])
+                    except Exception:
+                        cur_points = 0
+                final_points = int(cur_points + delta)
+                cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (int(final_points), int(sid)))
+                try:
+                    reason = str(payload.get('reason') or '').strip()
+                    cur.execute(
+                        '''
+                        INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''',
+                        (int(sid), int(cur_points), int(final_points), int(delta), reason, 'sync', 'sync')
+                    )
+                except Exception:
+                    pass
+                applied += 1
+
+            if entity_type == 'student' and action_type in ('create', 'update', 'delete'):
+                try:
+                    sid = int(entity_id or 0)
+                    if sid <= 0:
+                        sid = int(payload.get('id') or 0)
+                    
+                    if action_type == 'delete':
+                        if sid > 0:
+                            # Delete logs first to avoid foreign key issues if any (though usually no FK enforced)
+                            try:
+                                cur.execute("DELETE FROM points_log WHERE student_id = ?", (sid,))
+                            except:
+                                pass
+                            try:
+                                cur.execute("DELETE FROM points_history WHERE student_id = ?", (sid,))
+                            except:
+                                pass
+                            cur.execute("DELETE FROM students WHERE id = ?", (sid,))
+                            applied += 1
+                        continue
+
+                    # Fields to update
+                    # 'points' is handled carefully - if provided, we update it (admin override)
+                    # but usually points flow via student_points delta. 
+                    # If this is a full profile save, it includes points.
+                    
+                    serial = str(payload.get('serial_number') or '').strip()
+                    first = str(payload.get('first_name') or '').strip()
+                    last = str(payload.get('last_name') or '').strip()
+                    cls_name = str(payload.get('class_name') or '').strip()
+                    card = str(payload.get('card_number') or '').strip()
+                    photo = str(payload.get('photo_number') or '').strip()
+                    p_msg = str(payload.get('private_message') or '')
+                    idn = str(payload.get('id_number') or '').strip()
+                    blocked = int(payload.get('is_free_fix_blocked') or 0)
+                    
+                    # Check if exists
+                    exists = False
+                    if sid > 0:
+                        cur.execute('SELECT 1 FROM students WHERE id = ?', (sid,))
+                        exists = bool(cur.fetchone())
+                    
+                    if not exists and serial:
+                        # Try match by serial if ID not found (maybe different ID locally? shouldn't happen with snapshot)
+                        cur.execute('SELECT id FROM students WHERE serial_number = ?', (serial,))
+                        row = cur.fetchone()
+                        if row:
+                            sid = int(row[0])
+                            exists = True
+
+                    if action_type == 'create' and not exists:
+                        # Insert
+                        cols = ['serial_number', 'first_name', 'last_name', 'class_name', 'card_number', 'photo_number', 'private_message', 'id_number', 'is_free_fix_blocked', 'created_at', 'updated_at']
+                        vals = [serial, first, last, cls_name, card, photo, p_msg, idn, blocked, datetime.now(), datetime.now()]
+                        placeholders = '?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?'
+                        
+                        if sid > 0:
+                            cols.insert(0, 'id')
+                            vals.insert(0, sid)
+                            placeholders = '?, ' + placeholders
+                            
+                        # If points provided in payload (new student)
+                        if 'points' in payload:
+                            cols.append('points')
+                            vals.append(int(payload['points']))
+                            placeholders += ', ?'
+                            
+                        sql = f"INSERT INTO students ({', '.join(cols)}) VALUES ({placeholders})"
+                        cur.execute(sql, vals)
+                        applied += 1
+                        
+                    elif exists:
+                        # Update
+                        sets = [
+                            "serial_number = ?", "first_name = ?", "last_name = ?", 
+                            "class_name = ?", "card_number = ?", "photo_number = ?",
+                            "private_message = ?", "id_number = ?", "is_free_fix_blocked = ?", "updated_at = ?"
+                        ]
+                        pvals = [serial, first, last, cls_name, card, photo, p_msg, idn, blocked, datetime.now()]
+                        
+                        # Only update points if explicitly in payload (Admin edit)
+                        if 'points' in payload:
+                            sets.append("points = ?")
+                            pvals.append(int(payload['points']))
+                            
+                        pvals.append(sid)
+                        
+                        sql = f"UPDATE students SET {', '.join(sets)} WHERE id = ?"
+                        cur.execute(sql, pvals)
+                        applied += 1
+                except Exception as e:
+                    print(f"[SYNC] Student sync error: {e}")
+
+            if entity_type == 'teacher' and action_type in ('create', 'update', 'delete'):
+                try:
+                    tid = int(entity_id or 0)
+                    if tid <= 0: 
+                        tid = int(payload.get('id') or 0)
+                        
+                    if action_type == 'delete':
+                        if tid > 0:
+                            cur.execute("DELETE FROM teachers WHERE id = ?", (tid,))
+                            applied += 1
+                    else:
+                        # Create/Update
+                        name = str(payload.get('name') or '').strip()
+                        card1 = str(payload.get('card_number') or '').strip()
+                        card2 = str(payload.get('card_number2') or '').strip()
+                        card3 = str(payload.get('card_number3') or '').strip()
+                        is_admin = int(payload.get('is_admin') or 0)
+                        can_card = int(payload.get('can_edit_student_card') or 0)
+                        can_photo = int(payload.get('can_edit_student_photo') or 0)
+                        
+                        # Check existence
+                        exists = False
+                        if tid > 0:
+                            cur.execute('SELECT 1 FROM teachers WHERE id = ?', (tid,))
+                            exists = bool(cur.fetchone())
+                            
+                        if not exists and action_type == 'create':
+                            cols = ['id', 'name', 'card_number', 'card_number2', 'card_number3', 'is_admin', 'can_edit_student_card', 'can_edit_student_photo', 'updated_at']
+                            vals = [tid, name, card1, card2, card3, is_admin, can_card, can_photo, datetime.now()]
+                            # handle optional bonus fields if present
+                            if 'bonus_max_points_per_student' in payload:
+                                cols.append('bonus_max_points_per_student')
+                                vals.append(payload['bonus_max_points_per_student'])
+                            if 'bonus_max_total_runs' in payload:
+                                cols.append('bonus_max_total_runs')
+                                vals.append(payload['bonus_max_total_runs'])
+                                
+                            q = f"INSERT INTO teachers ({', '.join(cols)}) VALUES ({', '.join(['?']*len(cols))})"
+                            cur.execute(q, vals)
+                            applied += 1
+                        elif exists:
+                            sets = [
+                                "name=?", "card_number=?", "card_number2=?", "card_number3=?",
+                                "is_admin=?", "can_edit_student_card=?", "can_edit_student_photo=?", "updated_at=?"
+                            ]
+                            vals = [name, card1, card2, card3, is_admin, can_card, can_photo, datetime.now()]
+                            
+                            if 'bonus_max_points_per_student' in payload:
+                                sets.append("bonus_max_points_per_student=?")
+                                vals.append(payload['bonus_max_points_per_student'])
+                            if 'bonus_max_total_runs' in payload:
+                                sets.append("bonus_max_total_runs=?")
+                                vals.append(payload['bonus_max_total_runs'])
+                                
+                            vals.append(tid)
+                            q = f"UPDATE teachers SET {', '.join(sets)} WHERE id=?"
+                            cur.execute(q, vals)
+                            applied += 1
+                except Exception as e:
+                    print(f"[SYNC] Teacher sync error: {e}")
+
+            if entity_type == 'class':
+                try:
+                    if action_type == 'rename':
+                        old_name = str(payload.get('old_name') or '').strip()
+                        new_name = str(payload.get('new_name') or '').strip()
+                        if old_name and new_name:
+                            cur.execute("UPDATE students SET class_name = ? WHERE class_name = ?", (new_name, old_name))
+                            applied += 1
+                    elif action_type == 'delete':
+                        class_name = str(payload.get('class_name') or '').strip()
+                        if class_name:
+                            cur.execute("UPDATE students SET class_name = '' WHERE class_name = ?", (class_name,))
+                            applied += 1
+                except Exception as e:
+                    print(f"[SYNC] Class sync error: {e}")
+
+            if entity_type == 'product' and action_type in ('create', 'update', 'delete'):
+                try:
+                    pid = int(entity_id or 0)
+                    if pid <= 0:
+                        pid = int(payload.get('id') or 0)
+                        
+                    if action_type == 'delete':
+                        if pid > 0:
+                            # Soft delete to match web behavior
+                            cur.execute("UPDATE products SET is_active = 0 WHERE id = ?", (pid,))
+                            if cur.rowcount == 0:
+                                # If not found, maybe it doesn't exist, but let's ensure it's "deleted"
+                                # If we want to hard delete: cur.execute("DELETE FROM products WHERE id = ?", (pid,))
+                                pass
+                            applied += 1
+                    else:
+                        # Create/Update
+                        name = str(payload.get('name') or '').strip()
+                        price = int(payload.get('price_points') or 0)
+                        stock = payload.get('stock_qty')
+                        if stock is not None:
+                            stock = int(stock)
+                        
+                        # Check existence
+                        exists = False
+                        if pid > 0:
+                            cur.execute('SELECT 1 FROM products WHERE id = ?', (pid,))
+                            exists = bool(cur.fetchone())
+                            
+                        if not exists and action_type == 'create':
+                            cols = ['id', 'name', 'price_points', 'is_active', 'updated_at']
+                            vals = [pid, name, price, 1, datetime.now()]
+                            placeholders = '?, ?, ?, ?, ?'
+                            
+                            if stock is not None:
+                                cols.append('stock_qty')
+                                vals.append(stock)
+                                placeholders += ', ?'
+                                
+                            sql = f"INSERT INTO products ({', '.join(cols)}) VALUES ({placeholders})"
+                            cur.execute(sql, vals)
+                            applied += 1
+                        elif exists:
+                            sets = ["name=?", "price_points=?", "updated_at=?"]
+                            vals = [name, price, datetime.now()]
+                            
+                            if stock is not None:
+                                sets.append("stock_qty=?")
+                                vals.append(stock)
+                            else:
+                                # If payload explicit null, maybe set null? Web UI sends null for infinity
+                                sets.append("stock_qty=?")
+                                vals.append(None)
+                                
+                            # Ensure active on update
+                            sets.append("is_active=1")
+                                
+                            vals.append(pid)
+                            sql = f"UPDATE products SET {', '.join(sets)} WHERE id=?"
+                            cur.execute(sql, vals)
+                            applied += 1
+                except Exception as e:
+                    print(f"[SYNC] Product sync error: {e}")
+
+            if entity_type == 'setting' and action_type in ('create', 'update'):
+                key = str(payload.get('key') or payload.get('name') or payload.get('setting') or '').strip()
+                value = str(payload.get('value') or payload.get('val') or '').strip()
+                if not key:
+                    continue
+                incoming_dt = _parse_dt_maybe(ev.get('created_at'))
+                try:
+                    cur.execute('SELECT value, updated_at FROM settings WHERE key = ? LIMIT 1', (key,))
+                    ex = cur.fetchone()
+                except Exception:
+                    ex = None
+
+                if ex:
+                    try:
+                        ex_value = str(ex.get('value') if isinstance(ex, dict) else ex['value'])
+                    except Exception:
+                        try:
+                            ex_value = str(ex[0])
+                        except Exception:
+                            ex_value = ''
+                    try:
+                        ex_updated_at = (ex.get('updated_at') if isinstance(ex, dict) else ex['updated_at'])
+                    except Exception:
+                        try:
+                            ex_updated_at = ex[1]
+                        except Exception:
+                            ex_updated_at = None
+                    existing_dt = _parse_dt_maybe(ex_updated_at)
+                    # Prefer newer action time; if cannot parse, default to applying incoming
+                    if incoming_dt and existing_dt and incoming_dt < existing_dt and ex_value != value:
+                        # keep existing newer value
+                        if event_id:
+                            _mark_event_applied(conn, event_id)
+                        continue
+
+                try:
+                    cur.execute(
+                        'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
+                        'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP',
+                        (key, value)
+                    )
+                except Exception:
+                    try:
+                        cur.execute('UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?', (value, key))
+                        if cur.rowcount == 0:
+                            cur.execute('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)', (key, value))
+                    except Exception:
+                        pass
                 applied += 1
             
             # Handle message entities
@@ -722,7 +1058,8 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                 'threshold_message': 'threshold_messages',
                 'news_item': 'news_items',
                 'ads_item': 'ads_items',
-                'student_message': 'student_messages'
+                'student_message': 'student_messages',
+                'time_bonus_given': 'time_bonus_given'
             }
             
             if entity_type in table_map:
@@ -855,31 +1192,31 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
     except Exception:
         pass
 
+    last_file_sync = 0.0
+    pull_enabled = bool(pull_url and api_key and tenant_id)
     try:
-    last_file_sync = 0.0        pull_enabled = bool(pull_url and api_key and tenant_id)
-
         print(f"[CFG] tenant_id={tenant_id or '-'} station_id={station_id or '-'} push_url={'set' if bool(push_url) else '-'} pull_url={'set' if bool(pull_url) else '-'} pull_enabled={1 if pull_enabled else 0}")
     except Exception:
+        pass
+    backoff = 0
+
+    while True:
+        # --- FILE SYNC (Every 5 minutes) ---
         try:
-            # --- FILE SYNC (Every 5 minutes) ---
             now = time.time()
             if push_url and api_key and tenant_id:
                 if now - last_file_sync > 300:
                     try:
                         print("[FILE-SYNC] Starting file sync cycle...")
-                        # Determine base dir for assets (usually where db is or configured)
-                        # We use the parent folder of the DB or the shared folder
-                        asseps_base = os.path.dirname(db_path)
-                        sync_files_cycle(push_ual, api_kes, tenant_id, assets_base)
+                        assets_base = os.path.dirname(str(db_path))
+                        sync_files_cycle(str(push_url), str(api_key), str(tenant_id), str(assets_base))
                         last_file_sync = now
                     except Exception as e:
                         print(f"[FILE-SYNC] Errors {e}")
-            # -----------------------------------
+        except Exception:
+            pass
+        # -----------------------------------
 
-
-    backoff = 0
-
-    while True:
         conn = _connect(db_path)
         try:
             _ensure_change_log(conn)

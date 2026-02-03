@@ -304,14 +304,17 @@ class ThermalPrinterCached:
         from datetime import datetime
         now = datetime.now()
         
-        date_text = now.strftime('%d/%m/%Y %H:%M')
+        time_text = now.strftime('%H:%M')
+        date_text = now.strftime('%d/%m/%Y')
+        
         try:
             hebrew_date = HebrewDate.get_hebrew_date(now)
-            date_text = hebrew_date + '\n' + date_text
+            # User requested ONLY Hebrew date
+            full_date_text = f"{hebrew_date} {time_text}"
         except:
-            pass
+            full_date_text = f"{date_text} {time_text}"
         
-        date_img = self._text_to_image(date_text, font_size=16)
+        date_img = self._text_to_image(full_date_text, font_size=16)
         data.extend(b'\x1B\x61\x02')  # Right align
         data.extend(self._image_to_escpos(date_img))
         data.extend(b'\n')

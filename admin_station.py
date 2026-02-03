@@ -9996,6 +9996,53 @@ class AdminStation:
             row1fi.pack_forget()
             row1fi.columnconfigure(1, weight=1)
             tk.Label(row1fi, text=fix_rtl_text("מפתח API (לסנכרון):"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
+            tk.Entry(row1fi, textvariable=api_key_var, justify='right').grid(row=0, column=1, sticky='ew', padx=5)
+
+            # שורה - פעולות ענן (אתחול)
+            row1gi = tk.Frame(frame2, bg='#ecf0f1')
+            row1gi.pack_forget()
+            row1gi.columnconfigure(1, weight=1)
+            
+            def _do_cloud_init_push():
+                if not messagebox.askyesno('אתחול ענן', 'פעולה זו תשלח את כל הנתונים המקומיים (מורים, תלמידים, הגדרות) לענן ותדרוס את מה שקיים שם.\nהאם להמשיך?', parent=dialog2):
+                    return
+                
+                try:
+                    import sync_agent
+                    db_path = self.db.db_path
+                    push_url = push_url_var.get().strip()
+                    api_key = api_key_var.get().strip()
+                    tenant_id = tenant_id_var.get().strip()
+                    
+                    if not (push_url and api_key and tenant_id):
+                         messagebox.showerror('שגיאה', 'חסרים פרטי חיבור (URL, API Key, Tenant ID)', parent=dialog2)
+                         return
+                         
+                    # Derive snapshot url
+                    snapshot_url = push_url
+                    if snapshot_url.endswith('/sync/push'):
+                        snapshot_url = snapshot_url[:-len('/sync/push')] + '/sync/snapshot'
+                    else:
+                        snapshot_url = snapshot_url.rstrip('/') + '/sync/snapshot'
+                        
+                    # Build snapshot
+                    conn = sync_agent._connect(db_path)
+                    try:
+                        snap = sync_agent.build_snapshot(conn)
+                    finally:
+                        conn.close()
+                        
+                    # Push
+                    ok = sync_agent.push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=socket.gethostname())
+                    if ok:
+                        messagebox.showinfo('הצלחה', 'הנתונים נשלחו לענן בהצלחה.', parent=dialog2)
+                    else:
+                        messagebox.showerror('כישלון', 'שליחת הנתונים נכשלה. בדוק חיבור ויומן.', parent=dialog2)
+                        
+                except Exception as e:
+                    messagebox.showerror('שגיאה', f'אירעה שגיאה: {e}', parent=dialog2)
+
+            tk.Button(row1gi, text='🚀 אתחול ענן (שלח הכל)', command=_do_cloud_init_push, bg='#e67e22', fg='white', font=('Arial', 9, 'bold')).pack(side=tk.RIGHT, padx=5, pady=5)
             api_key_entry_i = tk.Entry(row1fi, textvariable=api_key_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right', show='*')
             api_key_entry_i.grid(row=0, column=1, sticky='e', padx=5)
             tk.Label(row1fi, text=fix_rtl_text("(סודי)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
@@ -10224,9 +10271,13 @@ class AdminStation:
             connect_row.pack(fill=tk.X, pady=(6, 0))
             connect_row.columnconfigure(1, weight=1)
             tk.Label(connect_row, text=fix_rtl_text("חיבור לחשבון ענן:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
-            pairing_in_progress = {'on': False}
+            
+            # Frame for buttons + advanced toggle
+            btn_frame = tk.Frame(connect_row, bg='#ecf0f1')
+            btn_frame.grid(row=0, column=1, sticky='e', padx=5)
+            
             connect_btn = tk.Button(
-                connect_row,
+                btn_frame,
                 text='🌐 התחבר',
                 command=_open_cloud_connect,
                 font=('Arial', 9, 'bold'),
@@ -10235,10 +10286,10 @@ class AdminStation:
                 padx=14,
                 pady=5
             )
-            connect_btn.grid(row=0, column=1, sticky='e', padx=5)
+            connect_btn.pack(side=tk.RIGHT, padx=5)
 
             disconnect_btn = tk.Button(
-                connect_row,
+                btn_frame,
                 text='התנתק',
                 font=('Arial', 9, 'bold'),
                 bg='#95a5a6',
@@ -10246,7 +10297,35 @@ class AdminStation:
                 padx=14,
                 pady=5
             )
-            disconnect_btn.grid(row=0, column=0, sticky='e', padx=6)
+            disconnect_btn.pack(side=tk.RIGHT, padx=5)
+            
+            show_details_var = tk.IntVar(value=0)
+            
+            def _toggle_advanced_connection():
+                if show_details_var.get():
+                    try:
+                        row1di.pack(fill=tk.X, pady=3, after=row1bi)
+                        row1ei.pack(fill=tk.X, pady=3, after=row1di)
+                        row1fi.pack(fill=tk.X, pady=3, after=row1ei)
+                        row1gi.pack(fill=tk.X, pady=3, after=row1fi)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        row1di.pack_forget()
+                        row1ei.pack_forget()
+                        row1fi.pack_forget()
+                        row1gi.pack_forget()
+                    except Exception:
+                        pass
+
+            tk.Checkbutton(
+                btn_frame, 
+                text=fix_rtl_text("פרטים מתקדמים"), 
+                variable=show_details_var, 
+                bg='#ecf0f1',
+                command=_toggle_advanced_connection
+            ).pack(side=tk.RIGHT, padx=10)
 
             cloud_state_lbl = tk.Label(connect_row, text=fix_rtl_text(''), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d', anchor='e', justify='right')
             cloud_state_lbl.grid(row=1, column=1, columnspan=2, sticky='e', padx=5, pady=(2, 0))
@@ -10445,6 +10524,38 @@ class AdminStation:
                                     self._maybe_start_sync_agent()
                                 except Exception:
                                     pass
+                                
+                                # Auto-fetch license
+                                try:
+                                    if self.license_manager:
+                                        # Use a thread or just do it (it is network IO, but we are already in a callback, wait, _on_done is run via after(0) so on main thread?)
+                                        # _on_done is scheduled on main thread via dialog2.after(0). 
+                                        # Network calls should ideally be background, but this is a short call.
+                                        # However, fetch_and_activate_from_cloud uses urllib which blocks.
+                                        # Better to run it in a thread to avoid freezing UI if it hangs.
+                                        def _fetch_lic():
+                                            try:
+                                                lok, lmsg = self.license_manager.fetch_and_activate_from_cloud(purl, tid, key)
+                                                if lok:
+                                                    # Refresh UI on success
+                                                    def _refresh_lic_ui():
+                                                        if license_status_label:
+                                                            license_status_label.config(text=get_license_status_text())
+                                                        if hasattr(self, "license_header_label"):
+                                                            try:
+                                                                self.license_header_label.config(text=self.license_manager.get_startup_message() or "מצב רישיון: פעיל")
+                                                                # actually we have a helper for header text but it's not in scope here easily
+                                                                # re-trigger full refresh if possible or just message
+                                                            except: pass
+                                                        messagebox.showinfo("רישום אוטומטי", f"הרישיון נמשך מהענן והופעל בהצלחה.\n{lmsg}", parent=dialog2)
+                                                    self.root.after(0, _refresh_lic_ui)
+                                            except Exception as e:
+                                                print(f"Auto-license fetch error: {e}")
+                                        
+                                        threading.Thread(target=_fetch_lic, daemon=True).start()
+                                except Exception:
+                                    pass
+
                                 try:
                                     cloud_state_lbl.configure(text=fix_rtl_text('מחובר לענן'))
                                 except Exception:

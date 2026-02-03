@@ -5716,11 +5716,22 @@ class PublicStation:
 
         def _time_to_minutes(value: str):
             try:
-                parts = str(value or '').strip().split(':')
-                if len(parts) != 2:
+                s = str(value or '').strip().replace('.', ':').replace(' ', '')
+                if not s:
                     return None
-                hh = int(parts[0])
-                mm = int(parts[1])
+                if ':' in s:
+                    parts = s.split(':')
+                    hh = int(parts[0])
+                    mm = int(parts[1]) if len(parts) > 1 and parts[1] else 0
+                elif len(s) == 4 and s.isdigit(): # 0800
+                    hh = int(s[:2])
+                    mm = int(s[2:])
+                elif len(s) <= 2 and s.isdigit(): # 8 or 08
+                    hh = int(s)
+                    mm = 0
+                else:
+                    return None
+                    
                 if hh < 0 or hh > 23 or mm < 0 or mm > 59:
                     return None
                 return hh * 60 + mm
@@ -5761,6 +5772,14 @@ class PublicStation:
                 except Exception:
                     quiet_int = vol_int
                 vol_int = max(0, min(100, quiet_int))
+            
+            # Fix for winsound (no volume control): Force mute if quiet mode is active and we can't lower volume
+            if not USE_PYGAME and enabled:
+                # If we are in quiet mode (even 'low'), winsound would play at 100%. 
+                # Better to mute completely than disturb.
+                enabled = False
+                vol_int = 0
+
         vol = float(vol_int) / 100.0
 
         try:

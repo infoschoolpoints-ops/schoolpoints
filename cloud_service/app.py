@@ -28,7 +28,7 @@ try:
 except Exception:
     psycopg2 = None  # type: ignore[assignment]
     psycopg2_extras = None  # type: ignore[assignment]
-from fastapi import FastAPI, Header, HTTPException, Form, Query, Request, UploadFile, File
+from fastapi import FastAPI, Header, HTTPException, Form, Query, Request, UploadFile, File, Body
 from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse
 from pydantic import BaseModel
 
@@ -38,6 +38,40 @@ except Exception:
     boto3 = None  # type: ignore[assignment]
 
 app = FastAPI(title="SchoolPoints Sync")
+
+
+@app.middleware("http")
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        traceback.print_exc()
+        # If it's a browser request, show the traceback HTML
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept:
+            tb_str = traceback.format_exc()
+            html_content = f"""
+            <html>
+            <head>
+                <title>500 Internal Server Error</title>
+                <style>
+                    body {{ font-family: monospace; padding: 20px; background: #f8f9fa; color: #333; }}
+                    h1 {{ color: #e74c3c; }}
+                    pre {{ background: #fff; padding: 15px; border: 1px solid #ddd; border-radius: 5px; overflow: auto; }}
+                </style>
+            </head>
+            <body>
+                <h1>500 Internal Server Error</h1>
+                <p>An unexpected error occurred.</p>
+                <pre>{html.escape(tb_str)}</pre>
+            </body>
+            </html>
+            """
+            return HTMLResponse(content=html_content, status_code=500)
+        
+        # For API/JSON requests
+        return Response(content="Internal Server Error", status_code=500)
+
 
 
 @app.get("/", include_in_schema=False)
@@ -162,6 +196,46 @@ def _ensure_teacher_columns(conn) -> None:
     _add_if_missing('bonus_runs_reset_date', 'bonus_runs_reset_date TEXT')
     _add_if_missing('bonus_points_used', 'bonus_points_used INTEGER DEFAULT 0')
     _add_if_missing('bonus_points_reset_date', 'bonus_points_reset_date TEXT')
+    try:
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _ensure_student_columns(conn) -> None:
+    cols: set[str] = set()
+    try:
+        if USE_POSTGRES:
+            cols = set([c.lower() for c in _table_columns_postgres(conn, 'students')])
+        else:
+            cols = set([c.lower() for c in _table_columns(conn, 'students')])
+    except Exception:
+        cols = set()
+    
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        for ddl in (
+            'is_free_fix_blocked INTEGER DEFAULT 0',
+        ):
+            try:
+                cur.execute(f'ALTER TABLE students ADD COLUMN IF NOT EXISTS {ddl}')
+            except Exception:
+                pass
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        return
+
+    def _add_if_missing(col: str, ddl: str) -> None:
+        if col in cols:
+            return
+        try:
+            cur.execute(f'ALTER TABLE students ADD COLUMN {ddl}')
+        except Exception:
+            pass
+
+    _add_if_missing('is_free_fix_blocked', 'is_free_fix_blocked INTEGER DEFAULT 0')
     try:
         conn.commit()
     except Exception:
@@ -423,7 +497,6 @@ def admin_login_form() -> str:
             <input name="admin_key" type="password" required />
             <button type="submit">כניסה</button>
           </form>
-          <div class="hint">build: """ + APP_BUILD_TAG + """</div>
         </div>
       </div>
     </body>
@@ -500,78 +573,177 @@ def _ensure_pending_registrations_table() -> None:
     conn = _db()
     try:
         cur = conn.cursor()
-        if USE_POSTGRES:
-            cur.execute(
-                '''
-                CREATE TABLE IF NOT EXISTS pending_registrations (
-                    id BIGSERIAL PRIMARY KEY,
-                    institution_name TEXT NOT NULL,
-                    contact_name TEXT,
-                    email TEXT NOT NULL,
-                    phone TEXT,
-                    password_hash TEXT,
-                    plan TEXT,
-                    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    payment_status TEXT DEFAULT 'pending',
-                    payment_id TEXT
+        try:
+            if USE_POSTGRES:
+                cur.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS pending_registrations (
+                        id BIGSERIAL PRIMARY KEY,
+                        institution_name TEXT NOT NULL,
+                        institution_code TEXT,
+                        contact_name TEXT,
+                        email TEXT NOT NULL,
+                        phone TEXT,
+                        password_hash TEXT,
+                        plan TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        payment_status TEXT DEFAULT 'pending',
+                        payment_id TEXT
+                    )
+                    '''
                 )
-                '''
-            )
-        else:
-            cur.execute(
-                '''
-                CREATE TABLE IF NOT EXISTS pending_registrations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    institution_name TEXT NOT NULL,
-                    contact_name TEXT,
-                    email TEXT NOT NULL,
-                    phone TEXT,
-                    password_hash TEXT,
-                    plan TEXT,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    payment_status TEXT DEFAULT 'pending',
-                    payment_id TEXT
+            else:
+                cur.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS pending_registrations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        institution_name TEXT NOT NULL,
+                        institution_code TEXT,
+                        contact_name TEXT,
+                        email TEXT NOT NULL,
+                        phone TEXT,
+                        password_hash TEXT,
+                        plan TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        payment_status TEXT DEFAULT 'pending',
+                        payment_id TEXT
+                    )
+                    '''
                 )
-                '''
-            )
+        except Exception:
+            print('Registration setup error (pending_registrations table):')
+            try:
+                print(traceback.format_exc())
+            except Exception:
+                pass
+            raise
+
+        try:
+            if USE_POSTGRES:
+                cur.execute('ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS institution_code TEXT')
+            else:
+                cur.execute('ALTER TABLE pending_registrations ADD COLUMN institution_code TEXT')
+        except Exception:
+            pass
         conn.commit()
     finally:
         try: conn.close()
         except: pass
 
+
+def _generate_numeric_tenant_id(conn) -> str:
+    cur = conn.cursor()
+    for _ in range(30):
+        try:
+            cand = str(secrets.randbelow(10**8)).zfill(8)
+        except Exception:
+            cand = str(int(datetime.datetime.utcnow().timestamp()))
+        if not cand or cand[0] == '0':
+            continue
+        try:
+            cur.execute(_sql_placeholder('SELECT 1 FROM institutions WHERE tenant_id = ? LIMIT 1'), (cand,))
+            if not cur.fetchone():
+                return cand
+        except Exception:
+            continue
+    return str(int(datetime.datetime.utcnow().timestamp()))
+
 @app.post('/api/register')
-def api_register(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
+def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     _ensure_pending_registrations_table()
     
     inst_name = str(payload.get('institution_name') or '').strip()
+    inst_code = str(payload.get('institution_code') or '').strip()
     contact = str(payload.get('contact_name') or '').strip()
     email = str(payload.get('email') or '').strip()
     phone = str(payload.get('phone') or '').strip()
     password = str(payload.get('password') or '').strip()
     plan = str(payload.get('plan') or 'basic').strip()
+    terms_ok = payload.get('terms')
     
     if not inst_name or not email or not password:
         raise HTTPException(status_code=400, detail="Missing required fields")
+
+    if not terms_ok:
+        raise HTTPException(status_code=400, detail="Missing terms approval")
+
+    if not inst_code:
+        raise HTTPException(status_code=400, detail="Missing institution code")
         
-    # Basic password hashing (mock for now, should use bcrypt/argon2 in prod)
-    # Using SHA256 for simplicity in this dev phase, switch to passlib later
-    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    # Allow alphanumeric, but ensure it's url-safe-ish
+    if not re.match(r'^[a-zA-Z0-9\-_]+$', inst_code):
+        raise HTTPException(status_code=400, detail="Institution code must be alphanumeric (letters, numbers, -, _)")
+        
+    password_hash = _pbkdf2_hash(password)
     
     conn = _db()
     try:
         cur = conn.cursor()
+
+        cur.execute(_sql_placeholder('SELECT 1 FROM institutions WHERE tenant_id = ? LIMIT 1'), (inst_code,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail='institution_code already exists')
+
         cur.execute(
             _sql_placeholder(
-                '''
-                INSERT INTO pending_registrations 
-                (institution_name, contact_name, email, phone, password_hash, plan)
-                VALUES (?, ?, ?, ?, ?, ?)
-                '''
+                "SELECT 1 FROM pending_registrations WHERE institution_code = ? AND payment_status != 'completed' LIMIT 1"
             ),
-            (inst_name, contact, email, phone, password_hash, plan)
+            (inst_code,)
         )
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail='institution_code already pending')
+
+        reg_id = None
+        if USE_POSTGRES:
+            cur.execute(
+                _sql_placeholder(
+                    '''
+                    INSERT INTO pending_registrations
+                    (institution_name, institution_code, contact_name, email, phone, password_hash, plan)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    RETURNING id
+                    '''
+                ),
+                (inst_name, inst_code, contact, email, phone, password_hash, plan)
+            )
+            row = cur.fetchone()
+            if row:
+                try:
+                    reg_id = row.get('id') if isinstance(row, dict) else row[0]
+                except Exception:
+                    reg_id = None
+        else:
+            cur.execute(
+                _sql_placeholder(
+                    '''
+                    INSERT INTO pending_registrations 
+                    (institution_name, institution_code, contact_name, email, phone, password_hash, plan)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    '''
+                ),
+                (inst_name, inst_code, contact, email, phone, password_hash, plan)
+            )
+            reg_id = cur.lastrowid
         conn.commit()
-        reg_id = cur.lastrowid if not USE_POSTGRES else None # Postgres needs RETURNING
+
+        notify_email = str(os.getenv('REGISTRATION_NOTIFY_EMAIL') or '').strip()
+        if notify_email:
+            try:
+                body = f"""
+                <div dir="rtl" style="font-family:Arial, sans-serif; line-height:1.6;">
+                  <h3>נרשמה בקשת הרשמה חדשה</h3>
+                  <div><b>מוסד:</b> {html.escape(inst_name)}</div>
+                  <div><b>קוד מוסד:</b> {html.escape(inst_code)}</div>
+                  <div><b>איש קשר:</b> {html.escape(contact)}</div>
+                  <div><b>אימייל:</b> {html.escape(email)}</div>
+                  <div><b>טלפון:</b> {html.escape(phone)}</div>
+                  <div><b>מסלול:</b> {html.escape(plan)}</div>
+                  <div><b>Reg ID:</b> {html.escape(str(reg_id))}</div>
+                </div>
+                """
+                _send_email(notify_email, 'SchoolPoints: בקשת הרשמה חדשה', body)
+            except Exception:
+                pass
         
         # Mock payment URL generation
         # In real flow, we'd call Stripe/Provider API here to get a checkout URL
@@ -584,6 +756,10 @@ def api_register(request: Request, payload: Dict[str, Any]) -> Dict[str, Any]:
         }
     except Exception as e:
         print(f"Registration error: {e}")
+        try:
+            print(traceback.format_exc())
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail="Internal server error during registration")
     finally:
         try: conn.close()
@@ -734,14 +910,16 @@ def _generate_cloud_license_key(school_name: str, system_code: str, plan: str) -
     groups = [core[i : i + 5] for i in range(0, len(core), 5)]
     return "-".join(groups)
 
-@app.post('/api/payment/webhook/mock')
-def api_payment_webhook_mock(payload: Dict[str, Any]) -> Dict[str, Any]:
+@app.post('/api/payment/webhook/mock/legacy')
+def api_payment_webhook_mock_legacy(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Mock webhook for payment success."""
     email = str(payload.get('email') or '').strip()
     status = str(payload.get('status') or '').strip()
     
     if status != 'success':
          return {'ok': False, 'detail': 'Status not success'}
+
+    return api_payment_webhook_mock(payload)
          
     _ensure_pending_registrations_table()
     conn = _db()
@@ -767,13 +945,8 @@ def api_payment_webhook_mock(payload: Dict[str, Any]) -> Dict[str, Any]:
         else:
              reg_id, inst_name, contact, plan, pwd_hash, _ = row
              
-        # 1. Generate Tenant ID
-        # Simple slugify
-        slug = ''.join(c for c in inst_name.lower() if c.isalnum() or c==' ')
-        slug = slug.replace(' ', '_')
-        if not slug: slug = 'school'
-        # Append random suffix to ensure uniqueness
-        tenant_id = f"{slug[:20]}_{secrets.token_hex(3)}"
+        # 1. Generate numeric Tenant ID
+        tenant_id = _generate_numeric_tenant_id(conn)
         
         # 2. Create Institution
         # We need an API Key
@@ -846,6 +1019,23 @@ def api_payment_webhook_mock(payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         
         email_sent = _send_email(email, "ברוכים הבאים ל-SchoolPoints - פרטי התחברות", body)
+
+        notify_email = str(os.getenv('REGISTRATION_NOTIFY_EMAIL') or '').strip()
+        if notify_email:
+            try:
+                admin_body = f"""
+                <div dir=\"rtl\" style=\"font-family:Arial, sans-serif; line-height:1.6;\">
+                  <h3>נוצר מוסד חדש</h3>
+                  <div><b>מוסד:</b> {html.escape(str(inst_name))}</div>
+                  <div><b>Tenant ID:</b> {html.escape(str(tenant_id))}</div>
+                  <div><b>איש קשר:</b> {html.escape(str(contact))}</div>
+                  <div><b>אימייל:</b> {html.escape(str(email))}</div>
+                  <div><b>מסלול:</b> {html.escape(str(plan or ''))}</div>
+                </div>
+                """
+                _send_email(notify_email, 'SchoolPoints: מוסד חדש נוצר', admin_body)
+            except Exception:
+                pass
         
         return {
             'ok': True,
@@ -867,7 +1057,7 @@ def _approve_pending_registration(reg_id: int) -> Dict[str, Any]:
     try:
         cur = conn.cursor()
         cur.execute(
-            _sql_placeholder("SELECT id, institution_name, contact_name, plan, password_hash, email, payment_status FROM pending_registrations WHERE id = ? LIMIT 1"),
+            _sql_placeholder("SELECT id, institution_name, institution_code, contact_name, plan, password_hash, email, payment_status FROM pending_registrations WHERE id = ? LIMIT 1"),
             (reg_id,)
         )
         row = cur.fetchone()
@@ -878,31 +1068,53 @@ def _approve_pending_registration(reg_id: int) -> Dict[str, Any]:
              r = row
         else:
              r = {
-                 'id': row[0], 'institution_name': row[1], 'contact_name': row[2], 
-                 'plan': row[3], 'password_hash': row[4], 'email': row[5], 'payment_status': row[6]
+                 'id': row[0],
+                 'institution_name': row[1],
+                 'institution_code': row[2],
+                 'contact_name': row[3],
+                 'plan': row[4],
+                 'password_hash': row[5],
+                 'email': row[6],
+                 'payment_status': row[7]
              }
              
         if r['payment_status'] == 'completed':
             return {'ok': True, 'already_completed': True}
 
         inst_name = r['institution_name']
+        inst_code = str(r.get('institution_code') or '').strip()
         contact = r['contact_name']
         email = r['email']
         pwd_hash = r['password_hash']
         
-        # 1. Generate Tenant ID
-        slug = ''.join(c for c in inst_name.lower() if c.isalnum() or c==' ')
-        slug = slug.replace(' ', '_')
-        if not slug: slug = 'school'
-        tenant_id = f"{slug[:20]}_{secrets.token_hex(3)}"
+        # 1. Use chosen institution code as Tenant ID
+        tenant_id = inst_code
+        if not tenant_id:
+            tenant_id = _generate_numeric_tenant_id(conn)
+
+        try:
+            cur.execute(_sql_placeholder('SELECT 1 FROM institutions WHERE tenant_id = ? LIMIT 1'), (str(tenant_id),))
+            if cur.fetchone():
+                return {'ok': False, 'detail': 'Tenant ID already exists'}
+        except Exception:
+            pass
         
         # 2. Create Institution
         api_key = secrets.token_urlsafe(24)
         
         cur.execute(
-            _sql_placeholder("INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)"),
-            (tenant_id, inst_name, api_key, pwd_hash)
+            _sql_placeholder("INSERT INTO institutions (tenant_id, name, api_key, password_hash, contact_name, email, phone, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
+            (tenant_id, inst_name, api_key, pwd_hash, contact, email, r.get('phone'), r.get('plan'))
         )
+
+        try:
+            _ensure_tenant_db_exists(str(tenant_id))
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return {'ok': False, 'detail': f'Tenant DB creation failed: {e}'}
         
         # 3. Update pending registration
         cur.execute(
@@ -910,8 +1122,24 @@ def _approve_pending_registration(reg_id: int) -> Dict[str, Any]:
             (f"MANUAL_{secrets.token_hex(4)}", reg_id)
         )
         conn.commit()
+
+        try:
+            tconn = _tenant_school_db(str(tenant_id))
+            try:
+                _ensure_teacher_columns(tconn)
+                tconn.commit()
+            finally:
+                try:
+                    tconn.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            return {'ok': False, 'detail': f'Tenant DB init failed: {e}'}
         
-        # 4. Send Email
+        # 4. License is Cloud-Managed
+        # We do NOT send a static license key here because license keys are bound to Machine ID.
+        # The client will fetch a license automatically when connecting with this Tenant ID.
+        
         download_url = "https://schoolpoints.co.il/web/download"
         
         body = f"""
@@ -934,6 +1162,7 @@ def _approve_pending_registration(reg_id: int) -> Dict[str, Any]:
             
             <p>
                 במסך ההגדרות בתוכנה, הזן את מזהה המוסד שלך ({tenant_id}) כדי להתחבר לענן.
+                המערכת תזהה את הרישיון שלך באופן אוטומטי ותפעיל את התוכנה.
             </p>
             
             <hr style="border:0; border-top:1px solid #eee; margin:20px 0;">
@@ -944,6 +1173,23 @@ def _approve_pending_registration(reg_id: int) -> Dict[str, Any]:
         """
         
         email_sent = _send_email(email, "ברוכים הבאים ל-SchoolPoints - פרטי התחברות", body)
+
+        notify_email = str(os.getenv('REGISTRATION_NOTIFY_EMAIL') or '').strip()
+        if notify_email:
+            try:
+                admin_body = f"""
+                <div dir="rtl" style="font-family:Arial, sans-serif; line-height:1.6;">
+                  <h3>נוצר מוסד חדש</h3>
+                  <div><b>מוסד:</b> {html.escape(str(inst_name or ''))}</div>
+                  <div><b>Tenant ID:</b> {html.escape(str(tenant_id or ''))}</div>
+                  <div><b>איש קשר:</b> {html.escape(str(contact or ''))}</div>
+                  <div><b>אימייל:</b> {html.escape(str(email or ''))}</div>
+                  <div><b>מסלול:</b> {html.escape(str(r.get('plan') or ''))}</div>
+                </div>
+                """
+                _send_email(notify_email, 'SchoolPoints: מוסד חדש נוצר', admin_body)
+            except Exception:
+                pass
         
         return {
             'ok': True,
@@ -996,15 +1242,15 @@ def admin_registrations(request: Request, admin_key: str = '') -> str:
     _ensure_pending_registrations_table()
     conn = _db()
     cur = conn.cursor()
-    cur.execute('SELECT id, institution_name, contact_name, email, phone, plan, created_at, payment_status FROM pending_registrations ORDER BY id DESC')
+    cur.execute('SELECT id, institution_name, institution_code, contact_name, email, phone, plan, created_at, payment_status FROM pending_registrations ORDER BY id DESC')
     rows = cur.fetchall() or []
     conn.close()
     
     items = ""
     for r in rows:
         d = dict(r) if isinstance(r, dict) else {
-            'id': r[0], 'institution_name': r[1], 'contact_name': r[2], 'email': r[3], 
-            'phone': r[4], 'plan': r[5], 'created_at': r[6], 'payment_status': r[7]
+            'id': r[0], 'institution_name': r[1], 'institution_code': r[2], 'contact_name': r[3], 'email': r[4], 
+            'phone': r[5], 'plan': r[6], 'created_at': r[7], 'payment_status': r[8]
         }
         
         status_color = "#f39c12" # pending
@@ -1027,6 +1273,7 @@ def admin_registrations(request: Request, admin_key: str = '') -> str:
           <td style="font-weight:600;">{d['institution_name']}</td>
           <td>
             <div>{d['contact_name']}</div>
+            <div style="font-size:12px; opacity:0.7;">קוד מוסד: {d.get('institution_code') or ''}</div>
             <div style="font-size:12px; opacity:0.7;">{d['email']}</div>
             <div style="font-size:12px; opacity:0.7;">{d['phone']}</div>
           </td>
@@ -1167,7 +1414,7 @@ def api_device_pair_poll(code: str = Query(default='')) -> Dict[str, Any]:
 
 @app.get('/web/device/pair', response_class=HTMLResponse)
 def web_device_pair(request: Request, code: str = '') -> str:
-    guard = _web_require_teacher(request)
+    guard = _web_require_tenant(request)
     if guard:
         return guard  # type: ignore[return-value]
     code = str(code or '').strip().upper()
@@ -1193,9 +1440,87 @@ def web_device_pair(request: Request, code: str = '') -> str:
     return _basic_web_shell('חיבור עמדה', body, request=request)
 
 
+class LicenseFetchPayload(BaseModel):
+    tenant_id: str
+    api_key: str | None = None
+    password: str | None = None
+    system_code: str
+    station_role: str | None = None
+
+
+@app.post('/api/license/fetch')
+def api_license_fetch(payload: LicenseFetchPayload) -> Dict[str, Any]:
+    tenant_id = str(payload.tenant_id or '').strip()
+    api_key = str(payload.api_key or '').strip()
+    password = str(payload.password or '').strip()
+    system_code = str(payload.system_code or '').strip()
+    
+    if not tenant_id or not system_code:
+        raise HTTPException(status_code=400, detail='missing fields')
+    
+    if not api_key and not password:
+        raise HTTPException(status_code=400, detail='missing auth (api_key or password)')
+        
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT name, plan, api_key, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
+            (tenant_id,)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail='invalid tenant')
+            
+        r = dict(row) if isinstance(row, dict) else {'name': row[0], 'plan': row[1], 'api_key': row[2], 'password_hash': row[3]}
+        
+        stored_key = str(r['api_key'] or '').strip()
+        
+        # Authenticate
+        auth_ok = False
+        if api_key:
+            if stored_key == api_key:
+                auth_ok = True
+        elif password:
+            ph = str(r['password_hash'] or '')
+            if ph.startswith('pbkdf2_sha256$'):
+                if _pbkdf2_verify(password, ph):
+                    auth_ok = True
+            elif ph:
+                # legacy/simple check if used
+                try:
+                    if hashlib.sha256(password.encode()).hexdigest() == ph:
+                        auth_ok = True
+                except: pass
+        
+        if not auth_ok:
+             raise HTTPException(status_code=401, detail='invalid credentials')
+             
+        school_name = str(r['name'] or 'School').strip()
+        plan = str(r['plan'] or 'basic').strip()
+        
+        # Generate license (Monthly/Term based on plan)
+        # We give 35 days validity for cloud connected stations, auto-renewed.
+        key = _generate_cloud_license_key(school_name, system_code, plan)
+        
+        return {
+            'ok': True,
+            'license_key': key,
+            'school_name': school_name,
+            'plan': plan,
+            'valid_days': 35,
+            'api_key': stored_key # Return API key so client can save it for sync
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.post('/web/device/pair', response_class=HTMLResponse)
 def web_device_pair_submit(request: Request, code: str = Form(default='')) -> str:
-    guard = _web_require_teacher(request)
+    guard = _web_require_tenant(request)
     if guard:
         return guard  # type: ignore[return-value]
     _ensure_device_pairings_table()
@@ -1348,10 +1673,9 @@ def web_home() -> str:
         <a class=\"gray\" href=\"/web/guide\">מדריך</a>
         <a class=\"gray\" href=\"/web/contact\">צור קשר</a>
       </div>
-      <div class=\"small\" style=\"margin-top:14px;\">build: {APP_BUILD_TAG}</div>
     </div>
     """
-    return _public_web_shell('דף הבית', body)
+    return _public_web_shell('SchoolPoints', body)
 
 
 @app.get('/web/login', include_in_schema=False)
@@ -1386,7 +1710,7 @@ def web_signin(request: Request):
     <div style=\"color:#637381; margin-top:-6px;\">יש להזין קוד מוסד וסיסמת מוסד.</div>
     <form method=\"post\" action=\"/web/signin?next={urllib.parse.quote(nxt, safe='')}\" style=\"margin-top:12px; max-width:520px;\">
       <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">קוד מוסד</label>
-      <input name=\"tenant_id\" autocomplete=\"username\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <input name=\"tenant_id\" autocomplete=\"username\" inputmode=\"numeric\" pattern=\"[0-9]+\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px; direction:ltr; text-align:left;\" required />
       <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">סיסמה</label>
       <input name=\"password\" type=\"password\" autocomplete=\"current-password\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
       <div class=\"actionbar\" style=\"justify-content:flex-start;\">
@@ -1394,7 +1718,6 @@ def web_signin(request: Request):
         <a class=\"gray\" href=\"/web/download\" style=\"padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;\">הורדה</a>
       </div>
     </form>
-    <div class=\"small\">build: {APP_BUILD_TAG}</div>
     """
     return _public_web_shell('כניסת מוסד', body)
 
@@ -1410,20 +1733,169 @@ def web_signin_submit(
     if not tenant_id or not password:
         return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>חסרים פרטים.</p>')
 
+    # Allow alphanumeric Tenant ID
+    # if (not tenant_id.isdigit()) or tenant_id.startswith('0'):
+    #    return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>קוד מוסד חייב להכיל ספרות בלבד (ללא אפס מוביל).</p>')
+
     inst = _get_institution(tenant_id)
     if not inst:
         return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>מוסד לא נמצא.</p>')
     pw_hash = str(inst.get('password_hash') or '').strip()
     if not pw_hash:
         return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>לא הוגדרה סיסמת מוסד. פנה למנהל.</p>')
-    if not _pbkdf2_verify(password, pw_hash):
+
+    pw_ok = False
+    used_legacy_sha = False
+    if pw_hash.startswith('pbkdf2_sha256$'):
+        pw_ok = _pbkdf2_verify(password, pw_hash)
+    else:
+        try:
+            is_hex64 = (len(pw_hash) == 64) and all(c in '0123456789abcdef' for c in pw_hash.lower())
+        except Exception:
+            is_hex64 = False
+        if is_hex64:
+            try:
+                pw_ok = hashlib.sha256(password.encode('utf-8')).hexdigest() == pw_hash
+                used_legacy_sha = pw_ok
+            except Exception:
+                pw_ok = False
+    if not pw_ok:
         return _public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>סיסמה שגויה.</p>')
+
+    if used_legacy_sha:
+        try:
+            new_hash = _pbkdf2_hash(password)
+            conn = _db()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    _sql_placeholder('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?'),
+                    (new_hash, tenant_id)
+                )
+                conn.commit()
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     nxt = _web_next_from_request(request, '/web/teacher-login')
     if nxt in ('/web/login', '/web/signin'):
         nxt = '/web/teacher-login'
-    resp = RedirectResponse(url=nxt, status_code=302)
+
+    # If no admin teacher exists yet, bootstrap first admin.
+    need_bootstrap = False
+    try:
+        tconn = _tenant_school_db(tenant_id)
+        try:
+            _ensure_teacher_columns(tconn)
+            cur = tconn.cursor()
+            cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers WHERE is_admin = 1'))
+            row = cur.fetchone()
+            cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
+            need_bootstrap = (cnt <= 0)
+        finally:
+            try:
+                tconn.close()
+            except Exception:
+                pass
+    except Exception:
+        need_bootstrap = True
+
+    resp = RedirectResponse(
+        url=(f"/web/bootstrap-admin?next={urllib.parse.quote(nxt, safe='')}") if need_bootstrap else nxt,
+        status_code=302
+    )
     resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    return resp
+
+
+@app.get('/web/bootstrap-admin', response_class=HTMLResponse)
+def web_bootstrap_admin(request: Request, next: str = Query(default='/web/admin')) -> Response:
+    guard = _web_require_tenant(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    nxt = _web_next_from_request(request, '/web/admin')
+    if nxt in ('/web/login', '/web/signin', '/web/teacher-login'):
+        nxt = '/web/admin'
+
+    body = f"""
+    <h2>הגדרת מנהל ראשוני</h2>
+    <div style=\"color:#637381; margin-top:-6px; line-height:1.8;\">נראה שזו כניסה ראשונה למוסד. יש ליצור מורה מנהל ראשוני.</div>
+    <form method=\"post\" action=\"/web/bootstrap-admin?next={urllib.parse.quote(nxt, safe='')}\" style=\"margin-top:12px; max-width:520px;\">
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">שם המנהל</label>
+      <input name=\"name\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px;\" required />
+      <label style=\"display:block;margin:10px 0 6px;font-weight:800;\">מספר כרטיס מנהל</label>
+      <input name=\"card_number\" style=\"width:100%;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:15px; direction:ltr; text-align:left;\" required />
+      <div class=\"actionbar\" style=\"justify-content:flex-start;\">
+        <button class=\"green\" type=\"submit\" style=\"padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;\">יצירה וכניסה</button>
+        <a class=\"gray\" href=\"/web/logout\" style=\"padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;\">ביטול</a>
+      </div>
+    </form>
+    """
+    return HTMLResponse(_public_web_shell('הגדרת מנהל ראשוני', body, request=request))
+
+
+@app.post('/web/bootstrap-admin', response_class=HTMLResponse)
+def web_bootstrap_admin_submit(
+    request: Request,
+    next: str = Query(default='/web/admin'),
+    name: str = Form(default=''),
+    card_number: str = Form(default=''),
+) -> Response:
+    guard = _web_require_tenant(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    nxt = _web_next_from_request(request, '/web/admin')
+    if nxt in ('/web/login', '/web/signin', '/web/teacher-login'):
+        nxt = '/web/admin'
+
+    nm = str(name or '').strip()
+    cn = str(card_number or '').strip()
+    if not nm or not cn:
+        return HTMLResponse(_public_web_shell('שגיאה', '<h2>שגיאה</h2><p>חסרים פרטים.</p>', request=request), status_code=400)
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        _ensure_teacher_columns(conn)
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers WHERE is_admin = 1'))
+        row = cur.fetchone()
+        cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
+        if cnt > 0:
+            return RedirectResponse(url='/web/teacher-login', status_code=302)
+
+        teacher_id = None
+        if USE_POSTGRES:
+            cur.execute('SELECT COALESCE(MAX(id), 0) + 1 FROM teachers')
+            teacher_id = int((cur.fetchone() or [1])[0])
+            cur.execute(
+                _sql_placeholder('INSERT INTO teachers (id, name, card_number, is_admin) VALUES (?, ?, ?, 1)'),
+                (int(teacher_id), nm, cn)
+            )
+        else:
+            cur.execute(
+                _sql_placeholder('INSERT INTO teachers (name, card_number, is_admin) VALUES (?, ?, 1)'),
+                (nm, cn)
+            )
+            teacher_id = int(cur.lastrowid or 0)
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    resp = RedirectResponse(url=nxt, status_code=302)
+    resp.set_cookie('web_teacher', str(teacher_id or ''), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
     return resp
 
 
@@ -1660,7 +2132,7 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
         .blue { background: #3498db; }
         .gray { background: #95a5a6; }
 
-        .page-card input, .page-card select, .page-card textarea {
+        .page-card input:not(.reg-input), .page-card select:not(.reg-input), .page-card textarea:not(.reg-input) {
           color: #1f2d3a;
           background: #ffffff;
           border: 1px solid rgba(0,0,0,0.18);
@@ -1668,7 +2140,9 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
 
         table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
         table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { position: sticky; top: 90px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
+        table thead th { background: rgba(15, 32, 39, 0.98); }
+        .table-scroll { overflow: auto; }
+        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: rgba(15, 32, 39, 0.98); }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -1779,50 +2253,63 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
         .whoami { margin-top: 6px; font-weight: 800; }
         .whoami a { text-decoration: none; font-weight: 900; }
         .whoami-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-        .whoami-name { font-weight: 950; }
-        .footer-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 
-        /* Responsive */
-        @media (max-width: 900px) {
-            .layout-container { flex-direction: column; }
+        .actionbar { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; justify-content: center; margin-top: 24px; }
+        .footer { text-align: center; padding: 20px; font-size: 13px; color: #888; border-top: 1px solid var(--line); background: #fff; margin-top: auto; }
+
+        /* Mobile Menu */
+        .menu-toggle { display: none; background: none; border: none; font-size: 24px; cursor: pointer; color: #555; padding: 0; }
+        .sidebar-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 190; backdrop-filter: blur(4px); }
+        .sidebar { 
+            position: fixed; top: 0; right: 0; bottom: 0; width: 280px; 
+            transform: translateX(100%); background: #fff; box-shadow: -5px 0 20px rgba(0,0,0,0.1);
+            z-index: 200; padding: 20px; transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex; flex-direction: column; gap: 10px;
+        }
+        .sidebar.open { transform: translateX(0); }
+        .sidebar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
+        .sidebar-link { padding: 12px; border-radius: 10px; font-weight: 600; color: #444; background: #f9f9f9; text-align: right; }
+        .sidebar-link:hover { background: #f0f4f8; color: var(--primary); }
+
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .menu-toggle { display: block; }
+            .container { margin: 20px auto; padding: 0 16px; }
+            .card { padding: 24px 16px; }
+            .actionbar { flex-direction: column; width: 100%; }
+            .actionbar a, .actionbar button { width: 100%; box-sizing: border-box; }
         }
       </style>
     """
 
-    footer = """
-      <div class="footerbar">
-        <div class="footer-left">
-          <div class="footer-title">אזור אישי</div>
-          <div id="whoami" class="whoami">
-            <a href="/web/signin">התחברות</a>
-          </div>
+    sidebar_html = """
+    <div class="sidebar-overlay" onclick="toggleMenu()"></div>
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <div class="brand" style="font-size:18px;">SchoolPoints</div>
+            <button onclick="toggleMenu()" style="background:none; border:none; font-size:24px; cursor:pointer;">✕</button>
         </div>
-        <div class="footer-actions">
-          <a class="btn-glass" href="/web">דף הבית</a>
-          <a class="btn-glass" href="javascript:history.back()">אחורה</a>
-        </div>
-      </div>
-      <script>
-        (async function() {
-          const el = document.getElementById('whoami');
-          if (!el) return;
-          try {
-            const resp = await fetch('/web/whoami', { credentials: 'same-origin' });
-            if (!resp.ok) return;
-            const data = await resp.json();
-            if (!data || !data.tenant_id) return;
-            const name = (data.institution_name || data.tenant_id || '').toString();
-            el.innerHTML = `
-              <div class="whoami-row">
-                <span class="whoami-name">${name}</span>
-                <a href="/web/account">תפריט מוסד</a>
-                <a href="/web/logout">יציאה</a>
-              </div>
-            `;
-          } catch (e) {
-          }
-        })();
-      </script>
+        <a href="/web" class="sidebar-link">🏠 דף הבית</a>
+        <a href="/web/signin" class="sidebar-link">🔑 כניסה</a>
+        <a href="/web/register" class="sidebar-link">📝 הרשמה</a>
+        <a href="/web/download" class="sidebar-link">⬇️ הורדה</a>
+        <a href="/web/guide" class="sidebar-link">📘 מדריך</a>
+        <a href="/web/contact" class="sidebar-link">📞 צור קשר</a>
+    </aside>
+    <script>
+        function toggleMenu() {
+            const sb = document.querySelector('.sidebar');
+            const ov = document.querySelector('.sidebar-overlay');
+            if (sb && ov) {
+                sb.classList.toggle('open');
+                if (sb.classList.contains('open')) {
+                    ov.style.display = 'block';
+                } else {
+                    ov.style.display = 'none';
+                }
+            }
+        }
+    </script>
     """
 
     return f"""
@@ -1838,23 +2325,11 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
       {style_block}
     </head>
     <body>
-      <!-- Topbar -->
-      <nav class="topbar">
-        <div class="topbar-inner">
-          <div class="brand">
+      {sidebar_html}
+      <nav class="navbar">
+        <div class="brand">
             <img src="/web/assets/icons/public.png" alt="Logo">
-            <div class="brand-text">
-                <div class="brand-title">SchoolPoints</div>
-                <div class="brand-sub">עמדת ניהול מתקדמת</div>
-            </div>
-          </div>
-          <div class="top-nav">
-             <a href="/web/signin" class="btn-glass primary">
-                <span>🔑</span>
-                <span>כניסה</span>
-             </a>
-             <a href="/web/download" class="btn-glass">
-                <span>⬇️</span>
+            <span>SchoolPoints</span>
                 <span>הורדה</span>
              </a>
           </div>
@@ -1944,7 +2419,9 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
 
         table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
         table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { position: sticky; top: 90px; z-index: 5; background: rgba(15, 32, 39, 0.92); }
+        table thead th { background: rgba(15, 32, 39, 0.98); }
+        .table-scroll { overflow: auto; }
+        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: rgba(15, 32, 39, 0.98); }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -2017,6 +2494,40 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
           justify-content: center;
         }
 
+        .sidebar {
+          width: 260px;
+          min-width: 260px;
+          position: sticky;
+          top: 88px;
+          padding: 16px;
+          border-radius: 18px;
+          transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          z-index: 200;
+        }
+        .side-title { font-weight: 950; opacity: .95; margin-bottom: 10px; }
+        .side-links { display: flex; flex-direction: column; gap: 8px; }
+        .side-link {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 12px;
+          border-radius: 12px;
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.10);
+          font-weight: 800;
+        }
+        .side-link:hover { background: rgba(255,255,255,0.10); }
+        .side-link.active {
+          background: rgba(9, 132, 227, 0.22);
+          border-color: rgba(9, 132, 227, 0.45);
+          box-shadow: 0 0 0 2px rgba(9, 132, 227, 0.25);
+        }
+        .side-link .ico { width: 22px; text-align: center; }
+
+        /* Mobile Menu Toggle */
+        .menu-toggle { display: none; background: none; border: none; font-size: 24px; cursor: pointer; color: white; padding: 0 10px; }
+        .mobile-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 150; backdrop-filter: blur(4px); }
+
         /* Main Content */
         .main-content { flex: 1; min-width: 0; max-width: 800px; }
         
@@ -2060,7 +2571,24 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
 
         /* Responsive */
         @media (max-width: 900px) {
-            .layout-container { flex-direction: column; }
+            .layout-container { flex-direction: column; gap: 0; padding: 0 16px; }
+            .sidebar { 
+                position: fixed; top: 0; right: 0; bottom: 0; width: 280px; 
+                transform: translateX(100%); background: #1a2639; box-shadow: -5px 0 20px rgba(0,0,0,0.5);
+                border-radius: 0; padding-top: 20px; overflow-y: auto;
+            }
+            .sidebar.open { transform: translateX(0); }
+            .menu-toggle { display: block; }
+            .mobile-overlay.open { display: block; }
+            
+            .page-card { padding: 16px; border-radius: 12px; }
+            .topbar-inner { padding: 10px 16px; }
+            .brand-title { font-size: 16px; }
+            .brand-sub { display: none; }
+            .actionbar { justify-content: flex-start; }
+            
+            /* Better table scrolling on mobile */
+            .table-scroll { margin: 0 -16px; padding: 0 16px; width: calc(100% + 32px); }
         }
       </style>
     """
@@ -2098,8 +2626,50 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
           } catch (e) {
           }
         })();
+
+        // Mobile Menu Logic
+        function toggleMenu() {
+            const sb = document.querySelector('.sidebar');
+            const ov = document.querySelector('.mobile-overlay');
+            if (sb && ov) {
+                sb.classList.toggle('open');
+                ov.classList.toggle('open');
+            }
+        }
       </script>
     """
+
+    current_path = ''
+    try:
+        current_path = str(getattr(getattr(request, 'url', None), 'path', '') or '').strip() if request else ''
+    except Exception:
+        current_path = ''
+
+    def _side_link(href: str, label: str, icon: str) -> str:
+        try:
+            is_active = bool(current_path == href or (href not in ('/web', '/web/admin') and current_path.startswith(href)))
+        except Exception:
+            is_active = False
+        cls = 'side-link active' if is_active else 'side-link'
+        return f'<a class="{cls}" href="{href}"><span class="ico">{icon}</span><span>{label}</span></a>'
+
+    sidebar_html = (
+        '<div class="mobile-overlay" onclick="toggleMenu()"></div>'
+        '<aside class="sidebar glass">'
+        '<div class="side-title" style="display:flex; justify-content:space-between; align-items:center;">'
+        '<span>ניווט</span>'
+        '<span onclick="toggleMenu()" style="cursor:pointer; font-size:20px; padding:5px; opacity:0.7;">✕</span>'
+        '</div>'
+        '<div class="side-links">'
+        + _side_link('/web/admin', 'לוח בקרה', '🏠')
+        + _side_link('/web/students', 'תלמידים', '👦')
+        + _side_link('/web/teachers', 'מורים', '👨‍🏫')
+        + _side_link('/web/messages', 'הודעות', '💬')
+        + _side_link('/web/reports', 'דוחות', '📊')
+        + _side_link('/web/guide', 'מדריך', '📘')
+        + '</div>'
+        + '</aside>'
+    )
 
     return f"""
     <!doctype html>
@@ -2117,6 +2687,7 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
       <!-- Topbar -->
       <nav class="topbar">
         <div class="topbar-inner">
+          <button class="menu-toggle" onclick="toggleMenu()">☰</button>
           <div class="brand">
             <img src="/web/assets/icons/public.png" alt="Logo">
             <div class="brand-text">
@@ -2170,10 +2741,21 @@ def _init_db():
                     name TEXT NOT NULL,
                     api_key TEXT NOT NULL,
                     password_hash TEXT,
+                    contact_name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    plan TEXT,
                     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                 )
                 '''
             )
+            # Ensure columns exist (migration)
+            for col in ['contact_name', 'email', 'phone', 'plan']:
+                try:
+                    cur.execute(f'ALTER TABLE institutions ADD COLUMN IF NOT EXISTS {col} TEXT')
+                except Exception:
+                    pass
+
             cur.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS changes (
@@ -2228,6 +2810,10 @@ def _init_db():
                     name TEXT NOT NULL,
                     api_key TEXT NOT NULL,
                     password_hash TEXT,
+                    contact_name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    plan TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 '''
@@ -2236,6 +2822,12 @@ def _init_db():
                 cur.execute('ALTER TABLE institutions ADD COLUMN password_hash TEXT')
             except Exception:
                 pass
+            for col in ['contact_name', 'email', 'phone', 'plan']:
+                try:
+                    cur.execute(f'ALTER TABLE institutions ADD COLUMN {col} TEXT')
+                except Exception:
+                    pass
+
             cur.execute(
                 '''
                 CREATE TABLE IF NOT EXISTS changes (
@@ -2329,6 +2921,97 @@ def web_whoami(request: Request) -> Dict[str, Any]:
         'is_logged_in': bool(tenant_id),
         'is_teacher': bool(teacher_id),
     }
+
+
+class ClassRenamePayload(BaseModel):
+    old_name: str
+    new_name: str
+
+class ClassDeletePayload(BaseModel):
+    class_name: str
+
+@app.get('/api/classes/details')
+def api_classes_details(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+    
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT class_name, COUNT(*) as cnt FROM students GROUP BY class_name ORDER BY class_name')
+        rows = cur.fetchall()
+        items = []
+        for r in rows:
+            cn = (r.get('class_name') if isinstance(r, dict) else r['class_name'])
+            count = (r.get('cnt') if isinstance(r, dict) else r['cnt'])
+            name = str(cn or '').strip()
+            if name:
+                items.append({'name': name, 'count': int(count or 0)})
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/classes/rename')
+def api_classes_rename(request: Request, payload: ClassRenamePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    old_n = payload.old_name.strip()
+    new_n = payload.new_name.strip()
+    if not old_n or not new_n:
+        raise HTTPException(status_code=400, detail='missing names')
+    
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder("UPDATE students SET class_name = ? WHERE class_name = ?"), (new_n, old_n))
+        _record_sync_event(
+            tenant_id=str(tenant_id),
+            station_id='web',
+            entity_type='class',
+            entity_id=old_n,
+            action_type='rename',
+            payload={'old_name': old_n, 'new_name': new_n}
+        )
+        conn.commit()
+        return {'ok': True, 'affected': cur.rowcount}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/classes/delete')
+def api_classes_delete(request: Request, payload: ClassDeletePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    name = payload.class_name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='missing name')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder("UPDATE students SET class_name = '' WHERE class_name = ?"), (name,))
+        _record_sync_event(
+            tenant_id=str(tenant_id),
+            station_id='web',
+            entity_type='class',
+            entity_id=name,
+            action_type='delete',
+            payload={'class_name': name}
+        )
+        conn.commit()
+        return {'ok': True, 'affected': cur.rowcount}
+    finally:
+        try: conn.close()
+        except: pass
 
 
 @app.get('/api/classes')
@@ -2641,6 +3324,177 @@ def _ensure_tenant_db_exists(tenant_id: str) -> str:
                 )
                 '''
             )
+            # Store / Shop Tables
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".product_categories (
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    sort_order INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(name)
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".products (
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    display_name TEXT,
+                    image_path TEXT,
+                    category_id BIGINT,
+                    price_points INTEGER DEFAULT 0,
+                    stock_qty INTEGER,
+                    deduct_points INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    allowed_classes TEXT,
+                    min_points_required INTEGER DEFAULT 0,
+                    max_per_student INTEGER,
+                    max_per_class INTEGER,
+                    price_override_min_points INTEGER,
+                    price_override_points INTEGER,
+                    price_override_discount_pct INTEGER,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".product_variants (
+                    id BIGSERIAL PRIMARY KEY,
+                    product_id BIGINT NOT NULL,
+                    variant_name TEXT NOT NULL,
+                    display_name TEXT,
+                    price_points INTEGER DEFAULT 0,
+                    stock_qty INTEGER,
+                    deduct_points INTEGER DEFAULT 1,
+                    is_active INTEGER DEFAULT 1,
+                    sort_order INTEGER DEFAULT 0,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".purchases_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    student_id BIGINT,
+                    product_id BIGINT,
+                    variant_id BIGINT,
+                    qty INTEGER DEFAULT 1,
+                    points_each INTEGER DEFAULT 0,
+                    total_points INTEGER DEFAULT 0,
+                    deduct_points INTEGER DEFAULT 1,
+                    station_type TEXT,
+                    is_refunded INTEGER DEFAULT 0,
+                    refunded_at TIMESTAMPTZ,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".refunds_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    purchase_id BIGINT NOT NULL,
+                    student_id BIGINT NOT NULL,
+                    refunded_points INTEGER DEFAULT 0,
+                    qty INTEGER DEFAULT 1,
+                    product_id BIGINT,
+                    variant_id BIGINT,
+                    reason TEXT,
+                    approved_by_teacher_id BIGINT,
+                    approved_by_teacher_name TEXT,
+                    station_type TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".receipt_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    station_type TEXT,
+                    student_id BIGINT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    data_json TEXT
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".receipt_snapshot_purchases (
+                    purchase_id BIGINT PRIMARY KEY,
+                    snapshot_id BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".purchase_holds (
+                    id BIGSERIAL PRIMARY KEY,
+                    station_id TEXT NOT NULL,
+                    student_id BIGINT,
+                    hold_type TEXT NOT NULL,
+                    product_id BIGINT,
+                    variant_id BIGINT,
+                    qty INTEGER DEFAULT 1,
+                    service_id INTEGER,
+                    service_date TEXT,
+                    slot_start_time TEXT,
+                    duration_minutes INTEGER,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMPTZ NOT NULL
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".cashier_responsibles (
+                    student_id BIGINT PRIMARY KEY,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".time_bonus_schedules (
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    group_name TEXT,
+                    start_time TEXT,
+                    end_time TEXT,
+                    bonus_points INTEGER DEFAULT 0,
+                    sound_key TEXT,
+                    is_general INTEGER DEFAULT 1,
+                    classes TEXT,
+                    days_of_week TEXT,
+                    is_shown_public INTEGER DEFAULT 1,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+                '''
+            )
+            cur.execute(
+                f'''
+                CREATE TABLE IF NOT EXISTS "{schema}".time_bonus_given (
+                    id BIGSERIAL PRIMARY KEY,
+                    student_id BIGINT NOT NULL,
+                    bonus_schedule_id BIGINT NOT NULL,
+                    given_date DATE NOT NULL,
+                    given_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(student_id, bonus_schedule_id, given_date)
+                )
+                '''
+            )
             conn.commit()
             return schema
         except Exception as e:
@@ -2911,6 +3765,21 @@ class StudentUpdatePayload(BaseModel):
     id_number: str | None = None
     serial_number: str | None = None
     photo_number: str | None = None
+    is_free_fix_blocked: int | None = None
+
+
+class StudentSavePayload(BaseModel):
+    student_id: int | None = None
+    first_name: str
+    last_name: str
+    class_name: str | None = None
+    card_number: str | None = None
+    serial_number: str | None = None
+    photo_number: str | None = None
+    id_number: str | None = None
+    points: int | None = None
+    private_message: str | None = None
+    is_free_fix_blocked: int | None = None
 
 
 class StudentQuickUpdatePayload(BaseModel):
@@ -2924,41 +3793,274 @@ class StudentQuickUpdatePayload(BaseModel):
     student_ids: List[int] | None = None
 
 
-class StudentSavePayload(BaseModel):
-    student_id: int | None = None
-    last_name: str | None = None
-    first_name: str | None = None
-    id_number: str | None = None
-    class_name: str | None = None
-    card_number: str | None = None
-    photo_number: str | None = None
-    serial_number: str | None = None
-    points: int | None = None
-    private_message: str | None = None
-
-
-class StudentDeletePayload(BaseModel):
+class StudentManualArrivalPayload(BaseModel):
     student_id: int
+    date_str: str
+    time_str: str
 
 
-class TeacherSavePayload(BaseModel):
-    teacher_id: int | None = None
-    name: str | None = None
-    card_number: str | None = None
-    card_number2: str | None = None
-    card_number3: str | None = None
-    is_admin: int | None = None
-    can_edit_student_card: int | None = None
-    can_edit_student_photo: int | None = None
-    bonus_max_points_per_student: int | None = None
-    bonus_max_total_runs: int | None = None
+def _weekday_he(dt: datetime.date) -> str:
+    m = {0: 'ב', 1: 'ג', 2: 'ד', 3: 'ה', 4: 'ו', 5: 'ש', 6: 'א'}
+    return m.get(dt.weekday(), '')
 
 
-class TeacherDeletePayload(BaseModel):
-    teacher_id: int
+def _parse_days_of_week(s: str | None) -> set:
+    try:
+        raw = str(s or '').strip()
+    except Exception:
+        raw = ''
+    if not raw:
+        return set()
+    raw = raw.replace(';', ',').replace('\u05f3', ',').replace('\u05f4', ',')
+    parts = [p.strip() for p in raw.split(',')]
+    out = set()
+    for p in parts:
+        if not p:
+            continue
+        p1 = p[0]
+        if p1 in ('א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'):
+            out.add(p1)
+    return out
 
 
-class TeacherClassesPayload(BaseModel):
+def _time_to_minutes(t: str | None) -> int | None:
+    try:
+        s = str(t or '').strip()
+        if not s:
+            return None
+        s = s.replace('.', ':')
+        parts = s.split(':')
+        if len(parts) != 2:
+            return None
+        hh = int(parts[0])
+        mm = int(parts[1])
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return None
+        return hh * 60 + mm
+    except Exception:
+        return None
+
+
+def _time_bonus_applies_to_class(bonus_row: dict, class_name: str | None) -> bool:
+    try:
+        is_general = int(bonus_row.get('is_general') or 1)
+        if is_general == 1:
+            return True
+        if not class_name:
+            return False
+        raw_classes = str(bonus_row.get('classes') or '')
+        raw_classes = raw_classes.replace('\u05f3', ',').replace('\u05f4', ',').replace(';', ',')
+        allowed = {p.strip() for p in raw_classes.split(',') if p.strip()}
+        return class_name.strip() in allowed
+    except Exception:
+        return False
+
+
+def _get_active_time_bonus_at_time(conn, given_date: datetime.date, given_time_str: str, class_name: str | None) -> dict | None:
+    cur_min = _time_to_minutes(given_time_str)
+    if cur_min is None:
+        return None
+    
+    cur = conn.cursor()
+    try:
+        # Fetch active bonuses
+        cur.execute("SELECT * FROM time_bonus_schedules WHERE is_active = 1")
+        rows = [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return None
+        
+    candidates = []
+    cur_day = _weekday_he(given_date)
+    
+    for r in rows:
+        # Time range check
+        s_min = _time_to_minutes(r.get('start_time'))
+        e_min = _time_to_minutes(r.get('end_time'))
+        if s_min is None or e_min is None:
+            continue
+        if cur_min < s_min or cur_min > e_min:
+            continue
+            
+        # Class check
+        if not _time_bonus_applies_to_class(r, class_name):
+            continue
+            
+        # Day of week check
+        days_set = _parse_days_of_week(r.get('days_of_week'))
+        if days_set and cur_day not in days_set:
+            continue
+            
+        candidates.append(r)
+        
+    if not candidates:
+        return None
+        
+    # Sort by start_time (desc) then points (desc) to prefer later starts/higher points on overlap
+    candidates.sort(key=lambda x: (str(x.get('start_time') or ''), int(x.get('bonus_points') or 0)), reverse=True)
+    return candidates[0]
+
+
+@app.post('/api/students/manual-arrival')
+def api_students_manual_arrival(
+    request: Request,
+    payload: StudentManualArrivalPayload
+) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+        
+    sid = payload.student_id
+    d_str = payload.date_str
+    t_str = payload.time_str
+    
+    try:
+        dt = datetime.date.fromisoformat(d_str)
+        # Validate time format
+        if _time_to_minutes(t_str) is None:
+            raise ValueError
+    except Exception:
+        raise HTTPException(status_code=400, detail='invalid date/time')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        
+        # Get student
+        cur.execute(_sql_placeholder("SELECT id, first_name, last_name, class_name, points FROM students WHERE id = ?"), (sid,))
+        s_row = cur.fetchone()
+        if not s_row:
+            raise HTTPException(status_code=404, detail='student not found')
+        student = dict(s_row)
+        class_name = str(student.get('class_name') or '').strip()
+        
+        # Calculate bonus
+        bonus = _get_active_time_bonus_at_time(conn, dt, t_str, class_name)
+        bonus_points = 0
+        bonus_name = ""
+        bonus_id = 0
+        
+        if bonus:
+            bonus_id = int(bonus.get('id') or 0)
+            bonus_points = int(bonus.get('bonus_points') or 0)
+            bonus_name = str(bonus.get('name') or '')
+            group_name = str(bonus.get('group_name') or bonus_name).strip()
+            
+            # Check if already received bonus from this group/schedule on this date
+            # 1. Specific schedule check
+            cur.execute(
+                _sql_placeholder("SELECT 1 FROM time_bonus_given WHERE student_id=? AND bonus_schedule_id=? AND given_date=?"),
+                (sid, bonus_id, d_str)
+            )
+            if cur.fetchone():
+                bonus_points = 0 # Already given
+            else:
+                # 2. Group check
+                cur.execute(
+                    _sql_placeholder("""
+                        SELECT 1 FROM time_bonus_given g
+                        JOIN time_bonus_schedules s ON s.id = g.bonus_schedule_id
+                        WHERE g.student_id=? AND g.given_date=? AND COALESCE(s.group_name, s.name)=?
+                    """),
+                    (sid, d_str, group_name)
+                )
+                if cur.fetchone():
+                    bonus_points = 0 # Already given for group
+        
+        # Apply changes
+        old_points = int(student.get('points') or 0)
+        new_points = old_points + bonus_points
+        
+        if bonus_points > 0:
+            cur.execute(
+                _sql_placeholder("UPDATE students SET points=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"),
+                (new_points, sid)
+            )
+            
+            reason = f"תיקוף ידני: {d_str} {t_str} ({bonus_name})"
+            teacher_name = "Web Admin" # simplified
+            cur.execute(
+                _sql_placeholder("""
+                    INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
+                    VALUES (?, ?, ?, ?, ?, ?, 'manual_arrival')
+                """),
+                (sid, old_points, new_points, bonus_points, reason, teacher_name)
+            )
+            
+            # Record time bonus given
+            # We want to record the actual arrival time as 'given_at' if possible, or just the fact it was given
+            given_at_ts = f"{d_str} {t_str}:00"
+            tbg_id = None
+            
+            if USE_POSTGRES:
+                cur.execute(
+                    _sql_placeholder("""
+                        INSERT INTO time_bonus_given (student_id, bonus_schedule_id, given_date, given_at)
+                        VALUES (?, ?, ?, ?)
+                        RETURNING id
+                    """),
+                    (sid, bonus_id, d_str, given_at_ts)
+                )
+                row = cur.fetchone()
+                if row:
+                    tbg_id = row.get('id') if isinstance(row, dict) else row[0]
+            else:
+                cur.execute(
+                    _sql_placeholder("""
+                        INSERT INTO time_bonus_given (student_id, bonus_schedule_id, given_date, given_at)
+                        VALUES (?, ?, ?, ?)
+                    """),
+                    (sid, bonus_id, d_str, given_at_ts)
+                )
+                tbg_id = cur.lastrowid
+        
+        # If no bonus points, we might still want to log an arrival event if we had an "arrivals" table,
+        # but currently we primarily track points. 
+        # Ideally we should log manual arrival even if 0 points, but points_log requires delta?
+        # Actually points_log can have delta 0.
+        if bonus_points == 0:
+             reason = f"תיקוף ידני: {d_str} {t_str} (ללא בונוס)"
+             cur.execute(
+                _sql_placeholder("""
+                    INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
+                    VALUES (?, ?, ?, ?, ?, ?, 'manual_arrival')
+                """),
+                (sid, old_points, new_points, 0, reason, "Web Admin")
+            )
+
+        conn.commit()
+        
+        # Track changes for sync
+        if bonus_points > 0:
+            _record_tenant_change(tenant_id, 'student_points', sid, 'update', {
+                'old_points': old_points,
+                'new_points': new_points,
+                'reason': f"תיקוף ידני: {d_str} {t_str} ({bonus_name})"
+            })
+            if tbg_id:
+                _record_tenant_change(tenant_id, 'time_bonus_given', tbg_id, 'create', {
+                    'student_id': sid,
+                    'bonus_schedule_id': bonus_id,
+                    'given_date': d_str,
+                    'given_at': given_at_ts
+                })
+            
+        return {
+            'ok': True,
+            'bonus_points': bonus_points,
+            'bonus_name': bonus_name,
+            'new_points': new_points
+        }
+        
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.get('/web/payment/mock', response_class=HTMLResponse)
     teacher_id: int
     classes: List[str] = []
 
@@ -4416,13 +5518,21 @@ def _get_tenant_storage_path(tenant_id: str, rel_path: str) -> str:
     if not safe_rel:
         return ''
     
-    # Priority 1: Shared Folder (if configured)
+    # Priority 1: Local Data Dir (Override)
+    local_path = os.path.join(DATA_DIR, 'tenants_assets', tenant_id, safe_rel)
+    if os.path.isfile(local_path):
+        return local_path
+
+    # Priority 2: Shared Folder (Default)
     shared = _get_shared_folder_for_tenant(tenant_id)
     if shared:
-        return os.path.join(shared, safe_rel)
+        shared_path = os.path.join(shared, safe_rel)
+        if os.path.isfile(shared_path):
+            return shared_path
     
-    # Priority 2: Local Data Dir
-    return os.path.join(DATA_DIR, 'tenants_assets', tenant_id, safe_rel)
+    # Fallback: return local path even if missing (for uploads etc) or simply return empty?
+    # For download, we prefer existing. For upload, logic handles specific dir.
+    return local_path
 
 def _calc_file_hash(path: str) -> str:
     if not os.path.isfile(path):
@@ -4442,17 +5552,17 @@ def _get_server_manifest(tenant_id: str) -> Dict[str, str]:
     dirs_to_scan = ['images', 'sounds', 'ads_media']
     
     # Determine root for scanning
-    # If shared folder exists, scan that. Else scan local assets.
-    
-    shared = _get_shared_folder_for_tenant(tenant_id)
+    # Priority: Local then Shared (so local overrides shared in manifest)
     roots = []
-    if shared:
-        roots.append(shared)
     
     local_assets = os.path.join(DATA_DIR, 'tenants_assets', tenant_id)
     if os.path.isdir(local_assets):
         roots.append(local_assets)
-        
+
+    shared = _get_shared_folder_for_tenant(tenant_id)
+    if shared:
+        roots.append(shared)
+    
     # Scan
     seen_paths = set()
     
@@ -4577,6 +5687,9 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
     if not api_key:
         raise HTTPException(status_code=401, detail="missing api_key")
 
+    if (not str(payload.tenant_id).isdigit()) or str(payload.tenant_id).startswith('0'):
+        raise HTTPException(status_code=400, detail="invalid tenant_id")
+
     conn = _db()
     cur = conn.cursor()
     cur.execute(
@@ -4593,6 +5706,10 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
                     (payload.tenant_id, payload.tenant_id, api_key)
                 )
                 conn.commit()
+                try:
+                    _ensure_tenant_db_exists(str(payload.tenant_id))
+                except Exception:
+                    pass
                 cur.execute(
                     _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
                     (payload.tenant_id, api_key)
@@ -4841,6 +5958,10 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
     if not api_key:
         raise HTTPException(status_code=401, detail="missing api_key")
 
+    # Allow alphanumeric Tenant ID
+    # if (not str(payload.tenant_id).isdigit()) or str(payload.tenant_id).startswith('0'):
+    #    raise HTTPException(status_code=400, detail="invalid tenant_id")
+
     conn = _db()
     cur = conn.cursor()
     cur.execute(
@@ -4857,6 +5978,10 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
                     (payload.tenant_id, payload.tenant_id, api_key)
                 )
                 conn.commit()
+                try:
+                    _ensure_tenant_db_exists(str(payload.tenant_id))
+                except Exception:
+                    pass
                 cur.execute(
                     _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
                     (payload.tenant_id, api_key)
@@ -4936,15 +6061,32 @@ def sync_snapshot_get(
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=401, detail='invalid api_key')
-        
-        # Get last change ID for sync continuity
-        cur.execute('SELECT MAX(id) FROM changes')
-        row = cur.fetchone()
+
+        # Cursor for delta sync (sync_events.id is what /sync/pull uses)
+        last_event_id = 0
+        try:
+            cur.execute(
+                _sql_placeholder('SELECT MAX(id) FROM sync_events WHERE tenant_id = ?'),
+                (tenant_id,)
+            )
+            r2 = cur.fetchone()
+            if r2:
+                val2 = r2[0] if not isinstance(r2, dict) else list(r2.values())[0]
+                last_event_id = _safe_int(val2, 0)
+        except Exception:
+            last_event_id = 0
+
+        # Backward compatibility (older clients used changes.id)
         last_change_id = 0
-        if row:
-            val = row[0] if not isinstance(row, dict) else list(row.values())[0]
-            last_change_id = _safe_int(val, 0)
-            
+        try:
+            cur.execute('SELECT MAX(id) FROM changes')
+            r3 = cur.fetchone()
+            if r3:
+                val3 = r3[0] if not isinstance(r3, dict) else list(r3.values())[0]
+                last_change_id = _safe_int(val3, 0)
+        except Exception:
+            last_change_id = 0
+
     finally:
         try:
             conn.close()
@@ -4987,10 +6129,11 @@ def sync_snapshot_get(
             except Exception:
                 data[t] = []
         return {
-            'ok': True, 
-            'tenant_id': tenant_id, 
+            'ok': True,
+            'tenant_id': tenant_id,
             'snapshot': data,
-            'last_change_id': last_change_id
+            'last_event_id': int(last_event_id),
+            'last_change_id': int(last_change_id),
         }
     finally:
         try:
@@ -5025,6 +6168,9 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
     if not api_key:
         raise HTTPException(status_code=401, detail='missing api_key')
 
+    if (not str(tenant_id).isdigit()) or str(tenant_id).startswith('0'):
+        raise HTTPException(status_code=400, detail='invalid tenant_id')
+
     conn = _db()
     cur = conn.cursor()
     cur.execute(
@@ -5041,6 +6187,10 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
                     (tenant_id, tenant_id, api_key)
                 )
                 conn.commit()
+                try:
+                    _ensure_tenant_db_exists(str(tenant_id))
+                except Exception:
+                    pass
                 cur.execute(
                     _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
                     (tenant_id, api_key)
@@ -5132,8 +6282,8 @@ def admin_setup_form(request: Request, admin_key: str = '') -> str:
           <input name="name" required placeholder="לדוגמה: ישיבת אור החיים" />
         </div>
         <div class="form-group">
-          <label>Tenant ID (מזהה ייחודי באנגלית)</label>
-          <input name="tenant_id" required placeholder="לדוגמה: or_hachaim" pattern="[a-zA-Z0-9_-]+" />
+          <label>קוד מוסד (Tenant ID) — ספרות בלבד</label>
+          <input name="tenant_id" placeholder="השאר ריק ליצירה אוטומטית" inputmode="numeric" pattern="[0-9]+" />
         </div>
         <div class="form-group">
           <label>סיסמת מוסד (לכניסת מנהל)</label>
@@ -5199,29 +6349,24 @@ def web_equipment_required_content() -> str:
 
 
 @app.get('/web/guide', response_class=HTMLResponse)
-def web_guide() -> str:
-    path = os.path.join(ROOT_DIR, 'guide_user_embedded.html')
-    html_content = _read_text_file(path)
-    if not html_content:
-        path = os.path.join(ROOT_DIR, 'guide_index.html')
+def web_guide(request: Request) -> str:
+    for name in ('guide_user_embedded.html', 'guide_user.html', 'guide_index.html'):
+        path = os.path.join(ROOT_DIR, name)
         html_content = _read_text_file(path)
+        if html_content:
+            break
+
     if not html_content:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
-        return _public_web_shell('מדריך', body)
-    
+        return _public_web_shell('מדריך', body, request=request)
+
     html_content = str(html_content)
     html_content = html_content.replace('file:///C:/ProgramData/SchoolPoints/equipment_required.html', '/web/equipment-required')
     html_content = html_content.replace('file:///C:/%D7%9E%D7%99%D7%A6%D7%93/SchoolPoints/equipment_required.html', '/web/equipment-required')
     html_content = html_content.replace('equipment_required.html', '/web/equipment-required')
     html_content = _replace_guide_base64_images(html_content)
-    
-    # Extract body
-    body_content = html_content
-    m = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
-    if m:
-        body_content = m.group(1)
-        
-    return _public_web_shell('מדריך', body_content)
+
+    return html_content
 
 
 @app.get('/web/register', response_class=HTMLResponse)
@@ -5232,8 +6377,8 @@ def web_register(request: Request) -> Response:
       .reg-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
       .reg-group { margin-bottom: 20px; }
       .reg-label { display: block; margin-bottom: 8px; font-weight: 700; color: #cbd5e1; }
-      .reg-input { width: 100%; padding: 12px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; font-size: 16px; outline: none; transition: border-color 0.2s; box-sizing: border-box; }
-      .reg-input:focus { border-color: #3498db; background: rgba(0,0,0,0.3); }
+      .reg-input { width: 100%; padding: 12px; background: #2c3e50; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; font-size: 16px; outline: none; transition: border-color 0.2s; box-sizing: border-box; }
+      .reg-input:focus { border-color: #3498db; background: #34495e; }
       .reg-select { width: 100%; padding: 12px; background: #1e293b; border: 1px solid rgba(255,255,255,0.1); border-radius: 10px; color: #fff; font-size: 16px; outline: none; box-sizing: border-box; }
       .reg-btn { width: 100%; padding: 15px; background: linear-gradient(135deg, #2ecc71, #27ae60); border: none; border-radius: 12px; color: #fff; font-weight: 800; font-size: 18px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; margin-top: 10px; }
       .reg-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(46, 204, 113, 0.3); }
@@ -5248,6 +6393,24 @@ def web_register(request: Request) -> Response:
       
       /* Hidden radio inputs for plans */
       input[type="radio"].plan-radio { display: none; }
+
+      .page-card .reg-input {
+        color: #fff;
+        background: #2c3e50;
+      }
+      .page-card .reg-input:focus {
+        color: #fff;
+        background: #34495e;
+      }
+      .page-card .reg-input::placeholder { color: rgba(255,255,255,0.55); }
+
+      .page-card input.reg-input:-webkit-autofill,
+      .page-card input.reg-input:-webkit-autofill:hover,
+      .page-card input.reg-input:-webkit-autofill:focus {
+        -webkit-text-fill-color: #fff;
+        box-shadow: 0 0 0px 1000px #2c3e50 inset;
+        caret-color: #fff;
+      }
     </style>
 
     <div class="reg-container">
@@ -5264,6 +6427,14 @@ def web_register(request: Request) -> Response:
             <label class="reg-label">שם איש קשר</label>
             <input type="text" name="contact_name" class="reg-input" placeholder="ישראל ישראלי" required />
           </div>
+        </div>
+
+        <div class="reg-row">
+          <div class="reg-group">
+            <label class="reg-label">קוד מוסד (באנגלית/מספרים)</label>
+            <input type="text" name="institution_code" class="reg-input" placeholder="לדוגמה: YESHIVA123" required />
+          </div>
+          <div class="reg-group"></div>
         </div>
         
         <div class="reg-row">
@@ -5309,7 +6480,7 @@ def web_register(request: Request) -> Response:
         <div class="reg-group">
             <label class="reg-label" style="display:flex; align-items:center; gap:10px; cursor:pointer;">
                 <input type="checkbox" name="terms" required style="width:20px; height:20px;" />
-                <span>קראתי ואני מסכים <a href="#" style="color:#3498db;">לתקנון ולתנאי השימוש</a></span>
+                <span>קראתי ואני מסכים <a href="/web/terms" style="color:#3498db;">לתקנון ולתנאי השימוש</a></span>
             </label>
         </div>
 
@@ -5345,6 +6516,7 @@ def web_register(request: Request) -> Response:
         
         const formData = new FormData(form);
         const payload = Object.fromEntries(formData.entries());
+        payload.terms = !!formData.get('terms');
         
         // Basic logic for now
         btn.disabled = true;
@@ -5386,6 +6558,41 @@ def web_register(request: Request) -> Response:
     return _public_web_shell("הרשמה", body, request=request)
 
 
+@app.get('/web/terms', response_class=HTMLResponse)
+def web_terms(request: Request) -> Response:
+    body = """
+    <div style="line-height:1.9;">
+      <h3 style="margin-top:0;">תקנון ותנאי שימוש</h3>
+      <div style="opacity:.9;">המסמך נכתב בלשון זכר מטעמי נוחות בלבד ומתייחס לשני המינים.</div>
+      <hr style="border:0;border-top:1px solid rgba(255,255,255,0.18); margin:14px 0;" />
+      <h4>שימוש במערכת</h4>
+      <div>
+        המערכת מיועדת לניהול נקודות/תמריצים במוסדות חינוך. המשתמש אחראי לוודא התאמה לצרכי המוסד, לרבות הגדרות,
+        הרשאות, תהליכי עבודה, וגיבוי נתונים.
+      </div>
+      <h4>אחריות והגבלת אחריות</h4>
+      <div>
+        השירות והתוכנה מסופקים "כמות שהם" (AS IS) וללא התחייבות לזמינות רציפה, לאי-תקלות או להתאמה למטרה מסוימת.
+        לא תהיה אחריות לכל נזק עקיף, תוצאתי, אובדן נתונים, אובדן רווחים או פגיעה תפעולית הנובעים מהשימוש במערכת או
+        מהסתמכות עליה.
+      </div>
+      <h4>תמיכה טכנית</h4>
+      <div>
+        תמיכה טכנית, אם ניתנת, הינה מאמץ סביר בלבד ואינה חלק מהתחייבות חוזית לזמני תגובה/פתרון. ייתכנו תקלות,
+        השבתות מתוכננות, או שינויים במערכת ללא הודעה מוקדמת.
+      </div>
+      <h4>שמירת מידע</h4>
+      <div>
+        המשתמש אחראי לשמירת סיסמאות, הרשאות וגיבויים. מומלץ להגדיר נהלי עבודה פנימיים ולבצע בדיקות תקופתיות.
+      </div>
+      <div class="actionbar" style="margin-top:18px;">
+        <a class="gray" href="/web/register">חזרה להרשמה</a>
+      </div>
+    </div>
+    """
+    return HTMLResponse(_public_web_shell('תקנון', body, request=request))
+
+
 @app.get('/web/contact', response_class=HTMLResponse)
 def web_contact() -> str:
     body = f"""
@@ -5404,7 +6611,6 @@ def web_contact() -> str:
         <button class=\"green\" type=\"submit\" style=\"padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;\">שליחה</button>
         <a class=\"gray\" href=\"/web\" style=\"padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;\">חזרה</a>
       </div>
-      <div class=\"small\">build: {APP_BUILD_TAG}</div>
     </form>
     """
     return _public_web_shell('צור קשר', body)
@@ -5517,7 +6723,6 @@ def web_download() -> str:
         <a class="blue" href="/web/guide">מדריך</a>
         <a class="gray" href="/web">חזרה</a>
       </div>
-      <div class="small">build: {APP_BUILD_TAG}</div>
     </div>
     """
     return _public_web_shell("הורדה", body)
@@ -5676,16 +6881,723 @@ def web_account(request: Request):
     return _basic_web_shell("חשבון", body, request=request)
 
 
-@app.get("/web/settings", response_class=HTMLResponse)
-def web_settings(request: Request):
+@app.get('/api/anti-spam/blocks')
+def api_antispam_blocks(request: Request) -> Dict[str, Any]:
     guard = _web_require_admin_teacher(request)
     if guard:
-        return guard
+        raise HTTPException(status_code=401, detail='not authorized')
+    
     tenant_id = _web_tenant_from_cookie(request)
     conn = _tenant_school_db(tenant_id)
     try:
-        value_json = _get_web_setting_json(conn, 'admin_settings', '{\n  "enabled": true\n}')
+        cur = conn.cursor()
+        sql = """
+            SELECT b.id, b.student_id, b.card_number, b.block_start, b.block_end, b.block_reason,
+                   s.first_name, s.last_name, s.class_name
+              FROM card_blocks b
+              LEFT JOIN students s ON b.student_id = s.id
+             WHERE b.block_end > CURRENT_TIMESTAMP
+             ORDER BY b.block_end DESC
+        """
+        cur.execute(sql)
+        items = [dict(r) for r in cur.fetchall()]
+        return {'items': items}
     finally:
+        try: conn.close()
+        except: pass
+
+@app.get('/api/anti-spam/events')
+def api_antispam_events(request: Request, limit: int = 50) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        sql = """
+            SELECT e.id, e.event_type, e.created_at, e.message, e.card_number,
+                   s.first_name, s.last_name, s.class_name
+              FROM anti_spam_events e
+              LEFT JOIN students s ON e.student_id = s.id
+             ORDER BY e.id DESC
+             LIMIT ?
+        """
+        cur.execute(_sql_placeholder(sql), (limit,))
+        items = [dict(r) for r in cur.fetchall()]
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/anti-spam/unblock')
+async def api_antispam_unblock(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+        
+    tenant_id = _web_tenant_from_cookie(request)
+    try:
+        data = await request.json()
+        block_id = int(data.get('block_id') or 0)
+    except:
+        raise HTTPException(status_code=400, detail='invalid json')
+        
+    if block_id <= 0:
+        raise HTTPException(status_code=400, detail='invalid id')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder("DELETE FROM card_blocks WHERE id = ?"), (block_id,))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'card_block', block_id, 'delete', {})
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get("/web/anti-spam", response_class=HTMLResponse)
+def web_anti_spam(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+    
+    html_content = """
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:20px;">
+        <div class="card" style="padding:0; overflow:hidden;">
+            <div style="padding:15px; background:#f8f9fa; border-bottom:1px solid #eee; font-weight:bold; display:flex; justify-content:space-between; align-items:center;">
+                <span>🔒 חסימות פעילות</span>
+                <button class="gray" style="font-size:12px; padding:4px 8px;" onclick="loadBlocks()">רענן</button>
+            </div>
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr style="background:#fff;">
+                        <th style="padding:10px; border-bottom:1px solid #eee;">תלמיד</th>
+                        <th style="padding:10px; border-bottom:1px solid #eee;">סיבה</th>
+                        <th style="padding:10px; border-bottom:1px solid #eee;">עד מתי</th>
+                        <th style="padding:10px; border-bottom:1px solid #eee;"></th>
+                    </tr>
+                </thead>
+                <tbody id="blocks-list"></tbody>
+            </table>
+        </div>
+
+        <div class="card" style="padding:0; overflow:hidden;">
+            <div style="padding:15px; background:#f8f9fa; border-bottom:1px solid #eee; font-weight:bold; display:flex; justify-content:space-between; align-items:center;">
+                <span>⚠️ אירועים אחרונים</span>
+                <button class="gray" style="font-size:12px; padding:4px 8px;" onclick="loadEvents()">רענן</button>
+            </div>
+            <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead>
+                    <tr style="background:#fff;">
+                        <th style="padding:10px; border-bottom:1px solid #eee;">זמן</th>
+                        <th style="padding:10px; border-bottom:1px solid #eee;">סוג</th>
+                        <th style="padding:10px; border-bottom:1px solid #eee;">תלמיד</th>
+                        <th style="padding:10px; border-bottom:1px solid #eee;">הודעה</th>
+                    </tr>
+                </thead>
+                <tbody id="events-list"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        async function loadBlocks() {
+            const res = await fetch('/api/anti-spam/blocks');
+            const data = await res.json();
+            const tbody = document.getElementById('blocks-list');
+            if (!data.items || data.items.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:20px; color:#999;">אין חסימות פעילות</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.items.map(b => `
+                <tr>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5;">
+                        <b>${esc(b.first_name)} ${esc(b.last_name)}</b><br/>
+                        <span style="font-size:11px; color:#777;">${esc(b.class_name)} (${esc(b.card_number)})</span>
+                    </td>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5;">${esc(b.block_reason)}</td>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5; direction:ltr; text-align:right;">
+                        ${new Date(b.block_end).toLocaleString('he-IL')}
+                    </td>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5;">
+                        <button class="red" style="padding:4px 8px; font-size:11px;" onclick="unblock(${b.id})">שחרר</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadEvents() {
+            const res = await fetch('/api/anti-spam/events');
+            const data = await res.json();
+            const tbody = document.getElementById('events-list');
+            if (!data.items || data.items.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center; padding:20px; color:#999;">אין אירועים</td></tr>';
+                return;
+            }
+            tbody.innerHTML = data.items.map(e => `
+                <tr>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5; direction:ltr; text-align:right; font-size:11px;">
+                        ${new Date(e.created_at).toLocaleString('he-IL')}
+                    </td>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5;">
+                        <span style="color:${e.event_type === 'block' ? 'red' : 'orange'}; font-weight:bold;">
+                            ${e.event_type === 'block' ? 'חסימה' : 'אזהרה'}
+                        </span>
+                    </td>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5;">
+                        ${esc(e.first_name)} ${esc(e.last_name)}
+                    </td>
+                    <td style="padding:10px; border-bottom:1px solid #f5f5f5; max-width:200px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${esc(e.message)}">
+                        ${esc(e.message)}
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function unblock(id) {
+            if (!confirm('האם לשחרר חסימה זו?')) return;
+            await fetch('/api/anti-spam/unblock', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ block_id: id })
+            });
+            loadBlocks();
+        }
+
+        function esc(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        loadBlocks();
+        loadEvents();
+    </script>
+    """
+    return _basic_web_shell("אנטי-ספאם", html_content, request=request)
+
+@app.get('/api/settings/public-closures')
+def api_public_closures_list(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM public_closures ORDER BY id DESC")
+        items = [dict(r) for r in cur.fetchall()]
+        return {'items': items}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/settings/public-closures/save')
+async def api_public_closures_save(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail='invalid json')
+        
+    cid = int(data.get('id') or 0)
+    title = str(data.get('title') or '').strip()
+    if not title:
+        raise HTTPException(status_code=400, detail='missing title')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        keys = [
+            'title', 'subtitle', 'start_at', 'end_at', 'enabled',
+            'repeat_weekly', 'weekly_start_day', 'weekly_start_time',
+            'weekly_end_day', 'weekly_end_time'
+        ]
+        vals = [
+            title,
+            str(data.get('subtitle') or ''),
+            str(data.get('start_at') or ''),
+            str(data.get('end_at') or ''),
+            int(data.get('enabled') or 0),
+            int(data.get('repeat_weekly') or 0),
+            str(data.get('weekly_start_day') or ''),
+            str(data.get('weekly_start_time') or ''),
+            str(data.get('weekly_end_day') or ''),
+            str(data.get('weekly_end_time') or '')
+        ]
+        
+        if cid > 0:
+            set_clause = ', '.join([f"{k}=?" for k in keys])
+            cur.execute(_sql_placeholder(f"UPDATE public_closures SET {set_clause} WHERE id=?"), (*vals, cid))
+            action = 'update'
+        else:
+            cols = ', '.join(keys)
+            phs = ', '.join(['?'] * len(keys))
+            cur.execute(_sql_placeholder(f"INSERT INTO public_closures ({cols}) VALUES ({phs})"), vals)
+            cid = cur.lastrowid
+            action = 'create'
+            
+        conn.commit()
+        _record_tenant_change(tenant_id, 'public_closure', cid, action, data)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/settings/public-closures/delete')
+async def api_public_closures_delete(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    try:
+        data = await request.json()
+        cid = int(data.get('id') or 0)
+    except:
+        raise HTTPException(status_code=400, detail='invalid json')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder("DELETE FROM public_closures WHERE id=?"), (cid,))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'public_closure', cid, 'delete', {})
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get("/web/quiet-mode", response_class=HTMLResponse)
+def web_quiet_mode(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+    
+    html_content = """
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <div>
+        <h2>מצב שקט (חסימות עמדה ציבורית)</h2>
+        <div style="color:#666; font-size:13px;">הגדר זמנים בהם העמדה הציבורית תהיה חסומה (למשל: שבת, שיעורים)</div>
+      </div>
+      <button class="green" onclick="openClosureModal()">+ הוסף חסימה</button>
+    </div>
+    
+    <div class="card" style="padding:0; overflow:hidden;">
+      <table style="width:100%; border-collapse:collapse; font-size:14px;">
+        <thead>
+          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:12px;">פעיל</th>
+            <th style="padding:12px;">כותרת</th>
+            <th style="padding:12px;">סוג</th>
+            <th style="padding:12px;">זמנים</th>
+            <th style="padding:12px;">פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="closures-list"></tbody>
+      </table>
+    </div>
+
+    <!-- Modal -->
+    <div id="modal-closure" class="q-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+      <div class="card" style="background:#fff; width:90%; max-width:500px; padding:24px; border-radius:12px; max-height:90vh; overflow-y:auto;">
+        <h3 id="modal-title" style="margin-top:0;">חסימה</h3>
+        <input type="hidden" id="c-id">
+        
+        <div class="form-group">
+          <label>כותרת (מה יוצג במסך)</label>
+          <input id="c-title" class="form-control">
+        </div>
+        <div class="form-group">
+          <label>תת-כותרת (אופציונלי)</label>
+          <input id="c-subtitle" class="form-control">
+        </div>
+        
+        <div class="form-group">
+          <label class="ck" style="width:fit-content;">
+            <input type="checkbox" id="c-enabled" checked> פעיל
+          </label>
+        </div>
+
+        <div class="form-group" style="margin-top:15px; border-top:1px solid #eee; padding-top:15px;">
+          <label style="font-weight:bold; margin-bottom:10px; display:block;">סוג חסימה</label>
+          <div style="display:flex; gap:20px; margin-bottom:15px;">
+            <label class="ck"><input type="radio" name="c-type" value="weekly" checked onchange="toggleType()"> שבועי קבוע</label>
+            <label class="ck"><input type="radio" name="c-type" value="once" onchange="toggleType()"> חד-פעמי (תאריך)</label>
+          </div>
+        </div>
+
+        <!-- Weekly Inputs -->
+        <div id="type-weekly">
+            <div style="display:flex; gap:10px;">
+                <div class="form-group" style="flex:1;">
+                    <label>יום התחלה</label>
+                    <select id="c-w-start-day" class="form-control">
+                        <option value="א">ראשון</option><option value="ב">שני</option><option value="ג">שלישי</option>
+                        <option value="ד">רביעי</option><option value="ה">חמישי</option><option value="ו">שישי</option><option value="ש">שבת</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>שעת התחלה</label>
+                    <input type="time" id="c-w-start-time" class="form-control" style="direction:ltr;">
+                </div>
+            </div>
+            <div style="display:flex; gap:10px;">
+                <div class="form-group" style="flex:1;">
+                    <label>יום סיום</label>
+                    <select id="c-w-end-day" class="form-control">
+                        <option value="א">ראשון</option><option value="ב">שני</option><option value="ג">שלישי</option>
+                        <option value="ד">רביעי</option><option value="ה">חמישי</option><option value="ו">שישי</option><option value="ש">שבת</option>
+                    </select>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>שעת סיום</label>
+                    <input type="time" id="c-w-end-time" class="form-control" style="direction:ltr;">
+                </div>
+            </div>
+        </div>
+
+        <!-- One-time Inputs -->
+        <div id="type-once" style="display:none;">
+            <div style="display:flex; gap:10px;">
+                <div class="form-group" style="flex:1;">
+                    <label>התחלה</label>
+                    <input type="datetime-local" id="c-start-at" class="form-control" style="direction:ltr;">
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>סיום</label>
+                    <input type="datetime-local" id="c-end-at" class="form-control" style="direction:ltr;">
+                </div>
+            </div>
+        </div>
+
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:25px;">
+          <button class="gray" onclick="closeClosureModal()">ביטול</button>
+          <button class="green" onclick="saveClosure()">שמירה</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      let closures = [];
+
+      async function loadClosures() {
+        const res = await fetch('/api/settings/public-closures');
+        const data = await res.json();
+        closures = data.items || [];
+        renderClosures();
+      }
+
+      function renderClosures() {
+        const tbody = document.getElementById('closures-list');
+        if (closures.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:20px; color:#999;">אין חסימות מוגדרות</td></tr>';
+            return;
+        }
+        tbody.innerHTML = closures.map((c, idx) => {
+            let timeStr = '';
+            if (c.repeat_weekly) {
+                timeStr = `שבועי: ${c.weekly_start_day} ${c.weekly_start_time} - ${c.weekly_end_day} ${c.weekly_end_time}`;
+            } else {
+                const s = c.start_at ? new Date(c.start_at).toLocaleString('he-IL') : '?';
+                const e = c.end_at ? new Date(c.end_at).toLocaleString('he-IL') : '?';
+                timeStr = `${s} - ${e}`;
+            }
+            return `
+              <tr style="background:#fff; border-bottom:1px solid #f5f5f5;">
+                <td style="padding:12px; text-align:center;">
+                    <span style="color:${c.enabled ? '#2ecc71' : '#ccc'}; font-size:18px;">●</span>
+                </td>
+                <td style="padding:12px; font-weight:bold;">${esc(c.title)}</td>
+                <td style="padding:12px;">${c.repeat_weekly ? 'שבועי' : 'חד-פעמי'}</td>
+                <td style="padding:12px; font-size:13px; color:#555; direction:ltr; text-align:right;">${timeStr}</td>
+                <td style="padding:12px; text-align:center;">
+                  <button class="blue" style="padding:4px 8px; font-size:12px;" onclick="editClosure(${idx})">ערוך</button>
+                  <button class="red" style="padding:4px 8px; font-size:12px;" onclick="deleteClosure(${c.id})">מחק</button>
+                </td>
+              </tr>
+            `;
+        }).join('');
+      }
+
+      function toggleType() {
+        const isWeekly = document.querySelector('input[name="c-type"]:checked').value === 'weekly';
+        document.getElementById('type-weekly').style.display = isWeekly ? 'block' : 'none';
+        document.getElementById('type-once').style.display = isWeekly ? 'none' : 'block';
+      }
+
+      function openClosureModal() {
+        document.getElementById('c-id').value = '0';
+        document.getElementById('c-title').value = '';
+        document.getElementById('c-subtitle').value = '';
+        document.getElementById('c-enabled').checked = true;
+        
+        // Defaults
+        document.querySelector('input[name="c-type"][value="weekly"]').checked = true;
+        document.getElementById('c-w-start-day').value = 'ו';
+        document.getElementById('c-w-start-time').value = '13:00';
+        document.getElementById('c-w-end-day').value = 'ש';
+        document.getElementById('c-w-end-time').value = '23:00';
+        document.getElementById('c-start-at').value = '';
+        document.getElementById('c-end-at').value = '';
+        
+        toggleType();
+        document.getElementById('modal-title').innerText = 'הוספת חסימה';
+        document.getElementById('modal-closure').style.display = 'flex';
+      }
+
+      function closeClosureModal() {
+        document.getElementById('modal-closure').style.display = 'none';
+      }
+
+      function editClosure(idx) {
+        const c = closures[idx];
+        document.getElementById('c-id').value = c.id;
+        document.getElementById('c-title').value = c.title;
+        document.getElementById('c-subtitle').value = c.subtitle;
+        document.getElementById('c-enabled').checked = !!c.enabled;
+        
+        const isWeekly = !!c.repeat_weekly;
+        document.querySelector(`input[name="c-type"][value="${isWeekly ? 'weekly' : 'once'}"]`).checked = true;
+        toggleType();
+
+        if (isWeekly) {
+            document.getElementById('c-w-start-day').value = c.weekly_start_day || 'א';
+            document.getElementById('c-w-start-time').value = c.weekly_start_time || '';
+            document.getElementById('c-w-end-day').value = c.weekly_end_day || 'א';
+            document.getElementById('c-w-end-time').value = c.weekly_end_time || '';
+        } else {
+            // Convert to datetime-local format: YYYY-MM-DDTHH:MM
+            document.getElementById('c-start-at').value = (c.start_at || '').substring(0, 16);
+            document.getElementById('c-end-at').value = (c.end_at || '').substring(0, 16);
+        }
+
+        document.getElementById('modal-title').innerText = 'עריכת חסימה';
+        document.getElementById('modal-closure').style.display = 'flex';
+      }
+
+      async function saveClosure() {
+        const isWeekly = document.querySelector('input[name="c-type"]:checked').value === 'weekly';
+        const payload = {
+            id: document.getElementById('c-id').value,
+            title: document.getElementById('c-title').value,
+            subtitle: document.getElementById('c-subtitle').value,
+            enabled: document.getElementById('c-enabled').checked ? 1 : 0,
+            repeat_weekly: isWeekly ? 1 : 0,
+            weekly_start_day: document.getElementById('c-w-start-day').value,
+            weekly_start_time: document.getElementById('c-w-start-time').value,
+            weekly_end_day: document.getElementById('c-w-end-day').value,
+            weekly_end_time: document.getElementById('c-w-end-time').value,
+            start_at: document.getElementById('c-start-at').value,
+            end_at: document.getElementById('c-end-at').value
+        };
+
+        const res = await fetch('/api/settings/public-closures/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        
+        if (res.ok) {
+            closeClosureModal();
+            loadClosures();
+        } else {
+            alert('שגיאה בשמירה');
+        }
+      }
+
+      async function deleteClosure(id) {
+        if (!confirm('למחוק חסימה זו?')) return;
+        const res = await fetch('/api/settings/public-closures/delete', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ id: id })
+        });
+        if (res.ok) loadClosures();
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadClosures();
+    </script>
+    """
+    return _basic_web_shell("מצב שקט", html_content, request=request)
+
+@app.get('/api/settings/max-points')
+def api_max_points_get(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        val = _get_web_setting_json(conn, 'max_points_config', '{}')
+        import json
+        return json.loads(val)
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.post('/api/settings/max-points')
+async def api_max_points_save(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail='invalid json')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        import json
+        json_val = json.dumps(data)
+        _set_web_setting_json(conn, 'max_points_config', json_val)
+        _record_tenant_change(tenant_id, 'setting', 'max_points_config', 'update', {'key': 'max_points_config', 'value': json_val})
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@app.get("/web/max-points", response_class=HTMLResponse)
+def web_max_points(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+    
+    html_content = """
+    <div class="card" style="padding:24px; max-width:700px; margin:0 auto;">
+        <h2 style="margin-top:0;">📉 הגבלת ניקוד (תקרה דינמית)</h2>
+        <p style="color:#666; margin-bottom:20px;">הגדרת מקסימום נקודות שתלמיד יכול לצבור ביום/שבוע.</p>
+        
+        <div class="form-group">
+            <label>תאריך התחלה (ספירה לאחור)</label>
+            <input type="date" id="mp-start" class="form-control">
+        </div>
+        
+        <div style="display:flex; gap:20px;">
+            <div class="form-group" style="flex:1;">
+                <label>נקודות ליום (ממוצע)</label>
+                <input type="number" id="mp-daily" class="form-control">
+                <textarea id="mp-daily-desc" class="form-control" style="margin-top:5px; height:40px;" placeholder="תיאור (למשל: כולל בונוס)"></textarea>
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>נקודות לשבוע</label>
+                <input type="number" id="mp-weekly" class="form-control">
+                <textarea id="mp-weekly-desc" class="form-control" style="margin-top:5px; height:40px;" placeholder="תיאור שבועי"></textarea>
+            </div>
+        </div>
+
+        <div class="form-group" style="background:#f9f9f9; padding:10px; border-radius:8px; border:1px solid #eee;">
+            <label style="margin-bottom:10px; display:block;">פירוט נקודות לפי יום (משוערך)</label>
+            <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:5px; direction:rtl;">
+                <div style="text-align:center;"><small>א</small><input id="mp-d-6" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                <div style="text-align:center;"><small>ב</small><input id="mp-d-0" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                <div style="text-align:center;"><small>ג</small><input id="mp-d-1" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                <div style="text-align:center;"><small>ד</small><input id="mp-d-2" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                <div style="text-align:center;"><small>ה</small><input id="mp-d-3" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                <div style="text-align:center;"><small>ו</small><input id="mp-d-4" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                <div style="text-align:center;"><small>ש</small><input id="mp-d-5" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label>נקודות נוספות (בונוסים חופשיים)</label>
+            <div id="mp-free-list" style="border:1px solid #eee; padding:10px; border-radius:8px; max-height:150px; overflow-y:auto; margin-bottom:10px;"></div>
+            <button class="gray" onclick="addFreePoints()">+ הוסף חריגה</button>
+        </div>
+        
+        <div class="form-group">
+            <label>מדיניות חריגה</label>
+            <select id="mp-policy" class="form-control">
+                <option value="none">ללא פעולה (תיעוד בלבד)</option>
+                <option value="warn">הצג אזהרה</option>
+                <option value="block">חסום הוספת נקודות</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label>התראה לפני חסימה (נקודות שנותרו)</label>
+            <input type="number" id="mp-warn" class="form-control" value="50">
+        </div>
+
+        <div style="margin-top:30px; text-align:left;">
+            <button class="green" onclick="saveMaxPoints()">💾 שמור הגדרות</button>
+        </div>
+    </div>
+
+    <script>
+        let freeAdditions = [];
+
+        async function loadMaxPoints() {
+            try {
+                const res = await fetch('/api/settings/max-points');
+                const data = await res.json();
+                
+                document.getElementById('mp-start').value = data.start_date || '';
+                document.getElementById('mp-daily').value = data.daily_points || 0;
+                document.getElementById('mp-daily-desc').value = data.daily_details || '';
+                document.getElementById('mp-weekly').value = data.weekly_points || 0;
+                document.getElementById('mp-weekly-desc').value = data.weekly_details || '';
+                
+                const dpw = data.daily_points_by_weekday || {};
+                // 0=Monday...6=Sunday in Python weekday(), but here we mapped 0..6 to inputs mp-d-0..mp-d-6
+                // In HTML we laid out Sunday(6), Monday(0)...
+                for (let i = 0; i < 7; i++) {
+                    document.getElementById('mp-d-' + i).value = dpw[i] || 0;
+                }
+
+                document.getElementById('mp-policy').value = data.policy || 'none';
+                document.getElementById('mp-warn').value = data.warn_within_points || 0;
+                freeAdditions = data.free_additions || [];
+                renderFreeList();
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        function renderFreeList() {
+            const container = document.getElementById('mp-free-list');
+            container.innerHTML = freeAdditions.map((fa, i) => `
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f5f5f5; padding:5px 0;">
+                    <span>${fa.date}: <b>${fa.points}</b> (${fa.note || ''})</span>
+                    <button class="red" style="font-size:10px; padding:2px 6px;" onclick="removeFree(${i})">X</button>
+                </div>
+            `).join('');
+        }
+
+        function addFreePoints() {
+            const d = prompt('תאריך (YYYY-MM-DD):', new Date().toISOString().split('T')[0]);
+            if (!d) return;
+            const p = prompt('כמות נקודות:');
+            if (!p) return;
+            const n = prompt('הערה:');
+            freeAdditions.push({ date: d, points: parseInt(p), note: n || '' });
+            renderFreeList();
+        }
+
+        function removeFree(i) {
+            freeAdditions.splice(i, 1);
+            renderFreeList();
+        }
+
+        async function saveMaxPoints() {
+            const dpw = {};
+            for (let i = 0; i < 7; i++) {
+                dpw[i] = parseInt(document.getElementById('mp-d-' + i).value) || 0;
+            }
+
+            const payload = {
+                start_date: document.getElementById('mp-start').value,
+                daily_points: parseInt(document.getElementById('mp-daily').value) || 0,
         try: conn.close()
         except: pass
     
@@ -5712,54 +7624,129 @@ def web_settings(request: Request):
         </div>
 
         <div style="margin-top:30px; border-top:1px solid #eee; padding-top:20px; text-align:left;">
-            <button class="green" onclick="saveAdminSettings()">💾 שמור הגדרות</button>
-            <a class="gray btn" href="/web/admin">חזרה</a>
+            <button class="green" onclick="saveAdminSettings()">שמור הגדרות</button>
+            <a class="gray btn" href="/web/settings">חזרה להגדרות</a>
         </div>
       </div>
     </div>
 
     <script>
-      async function saveAdminSettings() {{
-        const payload = {{
+      async function saveAdminSettings() {
+        const payload = {
             station_name: document.getElementById('as_name').value,
             enabled: document.getElementById('as_enabled').checked
-        }};
+        };
 
-        try {{
-            const res = await fetch('/api/settings/save', {{
+        try {
+            const res = await fetch('/api/settings/save', {
                 method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{ key: 'admin_settings', value: payload }})
-            }});
-            if (res.ok) {{
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ key: 'admin_settings', value: payload })
+            });
+            if (res.ok) {
                 alert('נשמר בהצלחה');
-            }} else {{
+            } else {
                 alert('שגיאה בשמירה');
-            }}
-        }} catch (e) {{
+            }
+        } catch (e) {
             alert('שגיאה: ' + e);
-        }}
-      }}
+        }
+      }
     </script>
     <style>
-        .form-group {{ margin-bottom:15px; }}
-        .form-group label {{ display:block; font-weight:600; margin-bottom:5px; }}
-        .form-control {{ width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }}
-        .ck {{ display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }}
-        .ck:hover {{ background:#e9ecef; }}
-        .btn {{ padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }}
-        .green {{ background:#2ecc71; color:white; }}
-        .gray {{ background:#95a5a6; color:white; }}
+        .form-group { margin-bottom:15px; }
+        .form-group label { display:block; font-weight:600; margin-bottom:5px; }
+        .form-control { width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }
+        .ck { display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }
+        .ck:hover { background:#e9ecef; }
+        .btn { padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }
+        .green { background:#2ecc71; color:white; }
+        .gray { background:#95a5a6; color:white; }
     </style>
     """
     return _basic_web_shell("הגדרות עמדת ניהול", html_content, request=request)
 
 
-@app.post("/web/settings/save")
-def web_settings_save(
-    request: Request,
-    setting_key: str = Form(...),
-    value_json: str = Form(...),
+@app.get("/web/settings", response_class=HTMLResponse)
+def web_settings(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+    
+    html_content = """
+    <style>
+      .settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 16px; padding: 10px 0; }
+      .s-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 110px; border-radius: 12px; text-decoration: none; color: #2c3e50; background: #fff; border: 1px solid #eee; transition: all 0.2s; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+      .s-tile:hover { transform: translateY(-3px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); border-color: #3498db; }
+      .s-tile .icon { font-size: 36px; margin-bottom: 8px; }
+      .s-tile .label { font-weight: 700; font-size: 14px; text-align: center; }
+    </style>
+
+    <div style="max-width:900px; margin:0 auto;">
+        <h2>הגדרות מערכת</h2>
+        <div class="settings-grid">
+            <a href="/web/settings/station" class="s-tile">
+                <div class="icon">🏢</div>
+                <div class="label">עמדת ניהול</div>
+            </a>
+            <a href="/web/display-settings" class="s-tile">
+                <div class="icon">🖥</div>
+                <div class="label">תצוגה</div>
+            </a>
+            <a href="/web/colors" class="s-tile">
+                <div class="icon">🎨</div>
+                <div class="label">צבעים</div>
+            </a>
+            <a href="/web/sounds" class="s-tile">
+                <div class="icon">🔊</div>
+                <div class="label">צלילים</div>
+            </a>
+            <a href="/web/coins" class="s-tile">
+                <div class="icon">🪙</div>
+                <div class="label">מטבעות</div>
+            </a>
+            <a href="/web/goals" class="s-tile">
+                <div class="icon">🎯</div>
+                <div class="label">יעדים</div>
+            </a>
+            <a href="/web/max-points" class="s-tile">
+                <div class="icon">📉</div>
+                <div class="label">מגבלת ניקוד</div>
+            </a>
+            <a href="/web/anti-spam" class="s-tile">
+                <div class="icon">🛡️</div>
+                <div class="label">אנטי-ספאם</div>
+            </a>
+            <a href="/web/quiet-mode" class="s-tile">
+                <div class="icon">🌙</div>
+                <div class="label">מצב שקט</div>
+            </a>
+            <a href="/web/time-bonus" class="s-tile">
+                <div class="icon">⏱️</div>
+                <div class="label">בונוס זמנים</div>
+            </a>
+            <a href="/web/special-bonus" class="s-tile">
+                <div class="icon">✨</div>
+                <div class="label">בונוס מיוחד</div>
+            </a>
+            <a href="/web/holidays" class="s-tile">
+                <div class="icon">📅</div>
+                <div class="label">חגים</div>
+            </a>
+            <a href="/web/upgrades" class="s-tile">
+                <div class="icon">🎁</div>
+                <div class="label">עדכון מערכת</div>
+            </a>
+            <a href="/web/import" class="s-tile">
+                <div class="icon">📥</div>
+                <div class="label">ייבוא</div>
+            </a>
+        </div>
+        <div style="margin-top:30px;">
+            <a href="/web/admin"><button class="gray" style="padding:10px 20px; border-radius:8px; border:none; background:#95a5a6; color:white; font-weight:bold; cursor:pointer;">חזרה ללוח בקרה</button></a>
+        </div>
+    </div>
+    """
+    return _basic_web_shell("הגדרות", html_content, request=request)
     redirect_to: str = Form(default='/web/admin'),
 ) -> Response:
     guard = _web_require_admin_teacher(request)
@@ -5798,17 +7785,29 @@ def web_settings_save(
     return RedirectResponse(url=str(redirect_to or '/web/admin'), status_code=302)
 
 
+def _safe_web_next(next_url: str, default: str = '/web/students') -> str:
+    s = str(next_url or '').strip()
+    if not s:
+        return default
+    if '://' in s or s.startswith('//'):
+        return default
+    if not s.startswith('/'):
+        return default
+    if not s.startswith('/web'):
+        return default
+    return s
+
+
 @app.get('/web/students/edit', response_class=HTMLResponse)
-def web_students_edit(request: Request, student_id: int = Query(default=0)):
+def web_students_edit(request: Request, student_id: int = Query(default=0), next: str = Query(default='/web/students')):
     guard = _web_require_teacher(request)
     if guard:
         return guard
     tenant_id = _web_tenant_from_cookie(request)
     if not tenant_id:
         return RedirectResponse(url='/web/signin', status_code=302)
-    if int(student_id or 0) <= 0:
-        body = "<h2>עריכת תלמיד</h2><p>בחר/י תלמיד מהטבלה ואז לחץ/י 'ערוך תלמיד'.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>"
-        return _basic_web_shell('עריכת תלמיד', body, request=request)
+    next_url = _safe_web_next(next, default='/web/students')
+    sid = int(student_id or 0)
 
     teacher = _web_current_teacher(request) or {}
     teacher_id = _safe_int(teacher.get('id'), 0)
@@ -5818,31 +7817,46 @@ def web_students_edit(request: Request, student_id: int = Query(default=0)):
         allowed_classes = _web_teacher_allowed_classes(tenant_id, teacher_id)
         allowed_classes = [str(c).strip() for c in (allowed_classes or []) if str(c).strip()]
 
-    conn = _tenant_school_db(tenant_id)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            _sql_placeholder(
-                'SELECT id, first_name, last_name, class_name, points, card_number, serial_number, photo_number, private_message '
-                'FROM students WHERE id = ? LIMIT 1'
-            ),
-            (int(student_id),)
-        )
-        row = cur.fetchone()
-        if not row:
-            body = "<h2>עריכת תלמיד</h2><p>תלמיד לא נמצא.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>"
-            return _basic_web_shell('עריכת תלמיד', body, request=request)
-        r = dict(row) if isinstance(row, dict) else {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
-
-        if allowed_classes is not None:
-            cn = str(r.get('class_name') or '').strip()
-            if cn and cn not in allowed_classes:
-                return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה לערוך תלמיד מכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
-    finally:
+    r = {}
+    if sid > 0:
+        conn = _tenant_school_db(tenant_id)
         try:
-            conn.close()
-        except Exception:
-            pass
+            cur = conn.cursor()
+            try:
+                # Check column first or just try select? 
+                # We assume column exists as we added it in migration.
+                cur.execute(
+                    _sql_placeholder(
+                        'SELECT id, first_name, last_name, class_name, points, card_number, serial_number, photo_number, private_message, id_number, is_free_fix_blocked '
+                        'FROM students WHERE id = ? LIMIT 1'
+                    ),
+                    (sid,)
+                )
+            except Exception:
+                # Fallback if column missing (should not happen if migration ran)
+                cur.execute(
+                    _sql_placeholder(
+                        'SELECT id, first_name, last_name, class_name, points, card_number, serial_number, photo_number, private_message, id_number '
+                        'FROM students WHERE id = ? LIMIT 1'
+                    ),
+                    (sid,)
+                )
+            
+            row = cur.fetchone()
+            if not row:
+                body = f"<h2>עריכת תלמיד</h2><p>תלמיד לא נמצא.</p><div class='actionbar'><a class='gray' href='{html.escape(next_url)}'>חזרה</a></div>"
+                return _basic_web_shell('עריכת תלמיד', body, request=request)
+            r = dict(row) if isinstance(row, dict) else {k: row[k] for k in row.keys()}  # type: ignore[attr-defined]
+
+            if allowed_classes is not None:
+                cn = str(r.get('class_name') or '').strip()
+                if cn and cn not in allowed_classes:
+                    return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה לערוך תלמיד מכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     def _esc(v: Any) -> str:
         try:
@@ -5850,31 +7864,105 @@ def web_students_edit(request: Request, student_id: int = Query(default=0)):
         except Exception:
             return ''
 
+    page_title = 'עריכת תלמיד' if sid > 0 else 'הוספת תלמיד'
+    
+    is_blocked = int(r.get('is_free_fix_blocked') or 0) == 1
+    checked_blocked = 'checked' if is_blocked else ''
+    
+    history_section = ""
+    if sid > 0:
+        history_section = f"""
+        <div style="flex:1; min-width:300px; margin-top:20px; border:1px solid #eee; border-radius:10px; padding:15px; background:#fff;">
+            <h3 style="margin-top:0;">היסטוריית נקודות</h3>
+            <div style="max-height:500px; overflow-y:auto;">
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr style="background:#f8f9fa; border-bottom:1px solid #eee; position:sticky; top:0;">
+                            <th style="padding:8px; text-align:right;">תאריך</th>
+                            <th style="padding:8px; text-align:right;">פעולה</th>
+                            <th style="padding:8px; text-align:right;">שינוי</th>
+                            <th style="padding:8px; text-align:right;">סיבה</th>
+                            <th style="padding:8px; text-align:right;">בוצע ע"י</th>
+                        </tr>
+                    </thead>
+                    <tbody id="history_body"><tr><td colspan="5" style="text-align:center; padding:10px;">טוען...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+        <script>
+            async function loadHistory() {{
+                try {{
+                    const res = await fetch('/api/students/history?student_id={sid}');
+                    const data = await res.json();
+                    const items = data.items || [];
+                    const tbody = document.getElementById('history_body');
+                    if (items.length === 0) {{
+                        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding:10px; color:#999;">אין נתונים</td></tr>';
+                        return;
+                    }}
+                    tbody.innerHTML = items.map(i => {{
+                        let color = 'black';
+                        if (i.delta > 0) color = 'green';
+                        if (i.delta < 0) color = 'red';
+                        let dt = i.created_at;
+                        try {{ dt = new Date(i.created_at).toLocaleString('he-IL'); }} catch(e) {{}}
+                        
+                        return `
+                            <tr style="border-bottom:1px solid #f5f5f5;">
+                                <td style="padding:8px; direction:ltr; text-align:right;">${{dt}}</td>
+                                <td style="padding:8px;">${{esc(i.action_type)}}</td>
+                                <td style="padding:8px; direction:ltr; text-align:right; font-weight:bold; color:${{color}};">${{i.delta > 0 ? '+' : ''}}${{i.delta}}</td>
+                                <td style="padding:8px;">${{esc(i.reason)}}</td>
+                                <td style="padding:8px;">${{esc(i.actor_name)}}</td>
+                            </tr>
+                        `;
+                    }}).join('');
+                }} catch(e) {{
+                    console.error(e);
+                    document.getElementById('history_body').innerHTML = '<tr><td colspan="5" style="text-align:center; color:red;">שגיאה בטעינה</td></tr>';
+                }}
+            }}
+            loadHistory();
+        </script>
+        """
+
     body = f"""
-    <h2>עריכת תלמיד</h2>
-    <form method="post" action="/web/students/edit" style="max-width:640px; display:grid; grid-template-columns:1fr; gap:10px;">
-      <input type="hidden" name="student_id" value="{int(student_id)}" />
-      <label style="font-weight:900;">מס' סידורי</label>
-      <input name="serial_number" value="{_esc(r.get('serial_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
-      <label style="font-weight:900;">שם משפחה</label>
-      <input name="last_name" value="{_esc(r.get('last_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
-      <label style="font-weight:900;">שם פרטי</label>
-      <input name="first_name" value="{_esc(r.get('first_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
-      <label style="font-weight:900;">כיתה</label>
-      <input name="class_name" value="{_esc(r.get('class_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
-      <label style="font-weight:900;">כרטיס</label>
-      <input name="card_number" value="{_esc(r.get('card_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
-      <label style="font-weight:900;">תמונה (מספר)</label>
-      <input name="photo_number" value="{_esc(r.get('photo_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
-      <label style="font-weight:900;">נקודות</label>
-      <input name="points" value="{_esc(r.get('points'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
-      <label style="font-weight:900;">הודעה פרטית</label>
-      <textarea name="private_message" style="padding:12px;border:1px solid var(--line);border-radius:10px; min-height:90px;">{_esc(r.get('private_message'))}</textarea>
-      <div class="actionbar" style="justify-content:flex-start;">
-        <button class="green" type="submit" style="padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;">שמירה</button>
-        <a class="gray" href="/web/admin" style="padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;">חזרה</a>
-      </div>
-    </form>
+    <h2>{page_title}</h2>
+    <div style="display:flex; gap:30px; flex-wrap:wrap; align-items:flex-start;">
+        <div style="flex:1; min-width:300px;">
+            <form method="post" action="/web/students/edit" style="display:grid; grid-template-columns:1fr; gap:10px; background:#fff; padding:20px; border-radius:10px; border:1px solid #eee;">
+              <input type="hidden" name="student_id" value="{sid}" />
+              <input type="hidden" name="next" value="{_esc(next_url)}" />
+              <label style="font-weight:900;">מס' סידורי</label>
+              <input name="serial_number" value="{_esc(r.get('serial_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <label style="font-weight:900;">תעודת זהות</label>
+              <input name="id_number" value="{_esc(r.get('id_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <label style="font-weight:900;">שם משפחה</label>
+              <input name="last_name" value="{_esc(r.get('last_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <label style="font-weight:900;">שם פרטי</label>
+              <input name="first_name" value="{_esc(r.get('first_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <label style="font-weight:900;">כיתה</label>
+              <input name="class_name" value="{_esc(r.get('class_name'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <label style="font-weight:900;">כרטיס</label>
+              <input name="card_number" value="{_esc(r.get('card_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <label style="font-weight:900;">תמונה (מספר)</label>
+              <input name="photo_number" value="{_esc(r.get('photo_number'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <label style="font-weight:900;">נקודות</label>
+              <input name="points" value="{_esc(r.get('points'))}" style="padding:12px;border:1px solid var(--line);border-radius:10px;" />
+              <div style="display:flex; align-items:center; gap:8px; margin-top:5px;">
+                <input type="checkbox" id="chk_blocked" name="is_free_fix_blocked" value="1" {checked_blocked} style="width:20px; height:20px;">
+                <label for="chk_blocked" style="font-weight:900;">חסום לתיקון חופשי (עמדה ציבורית)</label>
+              </div>
+              <label style="font-weight:900;">הודעה פרטית</label>
+              <textarea name="private_message" style="padding:12px;border:1px solid var(--line);border-radius:10px; min-height:90px;">{_esc(r.get('private_message'))}</textarea>
+              <div class="actionbar" style="justify-content:flex-start; margin-top:10px;">
+                <button class="green" type="submit" style="padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;">שמירה</button>
+                <a class="gray" href="{_esc(next_url)}" style="padding:10px 14px;border-radius:8px;background:#95a5a6;color:#fff;text-decoration:none;font-weight:900;">חזרה</a>
+              </div>
+            </form>
+        </div>
+        {history_section}
+    </div>
     """
     return _basic_web_shell('עריכת תלמיד', body, request=request)
 
@@ -5883,6 +7971,7 @@ def web_students_edit(request: Request, student_id: int = Query(default=0)):
 def web_students_edit_submit(
     request: Request,
     student_id: int = Form(default=0),
+    next: str = Form(default='/web/students'),
     serial_number: str = Form(default=''),
     last_name: str = Form(default=''),
     first_name: str = Form(default=''),
@@ -5891,6 +7980,8 @@ def web_students_edit_submit(
     photo_number: str = Form(default=''),
     points: str = Form(default=''),
     private_message: str = Form(default=''),
+    id_number: str = Form(default=''),
+    is_free_fix_blocked: int = Form(default=0),
 ) -> Response:
     guard = _web_require_teacher(request)
     if guard:
@@ -5898,9 +7989,8 @@ def web_students_edit_submit(
     tenant_id = _web_tenant_from_cookie(request)
     if not tenant_id:
         return RedirectResponse(url='/web/signin', status_code=302)
+    next_url = _safe_web_next(next, default='/web/students')
     sid = int(student_id or 0)
-    if sid <= 0:
-        return RedirectResponse(url='/web/admin', status_code=302)
 
     teacher = _web_current_teacher(request) or {}
     teacher_id = _safe_int(teacher.get('id'), 0)
@@ -5913,46 +8003,142 @@ def web_students_edit_submit(
     conn = _tenant_school_db(tenant_id)
     try:
         cur = conn.cursor()
-        cur.execute(_sql_placeholder('SELECT class_name FROM students WHERE id = ? LIMIT 1'), (sid,))
-        row = cur.fetchone()
-        if not row:
-            return _basic_web_shell('עריכת תלמיד', "<h2>שגיאה</h2><p>תלמיד לא נמצא.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>", request=request)
-        current_class = str((row.get('class_name') if isinstance(row, dict) else row['class_name']) or '').strip()
-        if allowed_classes is not None and current_class and current_class not in allowed_classes:
-            return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה לערוך תלמיד מכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+        
+        # Permission check for existing student's current class
+        if sid > 0:
+            cur.execute(_sql_placeholder('SELECT class_name FROM students WHERE id = ? LIMIT 1'), (sid,))
+            row = cur.fetchone()
+            if not row:
+                return _basic_web_shell('עריכת תלמיד', f"<h2>שגיאה</h2><p>תלמיד לא נמצא.</p><div class='actionbar'><a class='gray' href='{html.escape(next_url)}'>חזרה</a></div>", request=request)
+            current_class = str((row.get('class_name') if isinstance(row, dict) else row['class_name']) or '').strip()
+            if allowed_classes is not None and current_class and current_class not in allowed_classes:
+                return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה לערוך תלמיד מכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+
+        # Permission check for the target class (new or existing)
         if allowed_classes is not None:
             new_class = str(class_name or '').strip()
             if new_class and new_class not in allowed_classes:
-                return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה להעביר תלמיד לכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+                return HTMLResponse('<h3>אין הרשאה</h3><p>אין הרשאה להעביר/להוסיף תלמיד לכיתה זו.</p><p><a href="/web/admin">חזרה</a></p>', status_code=403)
+
+        sn = str(serial_number or '').strip()
+        if sn:
+            if sid > 0:
+                cur.execute(_sql_placeholder('SELECT id FROM students WHERE serial_number = ? AND id != ? LIMIT 1'), (sn, int(sid)))
+            else:
+                cur.execute(_sql_placeholder('SELECT id FROM students WHERE serial_number = ? LIMIT 1'), (sn,))
+            dup = cur.fetchone()
+            if dup:
+                body = f"<h2>שגיאה</h2><p>מספר סידורי כבר קיים אצל תלמיד אחר.</p><div class='actionbar'><a class='gray' href='{html.escape(next_url)}'>חזרה</a></div>"
+                return HTMLResponse(_basic_web_shell('שגיאה', body, request=request), status_code=400)
 
         try:
             pts = int(str(points or '').strip() or '0')
         except Exception:
             pts = 0
+        
+        is_blocked = 1 if is_free_fix_blocked else 0
 
-        cur.execute(
-            _sql_placeholder(
-                'UPDATE students SET serial_number = ?, last_name = ?, first_name = ?, class_name = ?, card_number = ?, photo_number = ?, points = ?, private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
-            ),
-            (
-                str(serial_number or '').strip(),
-                str(last_name or '').strip(),
-                str(first_name or '').strip(),
-                str(class_name or '').strip(),
-                str(card_number or '').strip(),
-                str(photo_number or '').strip(),
-                int(pts),
-                str(private_message or ''),
-                int(sid),
+        if sid > 0:
+            cur.execute(
+                _sql_placeholder(
+                    'UPDATE students SET serial_number = ?, last_name = ?, first_name = ?, class_name = ?, card_number = ?, photo_number = ?, points = ?, private_message = ?, id_number = ?, is_free_fix_blocked = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+                ),
+                (
+                    str(serial_number or '').strip(),
+                    str(last_name or '').strip(),
+                    str(first_name or '').strip(),
+                    str(class_name or '').strip(),
+                    str(card_number or '').strip(),
+                    str(photo_number or '').strip(),
+                    int(pts),
+                    str(private_message or ''),
+                    str(id_number or '').strip(),
+                    is_blocked,
+                    int(sid),
+                )
             )
-        )
+            _record_sync_event(
+                tenant_id=str(tenant_id),
+                station_id='web',
+                entity_type='student',
+                entity_id=str(sid),
+                action_type='update',
+                payload={
+                    'serial_number': str(serial_number or '').strip(),
+                    'last_name': str(last_name or '').strip(),
+                    'first_name': str(first_name or '').strip(),
+                    'class_name': str(class_name or '').strip(),
+                    'card_number': str(card_number or '').strip(),
+                    'photo_number': str(photo_number or '').strip(),
+                    'points': int(pts),
+                    'private_message': str(private_message or ''),
+                    'id_number': str(id_number or '').strip(),
+                    'is_free_fix_blocked': is_blocked
+                }
+            )
+        else:
+            cur.execute(
+                _sql_placeholder(
+                    'INSERT INTO students (serial_number, last_name, first_name, class_name, card_number, photo_number, points, private_message, id_number, is_free_fix_blocked, created_at, updated_at) '
+                    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)'
+                ),
+                (
+                    str(serial_number or '').strip(),
+                    str(last_name or '').strip(),
+                    str(first_name or '').strip(),
+                    str(class_name or '').strip(),
+                    str(card_number or '').strip(),
+                    str(photo_number or '').strip(),
+                    int(pts),
+                    str(private_message or ''),
+                    str(id_number or '').strip(),
+                    is_blocked,
+                )
+            )
+            # Get the new ID - assuming SQLite or returning logic needed for Postgres
+            new_id = 0
+            if USE_POSTGRES:
+                # We need to fetch it if we didn't use RETURNING. 
+                # Ideally we should use RETURNING but let's just fetch by serial number for now to be safe across DBs
+                pass
+            else:
+                new_id = cur.lastrowid
+            
+            if not new_id or new_id == 0:
+                 # Try fetch by serial number
+                 cur.execute(_sql_placeholder('SELECT id FROM students WHERE serial_number = ?'), (str(serial_number or '').strip(),))
+                 r = cur.fetchone()
+                 if r:
+                     new_id = int(r[0]) if not isinstance(r, dict) else int(r['id'])
+
+            if new_id:
+                _record_sync_event(
+                    tenant_id=str(tenant_id),
+                    station_id='web',
+                    entity_type='student',
+                    entity_id=str(new_id),
+                    action_type='create',
+                    payload={
+                        'id': new_id,
+                        'serial_number': str(serial_number or '').strip(),
+                        'last_name': str(last_name or '').strip(),
+                        'first_name': str(first_name or '').strip(),
+                        'class_name': str(class_name or '').strip(),
+                        'card_number': str(card_number or '').strip(),
+                        'photo_number': str(photo_number or '').strip(),
+                        'points': int(pts),
+                        'private_message': str(private_message or ''),
+                        'id_number': str(id_number or '').strip(),
+                        'is_free_fix_blocked': is_blocked
+                    }
+                )
         conn.commit()
     finally:
         try:
             conn.close()
         except Exception:
             pass
-    return RedirectResponse(url='/web/admin', status_code=302)
+    return RedirectResponse(url=next_url, status_code=302)
 
 
 @app.get("/web/teachers", response_class=HTMLResponse)
@@ -6162,215 +8348,151 @@ def web_teachers(request: Request):
           mCard1.value = String(t.card_number ?? '');
           mCard2.value = String(t.card_number2 ?? '');
           mCard3.value = String(t.card_number3 ?? '');
-          mIsAdmin.checked = (parseInt(String(t.is_admin ?? 0), 10) === 1);
-          mCanEditCard.checked = (parseInt(String(t.can_edit_student_card ?? 1), 10) === 1);
-          mCanEditPhoto.checked = (parseInt(String(t.can_edit_student_photo ?? 1), 10) === 1);
-          mMaxPoints.value = (t.bonus_max_points_per_student ?? '') === null ? '' : String(t.bonus_max_points_per_student ?? '');
-          mMaxRuns.value = (t.bonus_max_total_runs ?? '') === null ? '' : String(t.bonus_max_total_runs ?? '');
-          const allClasses = await loadAllClasses();
-          renderClasses(allClasses, Array.isArray(t.classes) ? t.classes : []);
-          setAdminMode(mIsAdmin.checked);
-          openModal();
-        }
-
-        async function submitModal() {
-          const name = String(mName.value || '').trim();
-          const card1 = String(mCard1.value || '').trim();
-          const card2 = String(mCard2.value || '').trim();
-          const card3 = String(mCard3.value || '').trim();
-          if (!name) { alert('יש להזין שם מורה'); return; }
-          if (!(card1 || card2 || card3)) { alert('יש להזין לפחות מספר כרטיס אחד'); return; }
-          const isAdmin = mIsAdmin.checked ? 1 : 0;
-
-          const payload = {
-            teacher_id: mId.value ? parseInt(String(mId.value), 10) : null,
-            name: name,
-            card_number: card1,
-            card_number2: card2,
-            card_number3: card3,
-            is_admin: isAdmin,
-            can_edit_student_card: (mCanEditCard.checked ? 1 : 0),
-            can_edit_student_photo: (mCanEditPhoto.checked ? 1 : 0),
-            bonus_max_points_per_student: normalizeIntOrNull(mMaxPoints.value),
-            bonus_max_total_runs: normalizeIntOrNull(mMaxRuns.value)
-          };
-
-          btnSave.disabled = true;
-          try {
-            const res = await save(payload);
-            if (!res || !res.ok) return;
-            const teacherId = res.teacher_id || payload.teacher_id;
-            const classes = isAdmin ? [] : getSelectedClassesFromUI();
-            await saveClasses(teacherId, classes);
-            closeModal();
-            selectedId = null;
-            await load();
-          } finally {
-            btnSave.disabled = false;
-          }
-        }
-
-        btnNew.addEventListener('click', openAdd);
-        btnEdit.addEventListener('click', openEdit);
-
-        btnDelete.addEventListener('click', async () => {
-          if (!selectedId) return;
-          if (!confirm('למחוק מורה?')) return;
-          await del(parseInt(selectedId, 10));
-        });
-
-        btnSave.addEventListener('click', submitModal);
-        btnCancel.addEventListener('click', closeModal);
-        modal.addEventListener('click', (ev) => {
-          if (ev.target === modal) closeModal();
-        });
-        mIsAdmin.addEventListener('change', () => setAdminMode(mIsAdmin.checked));
-        btnSelectAll.addEventListener('click', () => {
-          classesBox.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = true);
-        });
-        btnClearAll.addEventListener('click', () => {
-          classesBox.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
-        });
-
-        searchEl.addEventListener('input', () => {
-          clearTimeout(timer);
-          timer = setTimeout(load, 300);
-        });
-
-        load();
-      </script>
     """
+    return _basic_web_shell("ניהול מורים", html_content, request=request)
 
-    body = """
-    <style>
-      table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; overflow:hidden; border-radius:14px; }
-      thead th {
-        position: sticky;
-        top: 0;
-        background: rgba(255,255,255,.12);
-        color: rgba(255,255,255,.92);
-        border-bottom: 1px solid rgba(255,255,255,.16);
-        padding: 10px 10px;
-        text-align: right;
-        font-weight: 950;
-        white-space: nowrap;
-      }
-      tbody tr { background: rgba(0,0,0,.08); }
-      tbody tr:nth-child(even) { background: rgba(255,255,255,.06); }
-      tbody tr:hover { background: rgba(26,188,156,.18); }
-      .cell {
-        padding: 10px 10px;
-        border-bottom: 1px solid rgba(255,255,255,.12);
-        color: rgba(255,255,255,.92);
-        white-space: nowrap;
-      }
-      .cell.ltr { direction:ltr; text-align:left; }
-      .bar { margin:10px 0; display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
-      .bar input { padding:10px 12px; border:1px solid rgba(255,255,255,.18); border-radius:12px; background: rgba(0,0,0,.18); color: rgba(255,255,255,.92); }
-      .bar input::placeholder { color: rgba(255,255,255,.62); }
-      .btn { padding:10px 14px; border-radius:14px; color:#fff; text-decoration:none; border:1px solid rgba(255,255,255,.16); font-weight:900; cursor:pointer; box-shadow: 0 14px 28px rgba(0,0,0,.22); }
-      .btn-green { background: linear-gradient(135deg, #2ecc71, #1abc9c); }
-      .btn-blue { background: linear-gradient(135deg, #3498db, #2f80ed); }
-      .btn-red { background: linear-gradient(135deg, #e74c3c, #c0392b); }
-      .modal-backdrop { display:none; position:fixed; inset:0; background: rgba(0,0,0,.55); z-index: 50; align-items:center; justify-content:center; padding: 16px; }
-      .modal { width: min(860px, 96vw); background: linear-gradient(180deg, rgba(255,255,255,.18), rgba(255,255,255,.10)); border:1px solid rgba(255,255,255,.18); border-radius: 18px; box-shadow: 0 24px 60px rgba(0,0,0,.35); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); padding: 16px; }
-      .modal h3 { margin: 0 0 10px; font-size: 18px; font-weight: 950; }
-      .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
-      .grid label { font-weight: 900; font-size: 13px; opacity:.92; display:block; margin-bottom:6px; }
-      .grid input[type="text"], .grid input[type="password"], .grid input[type="number"] { width:100%; padding:10px 12px; border:1px solid rgba(255,255,255,.18); border-radius:12px; background: rgba(0,0,0,.18); color: rgba(255,255,255,.92); }
-      .grid input::placeholder { color: rgba(255,255,255,.62); }
-      .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top: 10px; }
-      .ck { display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius: 999px; border:1px solid rgba(255,255,255,.16); background: rgba(0,0,0,.14); font-weight: 800; }
-      .classes { max-height: 220px; overflow:auto; padding: 10px; border-radius: 14px; border: 1px solid rgba(255,255,255,.16); background: rgba(0,0,0,.12); display:flex; flex-wrap:wrap; gap:8px; }
-    </style>
-    <div class="bar">
-      <input id="t_search" placeholder="חיפוש" />
-      <span id="t_status" style="opacity:.86;">טוען...</span>
-    </div>
-    <div class="bar">
-      <button class="btn btn-green" id="t_new" type="button">➕ הוסף מורה</button>
-      <button class="btn btn-blue" id="t_edit" type="button" style="opacity:.55;pointer-events:none;">✏️ עריכה</button>
-      <button class="btn btn-red" id="t_delete" type="button" style="opacity:.55;pointer-events:none;">🗑️ מחיקה</button>
-      <span id="t_selected" style="opacity:.86;">לא נבחר מורה</span>
-    </div>
-    <div style="overflow:auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>שם</th>
-            <th>מס׳ כרטיס / סיסמה</th>
-            <th>תפקיד</th>
-            <th>כיתות</th>
-            <th>מקס׳ נק׳<br/>בונוס לתלמיד</th>
-            <th>מקס׳ הפעלות<br/>בונוס ליום</th>
-            <th>הפעלות<br/>בונוס היום</th>
-            <th>סה"כ נק׳<br/>שהמורה חילק היום</th>
-          </tr>
-        </thead>
-        <tbody id="t_rows"></tbody>
-      </table>
-    </div>
 
-    <div id="t_modal" class="modal-backdrop">
-      <div class="modal">
-        <h3 id="t_modal_title">עריכת מורה</h3>
-        <input id="m_teacher_id" type="hidden" />
-        <div class="grid">
-          <div>
-            <label>שם המורה</label>
-            <input id="m_name" type="text" placeholder="שם" />
-          </div>
-          <div>
-            <label>מנהל</label>
-            <label class="ck"><input id="m_is_admin" type="checkbox" /> מנהל (הרשאות מלאות)</label>
-          </div>
-
-          <div>
-            <label>מספר כרטיס 1</label>
-            <input id="m_card1" type="password" placeholder="••••••" />
-          </div>
-          <div>
-            <label>מספר כרטיס 2</label>
-            <input id="m_card2" type="password" placeholder="••••••" />
-          </div>
-          <div>
-            <label>מספר כרטיס 3</label>
-            <input id="m_card3" type="password" placeholder="••••••" />
-          </div>
-          <div>
-            <label>הרשאות מורה</label>
-            <div class="row">
-              <label class="ck"><input id="m_can_edit_student_card" type="checkbox" checked /> מורה יכול לשנות מס' כרטיס לתלמיד</label>
-              <label class="ck"><input id="m_can_edit_student_photo" type="checkbox" checked /> מורה יכול לשנות תמונת תלמיד</label>
+@app.get("/web/classes", response_class=HTMLResponse)
+def web_classes(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return guard
+        
+    html_content = """
+    <div style="max-width:800px; margin:0 auto; padding:20px;">
+        <h2 style="margin-bottom:20px;">ניהול כיתות</h2>
+        <div class="card" style="padding:20px; background:#fff; border-radius:12px; border:1px solid #eee;">
+            <p style="color:#666; margin-bottom:20px;">כאן ניתן לראות את רשימת הכיתות הפעילות, לשנות שמות או למחוק כיתות (ריקון שדה הכיתה לתלמידים).</p>
+            
+            <div style="margin-bottom:15px; display:flex; justify-content:space-between; align-items:center;">
+                <button class="gray" onclick="loadClasses()">🔄 רענן רשימה</button>
+                <div style="font-size:14px; color:#888;">* שינוי שם כיתה יעדכן את כל התלמידים בכיתה זו</div>
             </div>
-          </div>
-          <div>
-            <label>מקסימום נקודות לבונוס מורה (לכל תלמיד)</label>
-            <input id="m_bonus_max_points_per_student" type="number" min="1" placeholder="ריק = ללא הגבלה" />
-          </div>
-          <div>
-            <label>מקסימום הפעלות בונוס ליום</label>
-            <input id="m_bonus_max_total_runs" type="number" min="1" placeholder="ריק = ללא הגבלה" />
-          </div>
-        </div>
 
-        <div style="margin-top:12px;">
-          <div style="font-weight:950; margin-bottom:8px;">כיתות</div>
-          <div class="row" style="margin-top:0;">
-            <button id="m_select_all" class="btn btn-blue" type="button">בחר הכל</button>
-            <button id="m_clear_all" class="btn btn-red" type="button">נקה הכל</button>
-          </div>
-          <div id="m_classes_box" class="classes" style="margin-top:10px;"></div>
+            <table style="width:100%; border-collapse:collapse; font-size:14px;">
+                <thead>
+                    <tr style="background:#f8f9fa; border-bottom:2px solid #eee;">
+                        <th style="padding:12px; text-align:right;">שם הכיתה</th>
+                        <th style="padding:12px; text-align:right;">מספר תלמידים</th>
+                        <th style="padding:12px; text-align:right;">פעולות</th>
+                    </tr>
+                </thead>
+                <tbody id="classes-list">
+                    <tr><td colspan="3" style="text-align:center; padding:20px;">טוען...</td></tr>
+                </tbody>
+            </table>
         </div>
-
-        <div class="row" style="justify-content:flex-end; margin-top:14px;">
-          <button id="m_cancel" class="btn btn-red" type="button">ביטול</button>
-          <button id="m_save" class="btn btn-green" type="button">שמירה</button>
-        </div>
-      </div>
     </div>
+
+    <!-- Edit Modal -->
+    <div id="modal-class" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+        <div class="card" style="background:#fff; width:90%; max-width:400px; padding:24px; border-radius:12px; box-shadow:0 10px 25px rgba(0,0,0,0.2);">
+            <h3 style="margin-top:0;">שינוי שם כיתה</h3>
+            <input type="hidden" id="old-name">
+            <div class="form-group" style="margin-bottom:15px;">
+                <label style="display:block; font-weight:600; margin-bottom:5px;">שם חדש</label>
+                <input id="new-name" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:10px;">
+                <button class="gray" onclick="closeModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+                <button class="green" onclick="saveClass()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadClasses() {
+            try {
+                const res = await fetch('/api/classes/details');
+                const data = await res.json();
+                renderTable(data.items || []);
+            } catch(e) {
+                console.error(e);
+                document.getElementById('classes-list').innerHTML = '<tr><td colspan="3" style="text-align:center; color:red; padding:20px;">שגיאה בטעינת נתונים</td></tr>';
+            }
+        }
+
+        function renderTable(items) {
+            const tbody = document.getElementById('classes-list');
+            if (items.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" style="text-align:center; padding:20px; color:#999;">אין כיתות עם תלמידים</td></tr>';
+                return;
+            }
+            tbody.innerHTML = items.map(c => `
+                <tr style="border-bottom:1px solid #f1f1f1;">
+                    <td style="padding:12px; font-weight:bold;">${esc(c.name)}</td>
+                    <td style="padding:12px;">${c.count}</td>
+                    <td style="padding:12px;">
+                        <button class="btn-icon" onclick="openEdit('${esc(c.name)}')" title="שנה שם">✏️</button>
+                        <button class="btn-icon" onclick="deleteClass('${esc(c.name)}')" title="מחק (נקה כיתה)" style="color:red;">🗑️</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function openEdit(name) {
+            document.getElementById('old-name').value = name;
+            document.getElementById('new-name').value = name;
+            document.getElementById('modal-class').style.display = 'flex';
+            setTimeout(() => document.getElementById('new-name').focus(), 100);
+        }
+
+        function closeModal() {
+            document.getElementById('modal-class').style.display = 'none';
+        }
+
+        async function saveClass() {
+            const oldN = document.getElementById('old-name').value;
+            const newN = document.getElementById('new-name').value.trim();
+            if (!newN) return alert('נא להזין שם');
+            
+            try {
+                const res = await fetch('/api/classes/rename', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ old_name: oldN, new_name: newN })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    alert('עודכן בהצלחה (' + d.affected + ' תלמידים)');
+                    closeModal();
+                    loadClasses();
+                } else {
+                    alert('שגיאה: ' + (d.detail || 'unknown'));
+                }
+            } catch(e) {
+                alert('שגיאה בתקשורת');
+            }
+        }
+
+        async function deleteClass(name) {
+            if (!confirm(`האם אתה בטוח שברצונך למחוק את הכיתה "${name}"?\\nפעולה זו תנקה את שדה הכיתה לכל התלמידים המשויכים אליה.`)) return;
+            
+            try {
+                const res = await fetch('/api/classes/delete', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ class_name: name })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    loadClasses();
+                } else {
+                    alert('שגיאה: ' + (d.detail || 'unknown'));
+                }
+            } catch(e) {
+                alert('שגיאה בתקשורת');
+            }
+        }
+
+        function esc(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        loadClasses();
+    </script>
     """
-    return HTMLResponse(_basic_web_shell("ניהול מורים", body + js, request=request))
+    return _basic_web_shell("ניהול כיתות", html_content, request=request)
 
 
 @app.get("/api/teachers")
@@ -6584,44 +8706,90 @@ def api_teachers_save(request: Request, payload: TeacherSavePayload) -> Dict[str
                     (int(payload.bonus_max_total_runs) if payload.bonus_max_total_runs is not None else None),
                 )
             )
+            _record_sync_event(
+                tenant_id=str(tenant_id),
+                station_id='web',
+                entity_type='teacher',
+                entity_id=str(tid),
+                action_type='create',
+                payload={
+                    'id': int(tid),
+                    'name': str(payload.name or '').strip(),
+                    'card_number': str(payload.card_number or '').strip(),
+                    'card_number2': str(payload.card_number2 or '').strip(),
+                    'card_number3': str(payload.card_number3 or '').strip(),
+                    'is_admin': int(payload.is_admin or 0),
+                    'can_edit_student_card': int(1 if _safe_int(payload.can_edit_student_card, 1) == 1 else 0),
+                    'can_edit_student_photo': int(1 if _safe_int(payload.can_edit_student_photo, 1) == 1 else 0),
+                    'bonus_max_points_per_student': (int(payload.bonus_max_points_per_student) if payload.bonus_max_points_per_student is not None else None),
+                    'bonus_max_total_runs': (int(payload.bonus_max_total_runs) if payload.bonus_max_total_runs is not None else None),
+                }
+            )
             conn.commit()
             return {'ok': True, 'created': True, 'teacher_id': int(tid)}
 
         sets = []
         params: List[Any] = []
+        sync_payload = {}
         if payload.name is not None:
             sets.append('name = ?')
-            params.append(str(payload.name).strip())
+            val = str(payload.name).strip()
+            params.append(val)
+            sync_payload['name'] = val
         if payload.card_number is not None:
             sets.append('card_number = ?')
-            params.append(str(payload.card_number).strip())
+            val = str(payload.card_number).strip()
+            params.append(val)
+            sync_payload['card_number'] = val
         if payload.card_number2 is not None:
             sets.append('card_number2 = ?')
-            params.append(str(payload.card_number2).strip())
+            val = str(payload.card_number2).strip()
+            params.append(val)
+            sync_payload['card_number2'] = val
         if payload.card_number3 is not None:
             sets.append('card_number3 = ?')
-            params.append(str(payload.card_number3).strip())
+            val = str(payload.card_number3).strip()
+            params.append(val)
+            sync_payload['card_number3'] = val
         if payload.is_admin is not None:
             sets.append('is_admin = ?')
-            params.append(int(payload.is_admin))
+            val = int(payload.is_admin)
+            params.append(val)
+            sync_payload['is_admin'] = val
         if payload.can_edit_student_card is not None:
             sets.append('can_edit_student_card = ?')
-            params.append(int(1 if _safe_int(payload.can_edit_student_card, 1) == 1 else 0))
+            val = int(1 if _safe_int(payload.can_edit_student_card, 1) == 1 else 0)
+            params.append(val)
+            sync_payload['can_edit_student_card'] = val
         if payload.can_edit_student_photo is not None:
             sets.append('can_edit_student_photo = ?')
-            params.append(int(1 if _safe_int(payload.can_edit_student_photo, 1) == 1 else 0))
+            val = int(1 if _safe_int(payload.can_edit_student_photo, 1) == 1 else 0)
+            params.append(val)
+            sync_payload['can_edit_student_photo'] = val
         if payload.bonus_max_points_per_student is not None:
             sets.append('bonus_max_points_per_student = ?')
-            params.append(int(payload.bonus_max_points_per_student))
+            val = int(payload.bonus_max_points_per_student)
+            params.append(val)
+            sync_payload['bonus_max_points_per_student'] = val
         if payload.bonus_max_total_runs is not None:
             sets.append('bonus_max_total_runs = ?')
-            params.append(int(payload.bonus_max_total_runs))
+            val = int(payload.bonus_max_total_runs)
+            params.append(val)
+            sync_payload['bonus_max_total_runs'] = val
         if not sets:
             return {'ok': True, 'updated': False, 'teacher_id': int(tid)}
         sets.append('updated_at = CURRENT_TIMESTAMP')
         sql = 'UPDATE teachers SET ' + ', '.join(sets) + ' WHERE id = ?'
         params.append(int(tid))
         cur.execute(_sql_placeholder(sql), params)
+        _record_sync_event(
+            tenant_id=str(tenant_id),
+            station_id='web',
+            entity_type='teacher',
+            entity_id=str(tid),
+            action_type='update',
+            payload=sync_payload
+        )
         conn.commit()
         return {'ok': True, 'updated': True, 'teacher_id': int(tid)}
     finally:
@@ -6643,6 +8811,14 @@ def api_teachers_delete(request: Request, payload: TeacherDeletePayload) -> Dict
     try:
         cur = conn.cursor()
         cur.execute(_sql_placeholder('DELETE FROM teachers WHERE id = ?'), (int(payload.teacher_id),))
+        _record_sync_event(
+            tenant_id=str(tenant_id),
+            station_id='web',
+            entity_type='teacher',
+            entity_id=str(payload.teacher_id),
+            action_type='delete',
+            payload={'id': int(payload.teacher_id)}
+        )
         conn.commit()
         return {'ok': True}
     finally:
@@ -7423,6 +9599,122 @@ def web_bonuses(request: Request):
     return _basic_web_shell("מטבעות", html_content, request=request)
 
 
+@app.get("/web/goals", response_class=HTMLResponse)
+def web_goals(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return guard
+    
+    html_content = """
+    <div style="max-width:600px; margin:0 auto;">
+        <div class="card" style="padding:24px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
+                <h2 style="margin:0;">הגדרות יעד (Goal Bar)</h2>
+                <div style="font-size:13px; color:#666;">הגדרות הפס שמופיע בתצוגה</div>
+            </div>
+
+            <div class="form-group" style="margin-bottom:20px; padding:15px; background:#f8f9fa; border-radius:8px;">
+                <label style="display:flex; align-items:center; cursor:pointer; gap:10px; font-weight:bold;">
+                    <input type="checkbox" id="goal-enabled" style="width:20px; height:20px;">
+                    הפעל תצוגת יעד
+                </label>
+                <div style="font-size:12px; color:#666; margin-right:30px; margin-top:4px;">האם להציג את פס ההתקדמות על גבי המסך הראשי</div>
+            </div>
+
+            <div class="form-group">
+                <label>צבע מילוי (התקדמות)</label>
+                <div style="display:flex; gap:10px;">
+                    <input type="color" id="goal-fill" style="width:60px; height:40px; padding:0; border:none; cursor:pointer;">
+                    <input type="text" id="goal-fill-text" style="direction:ltr;" onchange="document.getElementById('goal-fill').value = this.value">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>צבע רקע (ריק)</label>
+                <div style="display:flex; gap:10px;">
+                    <input type="color" id="goal-empty" style="width:60px; height:40px; padding:0; border:none; cursor:pointer;">
+                    <input type="text" id="goal-empty-text" style="direction:ltr;" onchange="document.getElementById('goal-empty').value = this.value">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>צבע מסגרת</label>
+                <div style="display:flex; gap:10px;">
+                    <input type="color" id="goal-border" style="width:60px; height:40px; padding:0; border:none; cursor:pointer;">
+                    <input type="text" id="goal-border-text" style="direction:ltr;" onchange="document.getElementById('goal-border').value = this.value">
+                </div>
+            </div>
+
+            <div class="form-group" style="margin-bottom:20px;">
+                <label style="display:flex; align-items:center; cursor:pointer; gap:10px;">
+                    <input type="checkbox" id="goal-percent" style="width:18px; height:18px;">
+                    הצג אחוזים (%) בתוך הפס
+                </label>
+            </div>
+
+            <div style="margin-top:30px; text-align:left;">
+                <button class="green" onclick="saveGoals()" style="padding:12px 30px; font-size:16px; font-weight:bold; border-radius:8px; border:none; background:#2ecc71; color:white; cursor:pointer;">שמור שינויים</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Sync color inputs
+        ['fill', 'empty', 'border'].forEach(k => {
+            const picker = document.getElementById('goal-' + k);
+            const text = document.getElementById('goal-' + k + '-text');
+            picker.addEventListener('input', () => text.value = picker.value);
+            text.addEventListener('input', () => picker.value = text.value);
+        });
+
+        async function loadGoals() {
+            try {
+                const res = await fetch('/api/settings/goal_settings');
+                const data = await res.json();
+                
+                document.getElementById('goal-enabled').checked = !!data.enabled;
+                document.getElementById('goal-percent').checked = !!data.show_percent;
+                
+                setColor('fill', data.filled_color || '#2ecc71');
+                setColor('empty', data.empty_color || '#ecf0f1');
+                setColor('border', data.border_color || '#2c3e50');
+            } catch(e) {
+                console.error(e);
+            }
+        }
+
+        function setColor(key, val) {
+            document.getElementById('goal-' + key).value = val;
+            document.getElementById('goal-' + key + '-text').value = val;
+        }
+
+        async function saveGoals() {
+            const payload = {
+                enabled: document.getElementById('goal-enabled').checked,
+                show_percent: document.getElementById('goal-percent').checked,
+                filled_color: document.getElementById('goal-fill').value,
+                empty_color: document.getElementById('goal-empty').value,
+                border_color: document.getElementById('goal-border').value
+            };
+
+            try {
+                await fetch('/api/settings/save', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ key: 'goal_settings', value: payload })
+                });
+                alert('הגדרות נשמרו בהצלחה');
+            } catch(e) {
+                alert('שגיאה בשמירה');
+            }
+        }
+
+        loadGoals();
+    </script>
+    """
+    return _basic_web_shell("יעדים", html_content, request=request)
+
+
 @app.get("/web/messages", response_class=HTMLResponse)
 def web_messages(request: Request):
     guard = _web_require_admin_teacher(request)
@@ -7567,6 +9859,33 @@ def web_messages(request: Request):
             <label>מקסימום נקודות</label>
             <input type="number" id="threshold-max">
           </div>
+        </div>
+        <div class="form-group" style="background:#f9f9f9; padding:10px; border-radius:8px; border:1px solid #eee;">
+            <label style="margin-bottom:10px; display:block; font-weight:600;">נקודות מקסימליות</label>
+            <div style="display:flex; gap:20px;">
+                <div class="form-group" style="flex:1;">
+                    <label>נקודות ליום (ממוצע)</label>
+                    <input type="number" id="mp-daily" class="form-control">
+                    <textarea id="mp-daily-desc" class="form-control" style="margin-top:5px; height:40px; font-size:12px;" placeholder="תיאור (למשל: כולל בונוס)"></textarea>
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>נקודות לשבוע</label>
+                    <input type="number" id="mp-weekly" class="form-control">
+                    <textarea id="mp-weekly-desc" class="form-control" style="margin-top:5px; height:40px; font-size:12px;" placeholder="תיאור שבועי"></textarea>
+                </div>
+            </div>
+            <div class="form-group" style="background:#f9f9f9; padding:10px; border-radius:8px; border:1px solid #eee;">
+                <label style="margin-bottom:10px; display:block; font-weight:600;">פירוט נקודות לפי יום (משוערך)</label>
+                <div style="display:grid; grid-template-columns: repeat(7, 1fr); gap:5px; direction:rtl;">
+                    <div style="text-align:center;"><small>א</small><input id="mp-d-0" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                    <div style="text-align:center;"><small>ב</small><input id="mp-d-1" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                    <div style="text-align:center;"><small>ג</small><input id="mp-d-2" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                    <div style="text-align:center;"><small>ד</small><input id="mp-d-3" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                    <div style="text-align:center;"><small>ה</small><input id="mp-d-4" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                    <div style="text-align:center;"><small>ו</small><input id="mp-d-5" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                    <div style="text-align:center;"><small>ש</small><input id="mp-d-6" type="number" class="form-control" style="padding:4px; text-align:center;"></div>
+                </div>
+            </div>
         </div>
         <div class="modal-actions">
           <button class="gray" onclick="closeModal('modal-threshold')">ביטול</button>
@@ -8392,8 +10711,6 @@ def web_upgrades(request: Request):
         return guard
     
     html_content = """
-    <h2>הגדרות שדרוגים</h2>
-    
     <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
       <div class="form-group" style="margin-bottom:15px;">
         <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
@@ -8439,22 +10756,317 @@ def web_upgrades(request: Request):
       loadUpgrades();
     </script>
     """
-    return _basic_web_shell("שדרוגים", html_content, request=request)
+    return _basic_web_shell("עדכון מערכת", html_content, request=request)
 
 
-@app.get("/web/special-bonus", response_class=HTMLResponse)
-def web_special_bonus(request: Request):
+@app.get("/web/import", response_class=HTMLResponse)
+def web_import(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
     
     html_content = """
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-      <h2>בונוס מיוחד</h2>
-      <button class="green" onclick="openItemModal()">+ פריט חדש</button>
+    <div class="card" style="padding:24px; max-width:600px; margin:0 auto; background:#fff; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,0.05);">
+        <h2 style="margin-top:0;">ייבוא תלמידים מאקסל</h2>
+        <p style="color:#666; line-height:1.5;">ניתן לייבא תלמידים, לעדכן פרטים ולטעון נקודות באמצעות קובץ Excel.<br>
+        הקובץ צריך להכיל עמודות כמו: <b>שם משפחה, שם פרטי, כיתה, מס' כרטיס, מס' נקודות, ת"ז</b>.</p>
+        
+        <div style="margin:20px 0; padding:15px; background:#f8f9fa; border-radius:8px;">
+            <a href="/web/export/download" target="_blank" style="text-decoration:none; display:flex; align-items:center; gap:10px; color:#2980b9; font-weight:bold;">
+                <span>⬇️</span> הורד תבנית / רשימה קיימת
+            </a>
+        </div>
+        
+        <div style="margin-bottom:20px;">
+            <label style="display:block; margin-bottom:10px; font-weight:bold;">בחר קובץ Excel (.xlsx)</label>
+            <input type="file" id="import-file" accept=".xlsx" style="padding:10px; border:1px solid #ddd; width:100%; box-sizing:border-box; border-radius:6px;">
+        </div>
+        
+        <div style="margin-bottom:25px;">
+            <label class="ck" style="display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none;">
+                <input type="checkbox" id="clear-existing" style="width:18px; height:18px;">
+                <span style="color:#c0392b; font-weight:bold;">⚠️ מחק את כל התלמידים הקיימים לפני הייבוא</span>
+            </label>
+        </div>
+
+        <button class="green" onclick="doImport()" id="btn-import" style="width:100%; padding:12px; font-size:16px; font-weight:bold; border-radius:8px; border:none; background:#2ecc71; color:white; cursor:pointer;">ביצוע ייבוא</button>
+        
+        <div id="import-status" style="margin-top:20px; white-space:pre-wrap; font-size:14px; line-height:1.5;"></div>
     </div>
+
+    <script>
+        async function doImport() {
+            const fileInput = document.getElementById('import-file');
+            const clearExisting = document.getElementById('clear-existing').checked;
+            const btn = document.getElementById('btn-import');
+            const status = document.getElementById('import-status');
+            
+            if (!fileInput.files[0]) {
+                alert('נא לבחור קובץ');
+                return;
+            }
+            
+            if (clearExisting && !confirm('האם אתה בטוח שברצונך למחוק את כל הנתונים הקיימים? פעולה זו אינה הפיכה!')) {
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('clear_existing', clearExisting ? 'true' : 'false');
+            
+            btn.disabled = true;
+            btn.style.opacity = '0.7';
+            btn.textContent = 'מייבא...';
+            status.innerHTML = '<div style="color:#2980b9;">⏳ מבצע ייבוא, נא להמתין...</div>';
+            
+            try {
+                const res = await fetch('/api/import/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await res.json();
+                
+                if (res.ok) {
+                    status.innerHTML = `<div style="color:#27ae60; font-weight:bold;">✅ הייבוא הושלם בהצלחה!</div>` +
+                                       `<div>תלמידים שנוצרו/עודכנו: ${data.imported_count}</div>` +
+                                       (data.errors && data.errors.length ? `<div style="color:#e74c3c; margin-top:10px;"><b>שגיאות/אזהרות:</b><br>${data.errors.join('<br>')}</div>` : '');
+                } else {
+                    status.innerHTML = `<div style="color:#e74c3c;">❌ שגיאה: ${data.detail || 'Unknown error'}</div>`;
+                }
+            } catch (e) {
+                status.innerHTML = `<div style="color:#e74c3c;">❌ שגיאה בתקשורת: ${e}</div>`;
+            } finally {
+                btn.disabled = false;
+                btn.style.opacity = '1';
+                btn.textContent = 'ביצוע ייבוא';
+            }
+        }
+    </script>
+    """
+    return _basic_web_shell("ייבוא נתונים", html_content, request=request)
+
+
+@app.post("/api/import/upload")
+async def api_import_upload(request: Request, file: UploadFile = File(...), clear_existing: str = Form(default='false')) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
     
-    <div class="card" style="padding:0; overflow:hidden;">
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+
+    try:
+        import pandas as pd
+    except ImportError:
+        raise HTTPException(status_code=500, detail='pandas not installed')
+
+    contents = await file.read()
+    try:
+        df = pd.read_excel(io.BytesIO(contents), dtype={'מס\' כרטיס': str, 'ת"ז': str, 'מס\' סידורי': str})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f'Invalid Excel file: {e}')
+
+    conn = _tenant_school_db(tenant_id)
+    imported_count = 0
+    errors = []
+    
+    try:
+        cur = conn.cursor()
+        
+        # Check if clear_existing is requested
+        if clear_existing.lower() == 'true':
+            try:
+                cur.execute('DELETE FROM students')
+                # Also clean logs? Usually implies full reset
+                try: cur.execute('DELETE FROM points_log')
+                except: pass
+                try: cur.execute('DELETE FROM points_history')
+                except: pass
+                conn.commit()
+            except Exception as e:
+                return {'ok': False, 'detail': f'Failed to clear tables: {e}'}
+
+        # Pre-fetch existing students to minimize queries if not clearing
+        existing_students = {} # key: (first_name, last_name) -> dict
+        if clear_existing.lower() != 'true':
+            cur.execute('SELECT id, first_name, last_name, points, card_number, serial_number, photo_number, private_message, id_number, class_name FROM students')
+            for r in cur.fetchall():
+                # Normalize key
+                fn = str((r.get('first_name') if isinstance(r, dict) else r['first_name']) or '').strip()
+                ln = str((r.get('last_name') if isinstance(r, dict) else r['last_name']) or '').strip()
+                existing_students[(fn, ln)] = dict(r) if isinstance(r, dict) else {k: r[k] for k in r.keys()}
+
+        teacher = _web_current_teacher(request) or {}
+        teacher_name = str(teacher.get('name') or 'import')
+
+        for index, row in df.iterrows():
+            try:
+                # Basic fields
+                last_name = str(row.get('שם משפחה', '')).strip()
+                first_name = str(row.get('שם פרטי', '')).strip()
+                
+                # Skip empty
+                if not last_name or not first_name or last_name.lower() == 'nan' or first_name.lower() == 'nan':
+                    continue
+
+                # Optional fields
+                id_number = str(row.get('ת"ז', '')).strip()
+                if id_number.lower() == 'nan': id_number = ''
+                
+                class_name = str(row.get('כיתה', '')).strip()
+                if class_name.lower() == 'nan': class_name = ''
+                
+                # Try both column names for photo
+                photo_col = "נתיב תמונה" if "נתיב תמונה" in df.columns else "מס' תמונה"
+                photo_number = str(row.get(photo_col, '')).strip()
+                if photo_number.lower() == 'nan': photo_number = ''
+                
+                card_number = str(row.get("מס' כרטיס", '')).strip().lstrip("'")
+                if card_number.lower() in ('nan', '', '0'): card_number = ''
+                
+                points = 0
+                if "מס' נקודות" in df.columns and pd.notna(row.get("מס' נקודות")):
+                    try: points = int(float(row.get("מס' נקודות")))
+                    except: points = 0
+                
+                private_message = ''
+                if "הודעה פרטית" in df.columns:
+                    pm = row.get("הודעה פרטית")
+                    if pd.notna(pm) and str(pm).lower() != 'nan':
+                        private_message = str(pm).strip()
+
+                # Serial number
+                serial_number = ''
+                serial_col = next((c for c in df.columns if 'סידורי' in str(c)), None)
+                if serial_col:
+                    val = row.get(serial_col)
+                    if pd.notna(val) and str(val).lower() != 'nan':
+                        try: serial_number = str(int(float(val)))
+                        except: serial_number = str(val).strip()
+                else:
+                    # Default sequential if missing column? Or leave empty?
+                    # ExcelImporter uses index + 1 if missing. Let's keep it empty unless we cleared db or it's new
+                    if clear_existing.lower() == 'true':
+                        serial_number = str(index + 1)
+
+                key = (first_name, last_name)
+                student = existing_students.get(key)
+                
+                if student:
+                    # Update
+                    sid = student['id']
+                    updated_fields = []
+                    params = []
+                    
+                    # Check changes
+                    if serial_number and str(student.get('serial_number') or '') != serial_number:
+                        updated_fields.append('serial_number = ?')
+                        params.append(serial_number)
+                    if card_number and str(student.get('card_number') or '') != card_number:
+                        updated_fields.append('card_number = ?')
+                        params.append(card_number)
+                    if photo_number and str(student.get('photo_number') or '') != photo_number:
+                        updated_fields.append('photo_number = ?')
+                        params.append(photo_number)
+                    if id_number and str(student.get('id_number') or '') != id_number:
+                        updated_fields.append('id_number = ?')
+                        params.append(id_number)
+                    if class_name and str(student.get('class_name') or '') != class_name:
+                        updated_fields.append('class_name = ?')
+                        params.append(class_name)
+                    if private_message != (student.get('private_message') or ''):
+                        updated_fields.append('private_message = ?')
+                        params.append(private_message)
+                        
+                    # Points update logic
+                    current_points = int(student.get('points') or 0)
+                    if points != current_points:
+                        updated_fields.append('points = ?')
+                        params.append(points)
+                        # Log points change
+                        delta = points - current_points
+                        try:
+                            cur.execute(
+                                'INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                (sid, current_points, points, delta, "ייבוא מ-Excel", teacher_name, "import")
+                            )
+                            # Sync event for points
+                            _record_sync_event(
+                                tenant_id=tenant_id,
+                                station_id='web',
+                                entity_type='student_points',
+                                entity_id=str(sid),
+                                action_type='update',
+                                payload={'old_points': current_points, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name}
+                            )
+                        except: pass
+
+                    if updated_fields:
+                        updated_fields.append('updated_at = CURRENT_TIMESTAMP')
+                        sql = f"UPDATE students SET {', '.join(updated_fields)} WHERE id = ?"
+                        params.append(sid)
+                        cur.execute(_sql_placeholder(sql), params)
+                        imported_count += 1
+
+                else:
+                    # Insert
+                    cols = ['last_name', 'first_name', 'points']
+                    vals = [last_name, first_name, points]
+                    placeholders = ['?', '?', '?']
+                    
+                    if id_number:
+                        cols.append('id_number'); vals.append(id_number); placeholders.append('?')
+                    if class_name:
+                        cols.append('class_name'); vals.append(class_name); placeholders.append('?')
+                    if card_number:
+                        cols.append('card_number'); vals.append(card_number); placeholders.append('?')
+                    if photo_number:
+                        cols.append('photo_number'); vals.append(photo_number); placeholders.append('?')
+                    if serial_number:
+                        cols.append('serial_number'); vals.append(serial_number); placeholders.append('?')
+                    if private_message:
+                        cols.append('private_message'); vals.append(private_message); placeholders.append('?')
+                    
+                    sql = f"INSERT INTO students ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
+                    cur.execute(_sql_placeholder(sql), vals)
+                    new_sid = cur.lastrowid
+                    imported_count += 1
+                    
+                    # Log initial points if > 0
+                    if points > 0 and new_sid:
+                        try:
+                            cur.execute(
+                                'INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                                (new_sid, 0, points, points, "ייבוא מ-Excel", teacher_name, "import")
+                            )
+                            # Sync event
+                            _record_sync_event(
+                                tenant_id=tenant_id,
+                                station_id='web',
+                                entity_type='student_points',
+                                entity_id=str(new_sid),
+                                action_type='update',
+                                payload={'old_points': 0, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name}
+                            )
+                        except: pass
+
+            except Exception as row_err:
+                errors.append(f"שגיאה בשורה {index+2}: {row_err}")
+
+        conn.commit()
+        return {'ok': True, 'imported_count': imported_count, 'errors': errors}
+        
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Import failed: {e}")
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.get("/web/special-bonus", response_class=HTMLResponse)
+def web_special_bonus(request: Request):
       <table style="width:100%; border-collapse:collapse;">
         <thead>
           <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
@@ -8590,19 +11202,18 @@ def web_time_bonus(request: Request):
         return guard
     
     html_content = """
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-      <h2>בונוס זמנים</h2>
+    <div style="display:flex; justify-content:flex-start; align-items:center; margin-bottom:20px;">
       <button class="green" onclick="openRuleModal()">+ כלל חדש</button>
     </div>
     
     <div class="card" style="padding:0; overflow:hidden;">
       <table style="width:100%; border-collapse:collapse;">
         <thead>
-          <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
-            <th style="padding:12px; text-align:right;">שם הכלל</th>
-            <th style="padding:12px; text-align:right;">שעות</th>
-            <th style="padding:12px; text-align:right;">בונוס (נקודות)</th>
-            <th style="padding:12px; text-align:right;">פעולות</th>
+          <tr style="background: rgba(15, 32, 39, 0.98); border-bottom:1px solid rgba(255,255,255,0.12);">
+            <th style="padding:12px; text-align:right; color:#fff;">שם הכלל</th>
+            <th style="padding:12px; text-align:right; color:#fff;">שעות</th>
+            <th style="padding:12px; text-align:right; color:#fff;">בונוס (נקודות)</th>
+            <th style="padding:12px; text-align:right; color:#fff;">פעולות</th>
           </tr>
         </thead>
         <tbody id="rules-list"></tbody>
@@ -8611,7 +11222,7 @@ def web_time_bonus(request: Request):
 
     <!-- Modal -->
     <div id="modal-rule" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
-      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:450px; box-shadow:0 4px 20px rgba(0,0,0,0.2);">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:450px; box-shadow:0 4px 20px rgba(0,0,0,0.2); direction:rtl;">
         <h3 id="modal-title" style="margin-top:0;">כלל בונוס זמן</h3>
         <input type="hidden" id="rule-index">
         <div class="form-group" style="margin-bottom:15px;">
@@ -8621,11 +11232,11 @@ def web_time_bonus(request: Request):
         <div style="display:flex; gap:10px; margin-bottom:15px;">
             <div style="flex:1;">
                 <label style="display:block; margin-bottom:5px; font-weight:600;">התחלה</label>
-                <input type="time" id="rule-start" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+                <input type="time" id="rule-start" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
             </div>
             <div style="flex:1;">
                 <label style="display:block; margin-bottom:5px; font-weight:600;">סיום</label>
-                <input type="time" id="rule-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+                <input type="time" id="rule-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
             </div>
         </div>
         <div class="form-group" style="margin-bottom:15px;">
@@ -8893,6 +11504,60 @@ def web_cashier(request: Request):
     return _basic_web_shell("עמדת קופה", html_content, request=request)
 
 
+@app.get('/api/reports/stats')
+def api_reports_stats(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        
+        # 1. Total Balance (Current Points held by students)
+        cur.execute("SELECT SUM(points) FROM students")
+        row = cur.fetchone()
+        total_balance = int(row[0] or 0) if row else 0
+        
+        # 2. Total Redeemed (From purchases log)
+        try:
+            cur.execute("SELECT SUM(total_points) FROM purchases_log WHERE is_refunded=0")
+            row = cur.fetchone()
+            total_redeemed = int(row[0] or 0) if row else 0
+        except Exception:
+            total_redeemed = 0
+            
+        # 3. Top Students
+        cur.execute("SELECT first_name, last_name, class_name, points FROM students ORDER BY points DESC LIMIT 5")
+        top_students = [dict(r) for r in cur.fetchall()]
+        
+        # 4. Top Products
+        try:
+            sql = """
+                SELECT p.name, SUM(l.qty) as sold_qty
+                  FROM purchases_log l
+                  JOIN products p ON l.product_id = p.id
+                 WHERE l.is_refunded=0
+                 GROUP BY p.name
+                 ORDER BY sold_qty DESC
+                 LIMIT 5
+            """
+            cur.execute(sql)
+            top_products = [dict(r) for r in cur.fetchall()]
+        except Exception:
+            top_products = []
+            
+        return {
+            'total_balance': total_balance,
+            'total_redeemed': total_redeemed,
+            'top_students': top_students,
+            'top_products': top_products
+        }
+    finally:
+        try: conn.close()
+        except: pass
+
 @app.get("/web/reports", response_class=HTMLResponse)
 def web_reports(request: Request):
     guard = _web_require_admin_teacher(request)
@@ -8900,48 +11565,98 @@ def web_reports(request: Request):
         return guard
     
     html_content = """
-    <h2>דוחות</h2>
-    
-    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee; margin-bottom:20px;">
-      <h3 style="margin-top:0;">ייצוא נתונים</h3>
-      <p style="color:#666;">הורדת רשימת התלמידים והניקוד שלהם לקובץ CSV (אקסל).</p>
-      <a href="/web/export/download" target="_blank" style="text-decoration:none;">
-        <button class="blue" style="padding:10px 20px; border-radius:6px; border:none; background:#3498db; color:white; font-weight:bold; cursor:pointer;">⬇️ ייצוא תלמידים (CSV)</button>
-      </a>
+    <style>
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-box { background: #fff; padding: 24px; border-radius: 12px; border: 1px solid #e1e8ee; box-shadow: 0 2px 10px rgba(0,0,0,0.03); text-align: center; }
+        .stat-num { font-size: 36px; font-weight: 900; color: #2c3e50; margin: 10px 0; }
+        .stat-label { color: #7f8c8d; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+        
+        .lists-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+        .list-card { background: #fff; border-radius: 12px; border: 1px solid #e1e8ee; overflow: hidden; }
+        .list-header { background: #f8f9fa; padding: 15px 20px; border-bottom: 1px solid #eee; font-weight: 700; color: #2c3e50; font-size: 16px; }
+        .list-item { display: flex; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid #f4f6f8; font-size: 14px; }
+        .list-item:last-child { border-bottom: none; }
+        .list-val { font-weight: 700; color: #3498db; }
+        
+        .export-section { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; display:flex; gap:15px; align-items:center; flex-wrap:wrap; }
+    </style>
+
+    <div class="stats-grid">
+        <div class="stat-box">
+            <div class="stat-label">יתרת נקודות (תלמידים)</div>
+            <div class="stat-num" id="s-balance">...</div>
+        </div>
+        <div class="stat-box">
+            <div class="stat-label">נקודות שמומשו</div>
+            <div class="stat-num" id="s-redeemed" style="color:#e67e22;">...</div>
+        </div>
     </div>
 
-    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
-      <h3 style="margin-top:0;">הגדרות דוחות</h3>
-      <div style="margin-bottom:15px;">
-        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
-          <input type="checkbox" id="rep-enabled" style="width:18px; height:18px;"> אפשר דוחות
-        </label>
-      </div>
-      <div>
-        <button class="green" onclick="saveReports()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
-      </div>
+    <div class="lists-grid">
+        <div class="list-card">
+            <div class="list-header">🏆 תלמידים מובילים</div>
+            <div id="top-students">טוען...</div>
+        </div>
+        <div class="list-card">
+            <div class="list-header">📦 מוצרים נמכרים ביותר</div>
+            <div id="top-products">טוען...</div>
+        </div>
+    </div>
+
+    <div class="export-section">
+        <div style="flex:1;">
+            <h3 style="margin:0 0 5px 0;">ייצוא נתונים</h3>
+            <div style="color:#666; font-size:13px;">הורדת דוחות מלאים לקבצי אקסל (CSV)</div>
+        </div>
+        <a href="/web/export/download" target="_blank" style="text-decoration:none;">
+            <button class="blue" style="padding:10px 20px; border-radius:8px;">⬇️ רשימת תלמידים מלאה</button>
+        </a>
     </div>
 
     <script>
-      async function loadReports() {
-        try {
-          const res = await fetch('/api/settings/reports_settings');
-          const data = await res.json();
-          document.getElementById('rep-enabled').checked = !!data.enabled;
-        } catch(e) {}
-      }
+        async function loadStats() {
+            try {
+                const res = await fetch('/api/reports/stats');
+                const data = await res.json();
+                
+                document.getElementById('s-balance').textContent = data.total_balance.toLocaleString();
+                document.getElementById('s-redeemed').textContent = data.total_redeemed.toLocaleString();
+                
+                // Top Students
+                const stDiv = document.getElementById('top-students');
+                if (data.top_students && data.top_students.length > 0) {
+                    stDiv.innerHTML = data.top_students.map(s => `
+                        <div class="list-item">
+                            <span>${esc(s.first_name)} ${esc(s.last_name)} <span style="font-size:12px; color:#999;">(${esc(s.class_name)})</span></span>
+                            <span class="list-val">${s.points.toLocaleString()}</span>
+                        </div>
+                    `).join('');
+                } else {
+                    stDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#999;">אין נתונים</div>';
+                }
 
-      async function saveReports() {
-        const enabled = document.getElementById('rep-enabled').checked;
-        await fetch('/api/settings/save', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ key: 'reports_settings', value: { enabled: enabled } })
-        });
-        alert('נשמר בהצלחה');
-      }
+                // Top Products
+                const prDiv = document.getElementById('top-products');
+                if (data.top_products && data.top_products.length > 0) {
+                    prDiv.innerHTML = data.top_products.map(p => `
+                        <div class="list-item">
+                            <span>${esc(p.name)}</span>
+                            <span class="list-val">${p.sold_qty.toLocaleString()} יח'</span>
+                        </div>
+                    `).join('');
+                } else {
+                    prDiv.innerHTML = '<div style="padding:20px; text-align:center; color:#999;">אין נתונים</div>';
+                }
+            } catch(e) {
+                console.error(e);
+            }
+        }
 
-      loadReports();
+        function esc(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        loadStats();
     </script>
     """
     return _basic_web_shell("דוחות", html_content, request=request)
@@ -9001,6 +11716,51 @@ def web_export_download(request: Request) -> Response:
     )
 
 
+@app.get('/api/logs')
+def api_logs_list(
+    request: Request,
+    q: str = Query(default=''),
+    limit: int = Query(default=50, le=1000),
+    offset: int = Query(default=0)
+) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        
+        sql = """
+            SELECT l.id, l.created_at, l.student_id, l.delta, l.reason, l.actor_name, l.action_type,
+                   s.first_name, s.last_name, s.class_name
+              FROM points_log l
+              LEFT JOIN students s ON l.student_id = s.id
+        """
+        
+        where_clauses = []
+        params = []
+        
+        if q:
+            term = f"%{q.strip()}%"
+            where_clauses.append("(s.first_name LIKE ? OR s.last_name LIKE ? OR s.class_name LIKE ? OR l.actor_name LIKE ? OR l.reason LIKE ?)")
+            params.extend([term, term, term, term, term])
+            
+        if where_clauses:
+            sql += " WHERE " + " AND ".join(where_clauses)
+            
+        sql += " ORDER BY l.id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        cur.execute(_sql_placeholder(sql), params)
+        rows = [dict(r) for r in cur.fetchall()]
+        return {'items': rows}
+    finally:
+        try: conn.close()
+        except: pass
+
+
 @app.get("/web/logs", response_class=HTMLResponse)
 def web_logs(request: Request):
     guard = _web_require_admin_teacher(request)
@@ -9008,21 +11768,151 @@ def web_logs(request: Request):
         return guard
     
     html_content = """
-    <h2>הגדרות לוגים</h2>
-    
-    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
-      <h3 style="margin-top:0;">שמירת היסטוריה</h3>
-      <div style="margin-bottom:15px;">
-        <label style="display:block; margin-bottom:5px; font-weight:600;">מספר ימים לשמירת לוגים</label>
-        <input type="number" id="log-retention" style="width:100%; max-width:200px; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+    <style>
+      .tabs { display: flex; gap: 10px; border-bottom: 1px solid #ddd; margin-bottom: 20px; }
+      .tab { padding: 10px 20px; cursor: pointer; border-bottom: 3px solid transparent; font-weight: bold; color: #666; }
+      .tab.active { border-bottom-color: #3498db; color: #3498db; }
+      .tab-content { display: none; }
+      .tab-content.active { display: block; }
+      .log-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+      .log-table th { background: #f8f9fa; text-align: right; padding: 10px; border-bottom: 2px solid #eee; position: sticky; top: 0; }
+      .log-table td { padding: 8px 10px; border-bottom: 1px solid #f1f1f1; }
+      .log-table tr:hover { background: #fdfdfd; }
+      .pos { color: green; font-weight: bold; }
+      .neg { color: red; font-weight: bold; }
+    </style>
+
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('view')">📜 צפייה בלוגים</div>
+      <div class="tab" onclick="switchTab('settings')">⚙️ הגדרות</div>
+    </div>
+
+    <div id="tab-view" class="tab-content active">
+      <div style="display:flex; gap:10px; margin-bottom:15px;">
+        <input id="search-box" style="padding:8px; border:1px solid #ddd; border-radius:6px; width:250px;" placeholder="חיפוש (שם, כיתה, סיבה...)" onkeyup="debounceLoad()">
+        <button class="blue" onclick="loadLogsView()">🔍 חפש</button>
       </div>
-      <div>
-        <button class="green" onclick="saveLogs()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
+      
+      <div class="card" style="padding:0; overflow:auto; max-height:calc(100vh - 250px);">
+        <table class="log-table">
+          <thead>
+            <tr>
+              <th>תאריך</th>
+              <th>תלמיד</th>
+              <th>כיתה</th>
+              <th>שינוי</th>
+              <th>סיבה</th>
+              <th>בוצע ע"י</th>
+            </tr>
+          </thead>
+          <tbody id="logs-body">
+            <tr><td colspan="6" style="text-align:center; padding:20px;">טוען...</td></tr>
+          </tbody>
+        </table>
+        <div style="padding:10px; text-align:center;">
+            <button class="gray" id="btn-more" onclick="loadMore()" style="display:none; width:100%;">טען עוד...</button>
+        </div>
       </div>
     </div>
 
+    <div id="tab-settings" class="tab-content">
+        <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee; max-width:500px;">
+          <h3 style="margin-top:0;">שמירת היסטוריה</h3>
+          <div style="margin-bottom:15px;">
+            <label style="display:block; margin-bottom:5px; font-weight:600;">מספר ימים לשמירת לוגים</label>
+            <input type="number" id="log-retention" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+            <div style="font-size:12px; color:#666; margin-top:5px;">לוגים ישנים יותר יימחקו אוטומטית ע"י המערכת.</div>
+          </div>
+          <div>
+            <button class="green" onclick="saveLogsSettings()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
+          </div>
+        </div>
+    </div>
+
     <script>
-      async function loadLogs() {
+      let offset = 0;
+      let limit = 50;
+      let isLoading = false;
+      let searchTimer = null;
+
+      function switchTab(tab) {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+        document.getElementById('tab-' + tab).classList.add('active');
+      }
+
+      function debounceLoad() {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+            offset = 0;
+            loadLogsView();
+        }, 500);
+      }
+
+      async function loadLogsView(append = false) {
+        if (isLoading) return;
+        isLoading = true;
+        
+        const q = document.getElementById('search-box').value;
+        if (!append) {
+            offset = 0;
+            document.getElementById('logs-body').innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px;">טוען...</td></tr>';
+            document.getElementById('btn-more').style.display = 'none';
+        }
+
+        try {
+            const res = await fetch(`/api/logs?q=${encodeURIComponent(q)}&limit=${limit}&offset=${offset}`);
+            const data = await res.json();
+            const rows = data.items || [];
+            
+            const html = rows.map(r => {
+                let dt = r.created_at;
+                try { dt = new Date(r.created_at).toLocaleString('he-IL'); } catch(e) {}
+                const cls = r.delta > 0 ? 'pos' : (r.delta < 0 ? 'neg' : '');
+                const sign = r.delta > 0 ? '+' : '';
+                return `
+                    <tr>
+                        <td style="direction:ltr; text-align:right;">${dt}</td>
+                        <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
+                        <td>${esc(r.class_name)}</td>
+                        <td class="${cls}" style="direction:ltr; text-align:right;">${sign}${r.delta}</td>
+                        <td>${esc(r.reason)}</td>
+                        <td>${esc(r.actor_name)}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const tbody = document.getElementById('logs-body');
+            if (!append) tbody.innerHTML = '';
+            
+            if (rows.length === 0 && !append) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding:20px; color:#999;">אין נתונים</td></tr>';
+            } else {
+                if (!append) tbody.innerHTML = html;
+                else tbody.insertAdjacentHTML('beforeend', html);
+            }
+
+            if (rows.length >= limit) {
+                document.getElementById('btn-more').style.display = 'block';
+                offset += limit;
+            } else {
+                document.getElementById('btn-more').style.display = 'none';
+            }
+
+        } catch(e) {
+            console.error(e);
+            if (!append) document.getElementById('logs-body').innerHTML = '<tr><td colspan="6" style="text-align:center; color:red;">שגיאה</td></tr>';
+        } finally {
+            isLoading = false;
+        }
+      }
+
+      function loadMore() {
+        loadLogsView(true);
+      }
+
+      async function loadLogsSettings() {
         try {
           const res = await fetch('/api/settings/log_settings');
           const data = await res.json();
@@ -9030,7 +11920,7 @@ def web_logs(request: Request):
         } catch(e) {}
       }
 
-      async function saveLogs() {
+      async function saveLogsSettings() {
         const days = parseInt(document.getElementById('log-retention').value) || 30;
         await fetch('/api/settings/save', {
             method: 'POST',
@@ -9040,7 +11930,12 @@ def web_logs(request: Request):
         alert('נשמר בהצלחה');
       }
 
-      loadLogs();
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      }
+
+      loadLogsView();
+      loadLogsSettings();
     </script>
     """
     return _basic_web_shell("לוגים", html_content, request=request)
@@ -9187,58 +12082,6 @@ def _super_admin_shell(title: str, body: str, request: Request = None) -> str:
     <html lang="he" dir="rtl">
     <head>
       <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>{title} - ניהול על</title>
-      <style>
-        :root {{ --primary: #2c3e50; --secondary: #34495e; --accent: #3498db; --bg: #f8f9fa; --card: #ffffff; --text: #2c3e50; --border: #dfe6e9; }}
-        body {{ margin: 0; font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); }}
-        .layout {{ display: flex; min-height: 100vh; }}
-        .sidebar {{ width: 240px; background: var(--primary); color: white; display: flex; flex-direction: column; padding: 20px 0; }}
-        .sidebar-header {{ padding: 0 20px 20px; border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 10px; }}
-        .sidebar-header h1 {{ margin: 0; font-size: 20px; font-weight: 600; }}
-        .nav {{ display: flex; flex-direction: column; }}
-        .nav a {{ padding: 12px 20px; color: rgba(255,255,255,0.8); text-decoration: none; transition: 0.2s; border-right: 3px solid transparent; }}
-        .nav a:hover, .nav a.active {{ background: rgba(255,255,255,0.05); color: white; border-right-color: var(--accent); }}
-        .main {{ flex: 1; padding: 30px; overflow-y: auto; }}
-        .card {{ background: var(--card); border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.04); padding: 24px; margin-bottom: 24px; border: 1px solid var(--border); }}
-        h2 {{ margin-top: 0; margin-bottom: 20px; font-size: 24px; color: var(--primary); }}
-        table {{ width: 100%; border-collapse: collapse; }}
-        th, td {{ padding: 12px 16px; text-align: right; border-bottom: 1px solid var(--border); }}
-        th {{ font-weight: 600; color: var(--secondary); background: rgba(0,0,0,0.02); }}
-        tr:hover {{ background: rgba(0,0,0,0.01); }}
-        input, select, textarea {{ padding: 10px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; width: 100%; box-sizing: border-box; }}
-        button {{ padding: 10px 20px; background: var(--accent); color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.2s; }}
-        button:hover {{ filter: brightness(1.1); }}
-        .btn-red {{ background: #e74c3c; }}
-        .btn-green {{ background: #2ecc71; }}
-        .form-group {{ margin-bottom: 16px; }}
-        .form-group label {{ display: block; margin-bottom: 6px; font-weight: 500; }}
-        .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 24px; }}
-        .stat-card {{ background: white; padding: 20px; border-radius: 10px; border: 1px solid var(--border); text-align: center; }}
-        .stat-val {{ font-size: 32px; font-weight: 700; color: var(--accent); }}
-        .stat-label {{ color: var(--secondary); font-size: 14px; margin-top: 5px; }}
-      </style>
-    </head>
-    <body>
-      <div class="layout">
-        <div class="sidebar">
-          <div class="sidebar-header">
-            <h1>ניהול מערכת</h1>
-            <div style="font-size:12px; opacity:0.6; margin-top:4px;">SchoolPoints Cloud</div>
-          </div>
-          <div class="nav">
-            {nav_html}
-          </div>
-        </div>
-        <div class="main">
-          {body}
-        </div>
-      </div>
-    </body>
-    </html>
-    """
-
-
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 def admin_dashboard(request: Request, admin_key: str = '') -> str:
     guard = _admin_require(request, admin_key)
@@ -9302,59 +12145,81 @@ def admin_global_settings(request: Request, admin_key: str = '') -> str:
     if guard:
         return guard
 
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute('SELECT tenant_id, name FROM institutions ORDER BY name')
-    rows = cur.fetchall() or []
-    conn.close()
+    smtp_server = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+    smtp_port = os.getenv('SMTP_PORT', '587')
+    smtp_user = os.getenv('SMTP_USER', '')
+    smtp_pass = os.getenv('SMTP_PASS', '')
+    notify_email = os.getenv('REGISTRATION_NOTIFY_EMAIL', '')
 
-    items = ""
-    for r in rows:
-        tenant_id = (r.get('tenant_id') if isinstance(r, dict) else r['tenant_id'])
-        name = (r.get('name') if isinstance(r, dict) else r['name'])
-        try:
-            tid = urllib.parse.quote(str(tenant_id or '').strip(), safe='')
-        except Exception:
-            tid = str(tenant_id or '').strip()
-        items += (
-            "<tr>"
-            f"<td style=\"font-weight:700;\">{html.escape(str(name or ''))}</td>"
-            f"<td><code>{html.escape(str(tenant_id or ''))}</code></td>"
-            "<td>"
-            f"<a href=\"/admin/institutions/login?tenant_id={tid}&next=%2Fweb%2Fsystem-settings\" style=\"text-decoration:none;\">"
-            "<button style=\"padding:6px 12px; font-size:12px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer;\">⚙️ לוח הבקרה &gt; הגדרות</button>"
-            "</a>"
-            "</td>"
-            "</tr>"
-        )
+    user_disp = (smtp_user[:3] + '***' + smtp_user[-2:]) if len(smtp_user) > 5 else ('***' if smtp_user else 'לא מוגדר')
+    pass_disp = '********' if smtp_pass else 'לא מוגדר'
+    
+    smtp_status = '<span style="color:#2ecc71">פעיל</span>' if (smtp_user and smtp_pass) else '<span style="color:#e74c3c">לא מוגדר</span>'
+    notify_status = f'<span style="color:#2ecc71">{html.escape(notify_email)}</span>' if notify_email else '<span style="color:#f39c12">לא מוגדר (לא יישלחו התראות למנהל)</span>'
 
     body = f"""
-    <h2>הגדרות</h2>
-    <div class="card" style="margin-bottom:18px;">
-      <div style="line-height:1.9;">
-        <div><b>Build:</b> {APP_BUILD_TAG}</div>
-        <div><b>DB:</b> {'Postgres' if USE_POSTGRES else 'SQLite'}</div>
-      </div>
+    <h2>הגדרות שרת וסביבה</h2>
+    
+    <div class="card" style="margin-bottom:20px;">
+        <h3>ℹ️ מידע כללי</h3>
+        <div style="line-height:1.8;">
+            <div><b>סוג מסד נתונים:</b> {'PostgreSQL' if USE_POSTGRES else 'SQLite (קובץ מקומי)'}</div>
+            <div><b>נתיב ראשי:</b> {ROOT_DIR}</div>
+        </div>
     </div>
-    <div class="card" style="padding:0; overflow:hidden;">
-      <table>
-        <thead>
-          <tr>
-            <th>שם מוסד</th>
-            <th>Tenant</th>
-            <th>הגדרות</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items}
-        </tbody>
-      </table>
+
+    <div class="card" style="margin-bottom:20px;">
+        <h3>📧 הגדרות דואר (SMTP)</h3>
+        <div style="margin-bottom:10px; color:#637381; font-size:14px;">הגדרות אלו משמשות לשליחת מיילים לנרשמים חדשים ולהתראות מנהל.</div>
+        <table style="width:100%; max-width:600px; text-align:right;">
+            <tr><td style="font-weight:600;">שרת:</td><td>{html.escape(smtp_server)}</td></tr>
+            <tr><td style="font-weight:600;">פורט:</td><td>{html.escape(str(smtp_port))}</td></tr>
+            <tr><td style="font-weight:600;">משתמש:</td><td>{html.escape(user_disp)}</td></tr>
+            <tr><td style="font-weight:600;">סיסמה:</td><td>{pass_disp}</td></tr>
+            <tr><td style="font-weight:600; padding-top:10px;">סטטוס SMTP:</td><td style="padding-top:10px;">{smtp_status}</td></tr>
+            <tr><td style="font-weight:600;">מייל להתראות (info):</td><td>{notify_status}</td></tr>
+        </table>
     </div>
-    <div style="margin-top:14px;">
+
+    <div class="card">
+        <h3>🛠️ כיצד להגדיר?</h3>
+        <div style="line-height:1.6; color:#2c3e50;">
+            <p>ההגדרות מתבצעות באמצעות <b>משתני סביבה (Environment Variables)</b> בשרת או בקובץ <code>.env</code>.</p>
+            <div style="background:#f8f9fa; padding:15px; border-radius:8px; border:1px solid #eee; direction:ltr; text-align:left; font-family:monospace; overflow-x:auto;">
+                SMTP_SERVER=smtp.gmail.com<br/>
+                SMTP_PORT=587<br/>
+                SMTP_USER=your-email@gmail.com<br/>
+                SMTP_PASS=your-app-password<br/>
+                REGISTRATION_NOTIFY_EMAIL=info@schoolpoints.co.il
+            </div>
+            <p style="margin-top:10px; font-size:13px; color:#7f8c8d;">
+                * ב-Gmail חובה להשתמש ב-"App Password" ולא בסיסמה הרגילה.<br/>
+                * לאחר שינוי הגדרות יש להפעיל מחדש את השרת.
+            </p>
+        </div>
+    </div>
+
+    <div style="margin-top:20px;">
       <a href="/admin/dashboard"><button class="btn-gray">חזרה לדשבורד</button></a>
     </div>
     """
     return _super_admin_shell("הגדרות שרת", body, request)
+
+def _get_tenant_counts(tenant_id: str) -> Dict[str, int]:
+    try:
+        tconn = _tenant_school_db(tenant_id)
+        try:
+            cur = tconn.cursor()
+            cur.execute('SELECT COUNT(*) FROM teachers')
+            t_count = _safe_int(_scalar_or_none(cur), 0)
+            cur.execute('SELECT COUNT(*) FROM students')
+            s_count = _safe_int(_scalar_or_none(cur), 0)
+            return {'teachers': t_count, 'students': s_count}
+        finally:
+            try: tconn.close()
+            except: pass
+    except Exception:
+        return {'teachers': -1, 'students': -1}
 
 @app.get("/admin/institutions", response_class=HTMLResponse)
 def admin_institutions(request: Request, admin_key: str = '') -> str:
@@ -9364,50 +12229,88 @@ def admin_institutions(request: Request, admin_key: str = '') -> str:
     
     conn = _db()
     cur = conn.cursor()
+    # Join with pending_registrations to get payment status if possible, or just fetch all
     cur.execute('SELECT tenant_id, name, api_key, password_hash, created_at FROM institutions ORDER BY id DESC')
-    rows = cur.fetchall() or []
+    inst_rows = cur.fetchall() or []
+    
+    # map tenant_id -> payment_status
+    cur.execute("SELECT institution_code, payment_status FROM pending_registrations WHERE payment_status IS NOT NULL")
+    pay_map = {}
+    for r in cur.fetchall():
+        code = str(r[0] or '').strip()
+        if code:
+            pay_map[code] = r[1]
     conn.close()
     
     items = ""
-    for r in rows:
+    for r in inst_rows:
+        tid = r['tenant_id']
         has_pw = "כן" if (r['password_hash'] or '').strip() else '<span style="color:#e74c3c">לא</span>'
         created = str(r['created_at'])[:16]
+        
+        # stats
+        counts = _get_tenant_counts(tid)
+        t_txt = str(counts['teachers']) if counts['teachers'] >= 0 else '?'
+        s_txt = str(counts['students']) if counts['students'] >= 0 else '?'
+        
+        # payment
+        pay_st = pay_map.get(tid, '—')
+        pay_color = '#7f8c8d'
+        if pay_st == 'completed': pay_color = '#2ecc71'
+        if pay_st == 'pending': pay_color = '#f39c12'
+        
         items += f"""
         <tr>
-          <td style="font-weight:600;">{r['name']}</td>
-          <td><code>{r['tenant_id']}</code></td>
+          <td style="font-weight:600;">{html.escape(r['name'])}</td>
+          <td><code>{tid}</code></td>
           <td style="font-family:monospace;font-size:12px;">{r['api_key']}</td>
           <td>{has_pw}</td>
+          <td>
+            <div style="font-size:12px;">מורים: <b>{t_txt}</b></div>
+            <div style="font-size:12px;">תלמידים: <b>{s_txt}</b></div>
+          </td>
+          <td><span style="color:{pay_color}; font-weight:bold; font-size:12px;">{pay_st}</span></td>
           <td>{created}</td>
           <td>
-            <a href='/admin/institutions/login?tenant_id={r['tenant_id']}' style="text-decoration:none; margin-left:5px;">
-              <button style="padding:6px 12px; font-size:12px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer;">🚀 כניסה</button>
-            </a>
-            <a href='/admin/institutions/password?tenant_id={r['tenant_id']}' style="text-decoration:none;">
-              <button style="padding:6px 12px; font-size:12px;">🔑 סיסמה</button>
-            </a>
+            <div style="display:flex; gap:4px;">
+                <a href='/admin/institutions/edit?tenant_id={tid}' style="text-decoration:none;">
+                  <button style="padding:4px 8px; font-size:11px; background:#f39c12; color:white; border:none; border-radius:4px; cursor:pointer;">✏️</button>
+                </a>
+                <a href='/admin/institutions/login?tenant_id={tid}' style="text-decoration:none;">
+                  <button style="padding:4px 8px; font-size:11px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer;">🚀 כניסה</button>
+                </a>
+                <a href='/admin/institutions/password?tenant_id={tid}' style="text-decoration:none;">
+                  <button style="padding:4px 8px; font-size:11px; background:#95a5a6; color:white; border:none; border-radius:4px; cursor:pointer;">🔑</button>
+                </a>
+                <form method="post" action="/admin/institutions/delete" onsubmit="return confirm('למחוק את המוסד {tid}? פעולה זו אינה הפיכה ותמחק את כל הנתונים שלו!');" style="margin:0;">
+                    <input type="hidden" name="tenant_id" value="{tid}" />
+                    <button style="padding:4px 8px; font-size:11px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer;">🗑️</button>
+                </form>
+            </div>
           </td>
         </tr>
         """
         
     body = f"""
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-      <h2>מוסדות ({len(rows)})</h2>
+      <h2>מוסדות ({len(inst_rows)})</h2>
       <div>
         <a href="/admin/registrations" style="margin-left:10px;"><button class="btn-gray">בקשות הרשמה</button></a>
         <a href="/admin/setup"><button class="btn-green">+ חדש</button></a>
       </div>
     </div>
     <div class="card" style="padding:0; overflow:hidden;">
-      <table>
+      <table style="width:100%; border-collapse:collapse;">
         <thead>
-          <tr>
-            <th>שם מוסד</th>
-            <th>Tenant ID</th>
-            <th>API Key</th>
-            <th>סיסמה?</th>
-            <th>נוצר</th>
-            <th>פעולות</th>
+          <tr style="text-align:right; background:#f8f9fa; border-bottom:1px solid #eee;">
+            <th style="padding:10px;">שם מוסד</th>
+            <th style="padding:10px;">Tenant ID</th>
+            <th style="padding:10px;">API Key</th>
+            <th style="padding:10px;">סיסמה?</th>
+            <th style="padding:10px;">נתונים</th>
+            <th style="padding:10px;">תשלום</th>
+            <th style="padding:10px;">נוצר</th>
+            <th style="padding:10px;">פעולות</th>
           </tr>
         </thead>
         <tbody>
@@ -9418,6 +12321,170 @@ def admin_institutions(request: Request, admin_key: str = '') -> str:
     """
     return _super_admin_shell("מוסדות", body, request)
 
+@app.post("/admin/institutions/delete", response_class=HTMLResponse)
+def admin_institutions_delete(request: Request, tenant_id: str = Form(...), admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        return "Error: missing tenant_id"
+
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM institutions WHERE tenant_id = ?'), (tenant_id,))
+        cur.execute(_sql_placeholder('DELETE FROM pending_registrations WHERE institution_code = ?'), (tenant_id,))
+        # Also clean up pairing codes? Maybe overkill but good practice
+        cur.execute(_sql_placeholder('DELETE FROM device_pairings WHERE tenant_id = ?'), (tenant_id,))
+        conn.commit()
+    finally:
+        conn.close()
+        
+    # Try to delete DB file if sqlite
+    try:
+        if not USE_POSTGRES:
+            db_path = _tenant_school_db_path(tenant_id)
+            if os.path.isfile(db_path):
+                os.remove(db_path)
+    except Exception:
+        pass
+        
+    return RedirectResponse(url="/admin/institutions", status_code=302)
+
+
+
+@app.get("/admin/institutions/edit", response_class=HTMLResponse)
+def admin_institution_edit(request: Request, tenant_id: str, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        _sql_placeholder('SELECT tenant_id, name, contact_name, email, phone, plan FROM institutions WHERE tenant_id = ? LIMIT 1'),
+        (tenant_id.strip(),)
+    )
+    row = cur.fetchone()
+    conn.close()
+    
+    if not row:
+        return "<h3>Tenant not found</h3>"
+        
+    d = dict(row) if isinstance(row, dict) else {
+        'tenant_id': row[0], 'name': row[1], 'contact_name': row[2], 
+        'email': row[3], 'phone': row[4], 'plan': row[5]
+    }
+    
+    body = f"""
+    <h2>עריכת מוסד</h2>
+    <form method="post" action="/admin/institutions/edit">
+      <input type="hidden" name="old_tenant_id" value="{d['tenant_id']}" />
+      
+      <label>שם מוסד</label>
+      <input name="name" value="{html.escape(str(d['name'] or ''))}" required />
+      
+      <label>Tenant ID (זהירות בשינוי!)</label>
+      <input name="tenant_id" value="{html.escape(str(d['tenant_id'] or ''))}" required />
+      
+      <label>איש קשר</label>
+      <input name="contact_name" value="{html.escape(str(d['contact_name'] or ''))}" />
+      
+      <label>אימייל</label>
+      <input name="email" value="{html.escape(str(d['email'] or ''))}" />
+      
+      <label>טלפון</label>
+      <input name="phone" value="{html.escape(str(d['phone'] or ''))}" />
+      
+      <label>מסלול (Plan)</label>
+      <input name="plan" value="{html.escape(str(d['plan'] or ''))}" />
+      
+      <div style="margin-top:20px; display:flex; gap:10px;">
+        <button type="submit" class="btn-green">שמירה</button>
+        <a href="/admin/institutions" class="btn-gray" style="text-decoration:none;">ביטול</a>
+      </div>
+    </form>
+    """
+    return _super_admin_shell("עריכת מוסד", body, request)
+
+
+@app.post("/admin/institutions/edit", response_class=HTMLResponse)
+def admin_institution_edit_submit(
+    request: Request,
+    old_tenant_id: str = Form(...),
+    tenant_id: str = Form(...),
+    name: str = Form(...),
+    contact_name: str = Form(default=''),
+    email: str = Form(default=''),
+    phone: str = Form(default=''),
+    plan: str = Form(default=''),
+    admin_key: str = ''
+) -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    
+    old_tid = str(old_tenant_id or '').strip()
+    new_tid = str(tenant_id or '').strip()
+    name = str(name or '').strip()
+    
+    if not old_tid or not new_tid or not name:
+        return "Error: missing fields"
+        
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        
+        # Check if renaming
+        if new_tid != old_tid:
+            # Check if new ID exists
+            cur.execute(_sql_placeholder('SELECT 1 FROM institutions WHERE tenant_id = ? LIMIT 1'), (new_tid,))
+            if cur.fetchone():
+                return f"Error: Tenant ID '{new_tid}' already exists."
+                
+            # Rename logic
+            # 1. Update DB entry
+            cur.execute(
+                _sql_placeholder('UPDATE institutions SET tenant_id = ?, name = ?, contact_name = ?, email = ?, phone = ?, plan = ? WHERE tenant_id = ?'),
+                (new_tid, name, contact_name, email, phone, plan, old_tid)
+            )
+            
+            # 2. Update references
+            cur.execute(_sql_placeholder('UPDATE device_pairings SET tenant_id = ? WHERE tenant_id = ?'), (new_tid, old_tid))
+            cur.execute(_sql_placeholder('UPDATE pending_registrations SET institution_code = ? WHERE institution_code = ?'), (new_tid, old_tid))
+            
+            # 3. Rename actual DB file / Schema
+            if USE_POSTGRES:
+                try:
+                    old_schema = _tenant_schema(old_tid)
+                    new_schema = _tenant_schema(new_tid)
+                    cur.execute(f'ALTER SCHEMA "{old_schema}" RENAME TO "{new_schema}"')
+                except Exception as e:
+                    print(f"Schema rename failed: {e}")
+            else:
+                # SQLite: Rename file
+                try:
+                    old_path = _tenant_school_db_path(old_tid)
+                    new_path = _tenant_school_db_path(new_tid)
+                    if os.path.exists(old_path):
+                        if os.path.exists(new_path):
+                            # Move aside? Or error?
+                            pass 
+                        else:
+                            os.rename(old_path, new_path)
+                except Exception as e:
+                    print(f"DB File rename failed: {e}")
+        else:
+            # Just update details
+            cur.execute(
+                _sql_placeholder('UPDATE institutions SET name = ?, contact_name = ?, email = ?, phone = ?, plan = ? WHERE tenant_id = ?'),
+                (name, contact_name, email, phone, plan, old_tid)
+            )
+            
+        conn.commit()
+    finally:
+        conn.close()
+        
+    return RedirectResponse(url="/admin/institutions", status_code=302)
 
 
 @app.get("/admin/institutions/password", response_class=HTMLResponse)
@@ -9517,6 +12584,11 @@ def admin_institution_login(request: Request, tenant_id: str, next: str = '', ad
 
     if not row:
         return HTMLResponse("<h3>Tenant not found</h3>", status_code=404)
+
+    try:
+        _ensure_tenant_db_exists(tenant_id.strip())
+    except Exception as e:
+        return HTMLResponse(f"<h3>Tenant DB init failed</h3><div>{html.escape(str(e))}</div>", status_code=500)
         
     target = str(next or '').strip()
     if not target.startswith('/web'):
@@ -9561,10 +12633,14 @@ def api_students(
             allowed_classes = []
 
     conn = _tenant_school_db(active_tenant)
+    try:
+        _ensure_student_columns(conn)
+    except Exception:
+        pass
     cur = conn.cursor()
     query = """
         SELECT id, serial_number, last_name, first_name, class_name, points, private_message,
-               card_number, id_number, photo_number
+               card_number, id_number, photo_number, is_free_fix_blocked
         FROM students
     """
     params: List[Any] = []
@@ -9589,6 +12665,24 @@ def api_students(
     if wheres:
         query += " WHERE " + " AND ".join(wheres)
 
+    # Calculate stats before pagination
+    stats_query = "SELECT COUNT(*) as cnt, SUM(points) as total_points FROM students"
+    if wheres:
+        stats_query += " WHERE " + " AND ".join(wheres)
+    
+    total_students = 0
+    total_points = 0
+    try:
+        cur.execute(_sql_placeholder(stats_query), params)
+        srow = cur.fetchone()
+        if srow:
+            val_cnt = srow[0] if not isinstance(srow, dict) else srow.get('cnt')
+            val_sum = srow[1] if not isinstance(srow, dict) else srow.get('total_points')
+            total_students = int(val_cnt or 0)
+            total_points = int(val_sum or 0)
+    except Exception:
+        pass
+
     if USE_POSTGRES:
         query += (
             " ORDER BY "
@@ -9608,6 +12702,8 @@ def api_students(
         "limit": limit,
         "offset": offset,
         "query": q,
+        "total_students": total_students,
+        "total_points": total_points,
     }
 
 
@@ -9632,11 +12728,21 @@ def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[
     id_number = payload.id_number
     serial_number = payload.serial_number
     photo_number = payload.photo_number
+    is_free_fix_blocked = payload.is_free_fix_blocked
 
     conn = _tenant_school_db(tenant_id)
     try:
         cur = conn.cursor()
         old_points: int | None = None
+        if serial_number is not None:
+            sn = str(serial_number or '').strip()
+            if sn:
+                cur.execute(
+                    _sql_placeholder('SELECT id FROM students WHERE serial_number = ? AND id != ? LIMIT 1'),
+                    (sn, int(sid))
+                )
+                if cur.fetchone():
+                    raise HTTPException(status_code=409, detail='serial_number already exists')
         if points is not None:
             try:
                 cur.execute(_sql_placeholder('SELECT points FROM students WHERE id = ? LIMIT 1'), (int(sid),))
@@ -9674,6 +12780,9 @@ def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[
         if photo_number is not None:
             sets.append('photo_number = ?')
             params.append(str(photo_number).strip())
+        if is_free_fix_blocked is not None:
+            sets.append('is_free_fix_blocked = ?')
+            params.append(int(is_free_fix_blocked))
         if not sets:
             return {'ok': True, 'updated': False}
         sets.append('updated_at = CURRENT_TIMESTAMP')
@@ -9682,29 +12791,42 @@ def api_student_update(request: Request, payload: StudentUpdatePayload) -> Dict[
         cur.execute(_sql_placeholder(sql), params)
         conn.commit()
 
-        # record event for pull (points only for now)
-        if points is not None:
-            try:
-                teacher = _web_current_teacher(request) or {}
-                teacher_name = _safe_str(teacher.get('name') or '').strip() or 'web'
-                old_p = int(old_points or 0)
-                new_p = int(points)
+        # Record full student update event for sync
+        try:
+            cur.execute(_sql_placeholder('SELECT * FROM students WHERE id = ? LIMIT 1'), (int(sid),))
+            row = cur.fetchone()
+            if row:
+                r = dict(row) if isinstance(row, dict) else {k: row[k] for k in row.keys()}
+                # Map db columns to payload keys expected by sync_agent
+                sync_payload = {
+                    'id': int(r['id']),
+                    'serial_number': str(r['serial_number'] or '').strip(),
+                    'last_name': str(r['last_name'] or '').strip(),
+                    'first_name': str(r['first_name'] or '').strip(),
+                    'class_name': str(r['class_name'] or '').strip(),
+                    'card_number': str(r['card_number'] or '').strip(),
+                    'photo_number': str(r['photo_number'] or '').strip(),
+                    'private_message': str(r['private_message'] or ''),
+                    'id_number': str(r['id_number'] or '').strip(),
+                    'is_free_fix_blocked': int(r.get('is_free_fix_blocked') or 0)
+                }
+                
+                # Only include points if they were explicitly updated
+                if points is not None:
+                    sync_payload['points'] = int(r['points'] or 0)
+                
                 _record_sync_event(
                     tenant_id=str(tenant_id),
                     station_id='web',
-                    entity_type='student_points',
+                    entity_type='student',
                     entity_id=str(int(sid)),
                     action_type='update',
-                    payload={
-                        'old_points': int(old_p),
-                        'new_points': int(new_p),
-                        'reason': 'ווב',
-                        'added_by': str(teacher_name),
-                    },
-                    created_at=None,
+                    payload=sync_payload
                 )
-            except Exception:
-                pass
+        except Exception as e:
+            print(f"Error recording sync event: {e}")
+            pass
+
         return {'ok': True, 'updated': True}
     finally:
         try:
@@ -9768,6 +12890,44 @@ def api_students_points_delta(request: Request, payload: StudentPointsDeltaPaylo
             conn.close()
         except Exception:
             pass
+
+
+@app.get('/api/students/history')
+def api_students_history(request: Request, student_id: int = Query(...), limit: int = 50) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+        
+    sid = int(student_id or 0)
+    if sid <= 0:
+        return {'items': []}
+
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        # Prefer points_log, but fallback or union if needed. 
+        # For simplicity and modern usage, we use points_log.
+        # Check if points_log exists first? It should.
+        
+        sql = """
+            SELECT id, created_at, action_type, actor_name, reason, delta, old_points, new_points
+              FROM points_log
+             WHERE student_id = ?
+             ORDER BY id DESC
+             LIMIT ?
+        """
+        cur.execute(_sql_placeholder(sql), (sid, limit))
+        rows = [dict(r) for r in cur.fetchall()]
+        return {'items': rows}
+    except Exception:
+        return {'items': []}
+    finally:
+        try: conn.close()
+        except: pass
 
 
 @app.post('/api/students/quick-update')
@@ -10037,6 +13197,7 @@ def api_students_save(request: Request, payload: StudentSavePayload) -> Dict[str
     card_number = _safe_str(payload.card_number or '').strip()
     photo_number = _safe_str(payload.photo_number or '').strip()
     private_message = _safe_str(payload.private_message or '')
+    is_blocked = int(payload.is_free_fix_blocked) if payload.is_free_fix_blocked is not None else 0
     points = payload.points
 
     if not last_name or not first_name:
@@ -10056,6 +13217,21 @@ def api_students_save(request: Request, payload: StudentSavePayload) -> Dict[str
     conn = _tenant_school_db(str(tenant_id))
     try:
         cur = conn.cursor()
+        if serial_number:
+            if sid > 0:
+                cur.execute(
+                    _sql_placeholder('SELECT id FROM students WHERE serial_number = ? AND id != ? LIMIT 1'),
+                    (str(serial_number), int(sid))
+                )
+            else:
+                cur.execute(
+                    _sql_placeholder('SELECT id FROM students WHERE serial_number = ? LIMIT 1'),
+                    (str(serial_number),)
+                )
+            dup = cur.fetchone()
+            if dup:
+                raise HTTPException(status_code=409, detail='serial_number already exists')
+
         if sid > 0:
             cur.execute(_sql_placeholder('SELECT class_name, card_number, photo_number FROM students WHERE id = ? LIMIT 1'), (int(sid),))
             row = cur.fetchone()
@@ -10065,8 +13241,8 @@ def api_students_save(request: Request, payload: StudentSavePayload) -> Dict[str
             if allowed_classes is not None and current_class and current_class not in set(allowed_classes):
                 raise HTTPException(status_code=403, detail='not allowed')
 
-            sets: List[str] = ['last_name = ?', 'first_name = ?', 'id_number = ?', 'class_name = ?', 'serial_number = ?', 'private_message = ?']
-            params: List[Any] = [last_name, first_name, id_number, class_name, serial_number, private_message]
+            sets: List[str] = ['last_name = ?', 'first_name = ?', 'id_number = ?', 'class_name = ?', 'serial_number = ?', 'private_message = ?', 'is_free_fix_blocked = ?']
+            params: List[Any] = [last_name, first_name, id_number, class_name, serial_number, private_message, is_blocked]
             if points is not None:
                 sets.append('points = ?')
                 params.append(int(points))
@@ -10081,6 +13257,31 @@ def api_students_save(request: Request, payload: StudentSavePayload) -> Dict[str
             params.append(int(sid))
             cur.execute(_sql_placeholder(sql), params)
             conn.commit()
+            
+            # Record sync event for update
+            sync_payload = {
+                'serial_number': str(serial_number or '').strip(),
+                'last_name': str(last_name or '').strip(),
+                'first_name': str(first_name or '').strip(),
+                'class_name': str(class_name or '').strip(),
+                'card_number': str(card_number or '').strip(),
+                'photo_number': str(photo_number or '').strip(),
+                'private_message': str(private_message or ''),
+                'id_number': str(id_number or '').strip(),
+                'is_free_fix_blocked': int(is_blocked)
+            }
+            if points is not None:
+                sync_payload['points'] = int(points)
+            
+            _record_sync_event(
+                tenant_id=str(tenant_id),
+                station_id='web',
+                entity_type='student',
+                entity_id=str(sid),
+                action_type='update',
+                payload=sync_payload
+            )
+            
             return {'ok': True, 'student_id': int(sid), 'created': False}
 
         if not can_edit_card:
@@ -10090,10 +13291,10 @@ def api_students_save(request: Request, payload: StudentSavePayload) -> Dict[str
         pts = int(points) if points is not None else 0
         cur.execute(
             _sql_placeholder(
-                'INSERT INTO students (serial_number, last_name, first_name, class_name, points, private_message, card_number, id_number, photo_number) '
-                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO students (serial_number, last_name, first_name, class_name, points, private_message, card_number, id_number, photo_number, is_free_fix_blocked) '
+                'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             ),
-            (serial_number, last_name, first_name, class_name, int(pts), private_message, card_number, id_number, photo_number)
+            (serial_number, last_name, first_name, class_name, int(pts), private_message, card_number, id_number, photo_number, is_blocked)
         )
         new_id = int(cur.lastrowid or 0)
         conn.commit()
@@ -10132,6 +13333,14 @@ def api_students_delete(request: Request, payload: StudentDeletePayload) -> Dict
         except Exception:
             pass
         cur.execute(_sql_placeholder('DELETE FROM students WHERE id = ?'), (int(sid),))
+        _record_sync_event(
+            tenant_id=str(tenant_id),
+            station_id='web',
+            entity_type='student',
+            entity_id=str(sid),
+            action_type='delete',
+            payload={'id': int(sid)}
+        )
         conn.commit()
         return {'ok': True}
     finally:
@@ -10217,13 +13426,13 @@ def web_admin(request: Request):
           <div class="icon">👨‍🏫</div>
           <div class="label">מורים</div>
         </a>
+        <a href="/web/classes" class="tile orange">
+          <div class="icon">🏫</div>
+          <div class="label">כיתות</div>
+        </a>
         <a href="/web/messages" class="tile purple">
           <div class="icon">📢</div>
           <div class="label">הודעות</div>
-        </a>
-        <a href="/web/upgrades" class="tile orange">
-          <div class="icon">🎁</div>
-          <div class="label">שדרוגים</div>
         </a>
         <a href="/web/time-bonus" class="tile teal">
           <div class="icon">⏱️</div>
@@ -10245,14 +13454,34 @@ def web_admin(request: Request):
           <div class="icon">📊</div>
           <div class="label">דוחות</div>
         </a>
+        <a href="/web/max-points" class="tile red">
+          <div class="icon">📉</div>
+          <div class="label">מגבלת ניקוד</div>
+        </a>
+        <a href="/web/anti-spam" class="tile orange">
+          <div class="icon">🛡️</div>
+          <div class="label">אנטי-ספאם</div>
+        </a>
+        <a href="/web/quiet-mode" class="tile teal">
+          <div class="icon">🌙</div>
+          <div class="label">מצב שקט</div>
+        </a>
         <a href="/web/settings" class="tile gray">
           <div class="icon">⚙️</div>
           <div class="label">הגדרות</div>
+        </a>
+        <a href="/web/import" class="tile dark">
+          <div class="icon">📥</div>
+          <div class="label">ייבוא</div>
         </a>
         """
 
     # Personal Area (Everyone)
     tiles_html += """
+    <a href="/web/upgrades" class="tile orange">
+      <div class="icon">🎁</div>
+      <div class="label">עדכון מערכת</div>
+    </a>
     <a href="/web/personal" class="tile dark">
       <div class="icon">👤</div>
       <div class="label">אזור אישי</div>
@@ -10281,7 +13510,6 @@ def web_admin(request: Request):
       .tile.dark {{ background: linear-gradient(135deg, #34495e, #2c3e50); }}
     </style>
     
-    <h2>לוח בקרה</h2>
     <div class="dashboard-grid">
       {tiles_html}
     </div>
@@ -10295,23 +13523,349 @@ def _stub_page(title: str, request: Request) -> Response:
     body = f"<h2>{title}</h2><p>העמוד בבנייה.</p><div class='actionbar'><a class='gray' href='/web/admin'>חזרה</a></div>"
     return HTMLResponse(_basic_web_shell(title, body, request=request))
 
-@app.get('/web/messages', response_class=HTMLResponse)
-def web_messages(request: Request): return _stub_page("הודעות", request)
+@app.get('/api/products')
+def api_products_list(request: Request, tenant_id: str = Query(default='')) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    active_tenant = _web_tenant_from_cookie(request)
+    if not active_tenant:
+        raise HTTPException(status_code=400, detail='missing tenant')
+        
+    conn = _tenant_school_db(active_tenant)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM products WHERE is_active = 1 ORDER BY sort_order, name")
+        rows = [dict(r) for r in cur.fetchall()]
+        return {'items': rows}
+    finally:
+        try: conn.close()
+        except: pass
 
-@app.get('/web/upgrades', response_class=HTMLResponse)
-def web_upgrades(request: Request): return _stub_page("שדרוגים", request)
+@app.post('/api/products/update')
+async def api_products_update(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+        
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail='invalid json')
+        
+    pid = int(data.get('id') or 0)
+    name = str(data.get('name') or '').strip()
+    price = int(data.get('price_points') or 0)
+    stock = int(data.get('stock_qty') or 0) if data.get('stock_qty') is not None else None
+    
+    if not name:
+        raise HTTPException(status_code=400, detail='missing name')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        if pid > 0:
+            cur.execute(
+                _sql_placeholder("UPDATE products SET name=?, price_points=?, stock_qty=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"),
+                (name, price, stock, pid)
+            )
+            _record_sync_event(
+                tenant_id=str(tenant_id),
+                station_id='web',
+                entity_type='product',
+                entity_id=str(pid),
+                action_type='update',
+                payload={
+                    'name': name,
+                    'price_points': price,
+                    'stock_qty': stock
+                }
+            )
+        else:
+            cur.execute(
+                _sql_placeholder("INSERT INTO products (name, price_points, stock_qty, is_active) VALUES (?, ?, ?, 1)"),
+                (name, price, stock)
+            )
+            # Fetch the new ID
+            new_id = cur.lastrowid
+            # Postgres compatibility check might be needed if lastrowid isn't reliable, but usually fine for now or handled by wrapper
+            if not new_id:
+                 # Fallback fetch
+                 cur.execute(_sql_placeholder("SELECT id FROM products WHERE name=? ORDER BY id DESC LIMIT 1"), (name,))
+                 r = cur.fetchone()
+                 if r:
+                     new_id = int(r[0]) if not isinstance(r, dict) else int(r['id'])
+            
+            if new_id:
+                _record_sync_event(
+                    tenant_id=str(tenant_id),
+                    station_id='web',
+                    entity_type='product',
+                    entity_id=str(new_id),
+                    action_type='create',
+                    payload={
+                        'id': new_id,
+                        'name': name,
+                        'price_points': price,
+                        'stock_qty': stock
+                    }
+                )
+        conn.commit()
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
 
-@app.get('/web/time-bonus', response_class=HTMLResponse)
-def web_time_bonus(request: Request): return _stub_page("בונוס זמנים", request)
+@app.post('/api/products/delete')
+async def api_products_delete(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    try:
+        data = await request.json()
+        pid = int(data.get('id') or 0)
+    except:
+        raise HTTPException(status_code=400, detail='invalid json')
+        
+    if pid <= 0:
+        raise HTTPException(status_code=400, detail='invalid id')
+        
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        # Soft delete
+        cur.execute(_sql_placeholder("UPDATE products SET is_active=0 WHERE id=?"), (pid,))
+        _record_sync_event(
+            tenant_id=str(tenant_id),
+            station_id='web',
+            entity_type='product',
+            entity_id=str(pid),
+            action_type='delete',
+            payload={'id': pid}
+        )
+        conn.commit()
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
 
-@app.get('/web/special-bonus', response_class=HTMLResponse)
-def web_special_bonus(request: Request): return _stub_page("בונוס מיוחד", request)
-
-@app.get('/web/holidays', response_class=HTMLResponse)
-def web_holidays(request: Request): return _stub_page("חגים", request)
+@app.get('/api/purchases')
+def api_purchases_list(request: Request, limit: int = 50) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        # Join with students and products to get names
+        sql = """
+            SELECT l.id, l.created_at, l.total_points, l.qty,
+                   s.first_name, s.last_name,
+                   p.name as product_name
+              FROM purchases_log l
+              LEFT JOIN students s ON l.student_id = s.id
+              LEFT JOIN products p ON l.product_id = p.id
+             ORDER BY l.id DESC
+             LIMIT ?
+        """
+        cur.execute(_sql_placeholder(sql), (limit,))
+        rows = [dict(r) for r in cur.fetchall()]
+        return {'items': rows}
+    finally:
+        try: conn.close()
+        except: pass
 
 @app.get('/web/purchases', response_class=HTMLResponse)
-def web_purchases(request: Request): return _stub_page("קניות", request)
+def web_purchases(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+    
+    html_content = """
+    <style>
+      .tabs { display: flex; gap: 10px; border-bottom: 1px solid #ddd; margin-bottom: 20px; }
+      .tab { padding: 10px 20px; cursor: pointer; border-bottom: 3px solid transparent; font-weight: bold; color: #666; }
+      .tab.active { border-bottom-color: #3498db; color: #3498db; }
+      .tab-content { display: none; }
+      .tab-content.active { display: block; }
+      .data-table { width: 100%; border-collapse: collapse; }
+      .data-table th, .data-table td { padding: 10px; border-bottom: 1px solid #eee; text-align: right; }
+      .data-table th { background: #f9f9f9; }
+    </style>
+
+    <div class="tabs">
+        <div class="tab active" onclick="switchTab('products')">ניהול מוצרים</div>
+        <div class="tab" onclick="switchTab('history')">היסטוריית רכישות</div>
+    </div>
+
+    <div id="tab-products" class="tab-content active">
+        <div style="margin-bottom:15px;">
+            <button class="green" onclick="openProductModal()">+ מוצר חדש</button>
+        </div>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>שם מוצר</th>
+                    <th>מחיר (נקודות)</th>
+                    <th>מלאי</th>
+                    <th>פעולות</th>
+                </tr>
+            </thead>
+            <tbody id="products-list"></tbody>
+        </table>
+    </div>
+
+    <div id="tab-history" class="tab-content">
+        <div style="margin-bottom:15px;">
+            <button class="gray" onclick="loadPurchases()">רענן</button>
+        </div>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>תאריך</th>
+                    <th>תלמיד</th>
+                    <th>מוצר</th>
+                    <th>כמות</th>
+                    <th>סה"כ נקודות</th>
+                </tr>
+            </thead>
+            <tbody id="purchases-list"></tbody>
+        </table>
+    </div>
+
+    <!-- Product Modal -->
+    <div id="prod-modal" class="q-modal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); z-index:100; align-items:center; justify-content:center;">
+        <div class="card" style="background:#fff; width:400px; padding:20px; border-radius:10px;">
+            <h3 id="modal-title">מוצר</h3>
+            <input type="hidden" id="p-id">
+            <div style="margin-bottom:10px;">
+                <label>שם המוצר</label>
+                <input id="p-name" type="text" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label>מחיר בנקודות</label>
+                <input id="p-price" type="number" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px;">
+            </div>
+            <div style="margin-bottom:10px;">
+                <label>מלאי (השאר ריק ללא הגבלה)</label>
+                <input id="p-stock" type="number" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:4px;">
+            </div>
+            <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+                <button class="gray" onclick="closeProductModal()">ביטול</button>
+                <button class="green" onclick="saveProduct()">שמירה</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function switchTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector(`.tab[onclick="switchTab('${tab}')"]`).classList.add('active');
+            document.getElementById('tab-' + tab).classList.add('active');
+            if (tab === 'history') loadPurchases();
+        }
+
+        async function loadProducts() {
+            const res = await fetch('/api/products');
+            const data = await res.json();
+            const tbody = document.getElementById('products-list');
+            tbody.innerHTML = (data.items || []).map(p => `
+                <tr>
+                    <td>${esc(p.name)}</td>
+                    <td>${p.price_points}</td>
+                    <td>${p.stock_qty === null ? '∞' : p.stock_qty}</td>
+                    <td>
+                        <button class="blue" style="padding:4px 8px; font-size:12px;" onclick='editProduct(${JSON.stringify(p).replace(/'/g, "&#39;")})'>ערוך</button>
+                        <button class="red" style="padding:4px 8px; font-size:12px; background:#e74c3c;" onclick="deleteProduct(${p.id})">מחק</button>
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        async function loadPurchases() {
+            const res = await fetch('/api/purchases');
+            const data = await res.json();
+            const tbody = document.getElementById('purchases-list');
+            tbody.innerHTML = (data.items || []).map(r => `
+                <tr>
+                    <td>${new Date(r.created_at).toLocaleString('he-IL')}</td>
+                    <td>${esc(r.first_name)} ${esc(r.last_name)}</td>
+                    <td>${esc(r.product_name)}</td>
+                    <td>${r.qty}</td>
+                    <td>${r.total_points}</td>
+                </tr>
+            `).join('');
+        }
+
+        function openProductModal() {
+            document.getElementById('p-id').value = '0';
+            document.getElementById('p-name').value = '';
+            document.getElementById('p-price').value = '0';
+            document.getElementById('p-stock').value = '';
+            document.getElementById('modal-title').innerText = 'מוצר חדש';
+            document.getElementById('prod-modal').style.display = 'flex';
+        }
+
+        function closeProductModal() {
+            document.getElementById('prod-modal').style.display = 'none';
+        }
+
+        function editProduct(p) {
+            document.getElementById('p-id').value = p.id;
+            document.getElementById('p-name').value = p.name;
+            document.getElementById('p-price').value = p.price_points;
+            document.getElementById('p-stock').value = p.stock_qty === null ? '' : p.stock_qty;
+            document.getElementById('modal-title').innerText = 'עריכת מוצר';
+            document.getElementById('prod-modal').style.display = 'flex';
+        }
+
+        async function saveProduct() {
+            const payload = {
+                id: document.getElementById('p-id').value,
+                name: document.getElementById('p-name').value,
+                price_points: document.getElementById('p-price').value,
+                stock_qty: document.getElementById('p-stock').value || null
+            };
+            const res = await fetch('/api/products/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                closeProductModal();
+                loadProducts();
+            } else {
+                alert('שגיאה בשמירה');
+            }
+        }
+
+        async function deleteProduct(id) {
+            if (!confirm('למחוק מוצר זה?')) return;
+            const res = await fetch('/api/products/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({id: id})
+            });
+            if (res.ok) loadProducts();
+        }
+
+        function esc(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        loadProducts();
+    </script>
+    """
+    return _basic_web_shell("קניות", html_content, request=request)
 
 @app.get('/web/reports2', response_class=HTMLResponse)
 def web_reports2(request: Request): return _stub_page("דוחות", request)
@@ -10331,24 +13885,32 @@ def web_students(request: Request):
         teacher = _web_current_teacher_permissions(request)
         is_admin = bool(_safe_int(teacher.get('is_admin'), 0) == 1)
         can_edit_card = bool(_safe_int(teacher.get('can_edit_student_card'), 0) == 1)
+        can_edit_photo = bool(_safe_int(teacher.get('can_edit_student_photo'), 0) == 1)
 
         body = """
     <style>
-      .q-modal { display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:10000; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,0.75); backdrop-filter:blur(5px); }
-      .q-card { width:min(500px, 100%); max-height:90vh; overflow-y:auto; background:#1e293b; border:1px solid #334155; border-radius:16px; padding:24px; color:#f8fafc; box-shadow:0 25px 50px -12px rgba(0,0,0,0.5); display:flex; flex-direction:column; }
-      .q-title { font-weight:800; font-size:20px; margin-bottom:20px; color:#fff; }
-      .q-actions { display:flex; gap:12px; justify-content:flex-end; margin-top:24px; }
-      .q-btn { display:inline-flex; align-items:center; justify-content:center; padding:10px 20px; border-radius:8px; font-weight:700; text-decoration:none; cursor:pointer; transition:all 0.2s; border:none; font-size:14px; }
+      .q-modal { display:none; position:fixed; top:0; left:0; right:0; bottom:0; z-index:10000; align-items:center; justify-content:center; padding:16px; background:rgba(0,0,0,0.5); backdrop-filter:blur(3px); }
+      .q-card { width:min(500px, 100%); max-height:90vh; overflow-y:auto; background:#ffffff; border:1px solid #e2e8f0; border-radius:16px; padding:24px; color:#1e293b; box-shadow:0 25px 50px -12px rgba(0,0,0,0.25); display:flex; flex-direction:column; }
+      .q-title { font-weight:800; font-size:20px; margin-bottom:20px; color:#0f172a; text-align:center; }
+      .q-actions { display:flex; gap:12px; justify-content:center; margin-top:24px; padding-top:16px; border-top:1px solid #f1f5f9; }
+      .q-btn { display:inline-flex; align-items:center; justify-content:center; padding:10px 24px; border-radius:8px; font-weight:700; text-decoration:none; cursor:pointer; transition:all 0.2s; border:none; font-size:14px; min-width:100px; }
       .q-btn.blue { background:#3b82f6; color:#fff; }
-      .q-btn.blue:hover { background:#2563eb; }
-      .q-btn.gray { background:#64748b; color:#fff; }
-      .q-btn.gray:hover { background:#475569; }
+      .q-btn.blue:hover { background:#2563eb; transform:translateY(-1px); }
+      .q-btn.gray { background:#f1f5f9; color:#475569; }
+      .q-btn.gray:hover { background:#e2e8f0; color:#1e293b; }
       
       .q-form-row { margin-bottom:16px; }
-      .q-label { display:block; font-weight:600; color:#cbd5e1; font-size:13px; margin-bottom:6px; }
-      .q-input, .q-select { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #475569; background:#0f172a; color:#fff; font-size:14px; outline:none; transition:border-color 0.2s; font-family:inherit; }
-      .q-input:focus, .q-select:focus { border-color:#3b82f6; }
-      .q-hint { font-size:12px; color:#94a3b8; margin-top:4px; }
+      .q-label { display:block; font-weight:600; color:#334155; font-size:13px; margin-bottom:6px; }
+      .q-input, .q-select { width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #cbd5e1; background:#fff; color:#0f172a; font-size:14px; outline:none; transition:all 0.2s; font-family:inherit; }
+      .q-input:focus, .q-select:focus { border-color:#3b82f6; box-shadow:0 0 0 3px rgba(59, 130, 246, 0.1); }
+      .q-hint { font-size:12px; color:#64748b; margin-top:4px; }
+
+      /* Inline Edit Styles */
+      .editable-cell { cursor: text; transition: background 0.2s; position: relative; }
+      .editable-cell:hover { background: #f1f5f9; }
+      .editable-cell:focus-within { background: #fff; }
+      .inline-input { width: 100%; box-sizing: border-box; padding: 4px; border: 1px solid #3b82f6; border-radius: 4px; font-family: inherit; font-size: inherit; }
+      .toggle-icon { cursor: pointer; font-size: 16px; user-select: none; }
     </style>
 
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
@@ -10356,14 +13918,24 @@ def web_students(request: Request):
       <span id="st" style="opacity:.85;">טוען...</span>
       <a class="gray" href="/web/logout" style="margin-right:auto;">יציאה</a>
     </div>
+    
+    <div style="margin-bottom:10px;">
+      <button id="btnStats" onclick="toggleStats()" style="background:none; border:none; color:#3b82f6; cursor:pointer; font-weight:bold; font-size:13px; padding:0;">📊 הצג סטטיסטיקה</button>
+      <div id="stats-panel" style="display:none; background:rgba(59, 130, 246, 0.1); padding:10px; border-radius:8px; margin-top:5px; border:1px solid rgba(59, 130, 246, 0.2);">
+        <span style="margin-left:20px;">סה"כ תלמידים: <b id="stat-count">...</b></span>
+        <span>סה"כ נקודות: <b id="stat-points">...</b></span>
+      </div>
+    </div>
+
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
       <a id="btnNew" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">➕ הוסף תלמיד</a>
       <a id="btnEdit" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">✏️ ערוך</a>
       <a id="btnDelete" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">🗑️ מחיקה</a>
       <a id="btnQuick" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">⚡ עדכון מהיר</a>
+      <a id="btnManual" class="blue" href="javascript:void(0)" style="padding:10px 14px; border-radius:10px; font-weight:900;">⏱️ תיקוף ידני</a>
       <span id="sel" style="opacity:.86;">לא נבחר תלמיד</span>
     </div>
-    <div style="overflow:auto;">
+    <div class="table-scroll">
       <table style="width:100%; border-collapse:collapse; font-size:13px;">
         <thead>
           <tr>
@@ -10371,15 +13943,20 @@ def web_students(request: Request):
             <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">מס'</th>
             <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">משפחה</th>
             <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">פרטי</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">ת"ז</th>
             <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">כיתה</th>
             <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">נקודות</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">הודעה</th>
             <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">כרטיס</th>
+            <th style="text-align:right; padding:8px; border-bottom:1px solid var(--line);">תמונה</th>
+            <th style="text-align:center; padding:8px; border-bottom:1px solid var(--line);">חסימה</th>
           </tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
     </div>
 
+    <!-- Modals (Quick, Manual) kept same -->
     <div id="q_modal" class="q-modal">
       <div class="q-card">
         <div class="q-title">עדכון מהיר</div>
@@ -10390,6 +13967,25 @@ def web_students(request: Request):
         </div>
       </div>
     </div>
+
+    <div id="manual_modal" class="q-modal">
+      <div class="q-card">
+        <div class="q-title">תיקוף זמן ידני (תיקון)</div>
+        <div class="q-form-row">
+            <label class="q-label">תאריך</label>
+            <input id="m_date" type="date" class="q-input" />
+        </div>
+        <div class="q-form-row">
+            <label class="q-label">שעה</label>
+            <input id="m_time" type="time" class="q-input" />
+        </div>
+        <div class="q-actions">
+          <a id="m_cancel" class="q-btn gray" href="javascript:void(0)">ביטול</a>
+          <a id="m_run" class="q-btn blue" href="javascript:void(0)">בצע תיקוף</a>
+        </div>
+      </div>
+    </div>
+
     <script>
       const qEl = document.getElementById('q');
       const stEl = document.getElementById('st');
@@ -10399,14 +13995,24 @@ def web_students(request: Request):
       const btnDelete = document.getElementById('btnDelete');
       const btnNew = document.getElementById('btnNew');
       const btnQuick = document.getElementById('btnQuick');
+      const btnManual = document.getElementById('btnManual');
       const qModal = document.getElementById('q_modal');
       const qBody = document.getElementById('q_body');
       const qRun = document.getElementById('q_run');
       const qCancel = document.getElementById('q_cancel');
       const IS_ADMIN = __IS_ADMIN__;
       const CAN_EDIT_CARD = __CAN_EDIT_CARD__;
+      const CAN_EDIT_PHOTO = __CAN_EDIT_PHOTO__;
       let selectedId = null;
       let timer = null;
+
+      // Manual Modal Elements
+      const mModal = document.getElementById('manual_modal');
+      const mCancel = document.getElementById('m_cancel');
+      const mRun = document.getElementById('m_run');
+
+      // ... (renderQuickForm, syncMode, modals kept same) ...
+      // We will redefine `load` to render new columns and `setupInlineEdit`
 
       function renderQuickForm() {
         if (!qBody) return;
@@ -10476,7 +14082,6 @@ def web_students(request: Request):
           if (d) d.style.display = (m === 'students') ? 'block' : 'none';
           if (e) e.style.display = (m === 'all_school') ? 'block' : 'none';
           
-          // Auto focus card input if card mode
           if (m === 'card' && document.getElementById('q_card')) {
              setTimeout(() => document.getElementById('q_card').focus(), 50);
           }
@@ -10496,6 +14101,23 @@ def web_students(request: Request):
         if (!qModal) return;
         qModal.style.display = 'none';
         try { document.body.style.overflow = ''; } catch (e) {}
+      }
+
+      function openManualModal() {
+        if (!selectedId) { alert('יש לבחור תלמיד קודם'); return; }
+        if (!mModal) return;
+        
+        const now = new Date();
+        document.getElementById('m_date').valueAsDate = now;
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        document.getElementById('m_time').value = `${hh}:${mm}`;
+        
+        mModal.style.display = 'flex';
+      }
+
+      function closeManualModal() {
+        if (mModal) mModal.style.display = 'none';
       }
 
       function getSelectedStudentIds() {
@@ -10518,10 +14140,112 @@ def web_students(request: Request):
         btnEdit.style.pointerEvents = on ? 'auto' : 'none';
         btnDelete.style.opacity = (on && IS_ADMIN) ? '1' : '.55';
         btnDelete.style.pointerEvents = (on && IS_ADMIN) ? 'auto' : 'none';
+        if (btnManual) {
+            btnManual.style.opacity = on ? '1' : '.55';
+            btnManual.style.pointerEvents = on ? 'auto' : 'none';
+        }
         selEl.textContent = on ? ('נבחר תלמיד ID ' + String(selectedId)) : 'לא נבחר תלמיד';
         document.querySelectorAll('tr[data-id]').forEach(tr => {
           tr.style.outline = (String(tr.getAttribute('data-id')) === String(selectedId)) ? '2px solid #1abc9c' : 'none';
         });
+      }
+
+      function toggleStats() {
+        const panel = document.getElementById('stats-panel');
+        if (panel.style.display === 'none') {
+            panel.style.display = 'block';
+        } else {
+            panel.style.display = 'none';
+        }
+      }
+
+      async function updateStudentField(id, field, value) {
+        // Optimistic UI? No, let's wait for ack to be safe, but quick.
+        const payload = { student_id: parseInt(id) };
+        payload[field] = value;
+        try {
+            const res = await fetch('/api/students/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const txt = await res.text();
+                throw new Error(txt || 'Failed');
+            }
+            return true;
+        } catch(e) {
+            alert('שגיאה בעדכון: ' + e.message);
+            return false;
+        }
+      }
+
+      function makeEditable(cell, id, field, type='text') {
+        // Prevent multiple edits
+        if (cell.querySelector('input')) return;
+        
+        const currentText = cell.innerText.trim();
+        const input = document.createElement('input');
+        input.className = 'inline-input';
+        input.value = currentText;
+        if (type === 'number') input.type = 'number';
+        
+        // Save old content to restore if canceled
+        const oldContent = cell.innerHTML;
+        
+        function save() {
+            const newVal = input.value.trim();
+            if (newVal === currentText) {
+                cell.innerHTML = oldContent;
+                return;
+            }
+            // Async save
+            cell.innerHTML = '...';
+            updateStudentField(id, field, newVal).then(ok => {
+                if (ok) {
+                    cell.innerText = newVal; // Simplified re-render, ideally reload row
+                    // If we updated something critical like name/serial, maybe reload list?
+                    if (['serial_number', 'first_name', 'last_name', 'class_name'].includes(field)) {
+                        // Keep current selection and reload
+                        // We can't easily partial reload without complexity, so minimal visual update:
+                        cell.innerText = newVal; 
+                    } else if (field === 'points') {
+                        cell.innerText = newVal;
+                        // update global stats? expensive.
+                    } else {
+                        cell.innerText = newVal;
+                    }
+                } else {
+                    cell.innerHTML = oldContent; // revert
+                }
+            });
+        }
+        
+        input.addEventListener('blur', save);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { input.blur(); }
+            if (e.key === 'Escape') { cell.innerHTML = oldContent; }
+        });
+        
+        cell.innerHTML = '';
+        cell.appendChild(input);
+        input.focus();
+      }
+
+      async function toggleBlocked(id, currentVal, cell) {
+        const newVal = currentVal ? 0 : 1;
+        cell.innerHTML = '...';
+        const ok = await updateStudentField(id, 'is_free_fix_blocked', newVal);
+        if (ok) {
+            cell.innerHTML = newVal ? '🔒' : '🔓';
+            cell.onclick = () => toggleBlocked(id, newVal, cell);
+        } else {
+            cell.innerHTML = currentVal ? '🔒' : '🔓'; // revert
+        }
+      }
+
+      function esc(s) {
+        return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       }
 
       async function load() {
@@ -10530,38 +14254,64 @@ def web_students(request: Request):
         const resp = await fetch('/api/students?q=' + q);
         const data = await resp.json();
         const items = Array.isArray(data.items) ? data.items : [];
-        rowsEl.innerHTML = items.map(r => (
-          '<tr data-id="' + String(r.id ?? '') + '">' +
+        
+        const totalStudents = data.total_students || 0;
+        const totalPoints = data.total_points || 0;
+        document.getElementById('stat-count').textContent = totalStudents.toLocaleString();
+        document.getElementById('stat-points').textContent = totalPoints.toLocaleString();
+
+        rowsEl.innerHTML = items.map(r => {
+            const sid = String(r.id ?? '');
+            const blocked = parseInt(r.is_free_fix_blocked || 0) === 1;
+            const blockedIcon = blocked ? '🔒' : '🔓';
+            const cardVal = (CAN_EDIT_CARD ? (r.card_number ?? '') : '••••••');
+            const photoVal = (CAN_EDIT_PHOTO ? (r.photo_number ?? '') : '••••••');
+            
+            return '<tr data-id="' + sid + '">' +
             '<td style="padding:8px; border-bottom:1px solid var(--line);">' +
-              '<input class="pick" type="checkbox" data-id="' + String(r.id ?? '') + '" />' +
+              '<input class="pick" type="checkbox" data-id="' + sid + '" />' +
             '</td>' +
-            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.serial_number ?? '') + '</td>' +
-            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.last_name ?? '') + '</td>' +
-            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.first_name ?? '') + '</td>' +
-            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.class_name ?? '') + '</td>' +
-            '<td style="padding:8px; border-bottom:1px solid var(--line);">' + (r.points ?? '') + '</td>' +
-            '<td style="padding:8px; border-bottom:1px solid var(--line); direction:ltr; text-align:left;">' + (CAN_EDIT_CARD ? (r.card_number ?? '') : '••••••') + '</td>' +
-          '</tr>'
-        )).join('');
-        stEl.textContent = 'נטענו ' + items.length + ' תלמידים';
+            '<td class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'serial_number\')" style="padding:8px; border-bottom:1px solid var(--line);">' + esc(r.serial_number) + '</td>' +
+            '<td class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'last_name\')" style="padding:8px; border-bottom:1px solid var(--line);">' + esc(r.last_name) + '</td>' +
+            '<td class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'first_name\')" style="padding:8px; border-bottom:1px solid var(--line);">' + esc(r.first_name) + '</td>' +
+            '<td class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'id_number\')" style="padding:8px; border-bottom:1px solid var(--line);">' + esc(r.id_number) + '</td>' +
+            '<td class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'class_name\')" style="padding:8px; border-bottom:1px solid var(--line);">' + esc(r.class_name) + '</td>' +
+            '<td class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'points\', \'number\')" style="padding:8px; border-bottom:1px solid var(--line);">' + (r.points ?? 0) + '</td>' +
+            '<td class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'private_message\')" style="padding:8px; border-bottom:1px solid var(--line); max-width:150px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="' + esc(r.private_message) + '">' + esc(r.private_message) + '</td>' +
+            '<td ' + (CAN_EDIT_CARD ? ('class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'card_number\') "') : '') + ' style="padding:8px; border-bottom:1px solid var(--line); direction:ltr; text-align:left;">' + cardVal + '</td>' +
+            '<td ' + (CAN_EDIT_PHOTO ? ('class="editable-cell" ondblclick="makeEditable(this, '+sid+', \'photo_number\') "') : '') + ' style="padding:8px; border-bottom:1px solid var(--line); direction:ltr; text-align:left;">' + photoVal + '</td>' +
+            '<td style="padding:8px; border-bottom:1px solid var(--line); text-align:center;"><span class="toggle-icon" onclick="toggleBlocked('+sid+', '+ (blocked ? 1 : 0) +', this)">' + blockedIcon + '</span></td>' +
+          '</tr>';
+        }).join('');
+        stEl.textContent = 'נטענו ' + items.length + ' תלמידים (מתוך ' + totalStudents + ')';
 
         document.querySelectorAll('tr[data-id]').forEach(tr => {
-          tr.addEventListener('click', () => setSelected(tr.getAttribute('data-id')));
+          tr.addEventListener('click', (e) => {
+             // Don't select if clicked on input or checkbox or toggle
+             if (e.target.tagName === 'INPUT' || e.target.classList.contains('toggle-icon')) return;
+             setSelected(tr.getAttribute('data-id'));
+          });
         });
         if (selectedId) setSelected(selectedId);
       }
 
       btnEdit.style.opacity = '.55';
       btnEdit.style.pointerEvents = 'none';
+      if (btnManual) {
+        btnManual.style.opacity = '.55';
+        btnManual.style.pointerEvents = 'none';
+      }
       if (!IS_ADMIN) {
         btnDelete.style.opacity = '.55';
         btnDelete.style.pointerEvents = 'none';
       }
 
-      btnNew.addEventListener('click', () => alert('בקרוב: הוספת תלמיד'));
+      btnNew.addEventListener('click', () => {
+        window.location.href = '/web/students/edit?student_id=0&next=' + encodeURIComponent('/web/students');
+      });
       btnEdit.addEventListener('click', () => {
         if (!selectedId) return;
-        window.location.href = '/web/students/edit?student_id=' + encodeURIComponent(String(selectedId));
+        window.location.href = '/web/students/edit?student_id=' + encodeURIComponent(String(selectedId)) + '&next=' + encodeURIComponent('/web/students');
       });
       btnDelete.addEventListener('click', async () => {
         if (!selectedId || !IS_ADMIN) return;
@@ -10583,6 +14333,8 @@ def web_students(request: Request):
       btnQuick.addEventListener('click', () => openQuickModal());
       if (qCancel) qCancel.addEventListener('click', () => closeQuickModal());
       if (qRun) qRun.addEventListener('click', async () => {
+        // ... (qRun handler kept same) ...
+        // Re-implementing qRun handler here just to be safe as we replaced the whole script block
         try {
           const opEl = document.getElementById('q_operation');
           const ptsEl = document.getElementById('q_points');
@@ -10646,13 +14398,67 @@ def web_students(request: Request):
           alert('שגיאה');
         }
       });
+      // ... (Rest of event listeners same) ...
       if (qModal) {
         qModal.addEventListener('click', (ev) => {
           if (ev.target === qModal) closeQuickModal();
         });
       }
+      if (btnManual) btnManual.addEventListener('click', openManualModal);
+      if (mCancel) mCancel.addEventListener('click', closeManualModal);
+      if (mModal) {
+        mModal.addEventListener('click', (ev) => {
+            if (ev.target === mModal) closeManualModal();
+        });
+      }
+      if (mRun) {
+        mRun.addEventListener('click', async () => {
+            const d = document.getElementById('m_date').value;
+            const t = document.getElementById('m_time').value;
+            if (!d || !t) return alert('חסר תאריך/שעה');
+            
+            mRun.style.opacity = '0.5';
+            mRun.style.pointerEvents = 'none';
+            try {
+                const resp = await fetch('/api/students/manual-arrival', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        student_id: parseInt(selectedId),
+                        date_str: d,
+                        time_str: t
+                    })
+                });
+                const res = await resp.json();
+                if (!resp.ok) {
+                    alert('שגיאה: ' + (res.detail || 'unknown'));
+                } else {
+                    let msg = 'בוצע בהצלחה.';
+                    if (res.bonus_points > 0) {
+                        msg += `\\nהתקבל בונוס: ${res.bonus_name} (+${res.bonus_points} נק')`;
+                    } else {
+                        msg += `\\nלא התקבל בונוס (או שכבר ניתן).`;
+                    }
+                    alert(msg);
+                    closeManualModal();
+                    await load();
+                }
+            } catch(e) {
+                alert('שגיאה בתקשורת');
+            } finally {
+                if (mRun) {
+                    mRun.style.opacity = '1';
+                    mRun.style.pointerEvents = 'auto';
+                }
+            }
+        });
+      }
+
       document.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Escape') closeQuickModal();
+        if (ev.key === 'Escape') {
+            closeQuickModal();
+            closeManualModal();
+        }
       });
       qEl.addEventListener('input', () => {
         clearTimeout(timer);
@@ -10664,6 +14470,7 @@ def web_students(request: Request):
 
         body = body.replace('__IS_ADMIN__', '1' if is_admin else '0')
         body = body.replace('__CAN_EDIT_CARD__', '1' if can_edit_card else '0')
+        body = body.replace('__CAN_EDIT_PHOTO__', '1' if can_edit_photo else '0')
         return HTMLResponse(_basic_web_shell("ניהול תלמידים", body, request=request))
     except Exception as exc:
         print('WEB_STUDENTS_ERROR', repr(exc))
@@ -10835,7 +14642,7 @@ def web_spaces_test_submit(request: Request) -> Response:
 def admin_setup_submit(
     request: Request,
     name: str = Form(...),
-    tenant_id: str = Form(...),
+    tenant_id: str = Form(default=''),
     institution_password: str = Form(...),
     api_key: str = Form(default=''),
     admin_key: str = ''
@@ -10847,6 +14654,14 @@ def admin_setup_submit(
     cur = conn.cursor()
     api_key = api_key.strip() or secrets.token_urlsafe(16)
     pw_hash = _pbkdf2_hash(institution_password.strip())
+    tenant_id = str(tenant_id or '').strip()
+    try:
+        if not tenant_id:
+            tenant_id = _generate_numeric_tenant_id(conn)
+        if (not tenant_id.isdigit()) or tenant_id.startswith('0'):
+            return "<h3>Invalid Tenant ID.</h3><p>יש להזין ספרות בלבד (ללא אפס מוביל) או להשאיר ריק ליצירה אוטומטית.</p>"
+    except Exception:
+        return "<h3>Invalid Tenant ID.</h3>"
     try:
         cur.execute(
             _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key, password_hash) VALUES (?, ?, ?, ?)'),

@@ -861,7 +861,7 @@ class CashierStation:
             out += _enc(f"{slot_text} :" + _rev('זמן האתגר'))
             out += b'\n'
         if duration_minutes:
-            out += _enc(f"{duration_minutes:d} :" + _rev('משך (דקות)'))
+            out += _enc(f"{duration_minutes:d} " + _rev('דקות') + " :" + _rev('משך'))
             out += b'\n'
 
         points_before = voucher_data.get('points_before', None)
