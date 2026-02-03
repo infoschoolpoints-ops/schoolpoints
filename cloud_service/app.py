@@ -12352,12 +12352,18 @@ def admin_institutions(request: Request, admin_key: str = '') -> str:
     inst_rows = cur.fetchall() or []
     
     # map tenant_id -> payment_status
-    cur.execute("SELECT institution_code, payment_status FROM pending_registrations WHERE payment_status IS NOT NULL")
     pay_map = {}
-    for r in cur.fetchall():
-        code = str(r[0] or '').strip()
-        if code:
-            pay_map[code] = r[1]
+    try:
+        _ensure_pending_registrations_table()
+        cur.execute("SELECT institution_code, payment_status FROM pending_registrations WHERE payment_status IS NOT NULL")
+        for r in cur.fetchall():
+            code = str(r[0] or '').strip()
+            if code:
+                pay_map[code] = r[1]
+    except Exception:
+        # If column missing or other error, just ignore payment status
+        pass
+
     conn.close()
     
     items = ""
