@@ -766,6 +766,10 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
         except: pass
 
 @app.get('/web/payment/mock', response_class=HTMLResponse)
+def web_payment_mock(request: Request):
+    return "Mock Payment Page"
+
+@app.get('/web/payment/mock', response_class=HTMLResponse)
 def web_payment_mock(request: Request, reg_email: str = Query(...), plan: str = Query(...)) -> str:
     # Mock payment page to simulate successful payment
     body = f"""
@@ -4061,6 +4065,11 @@ def api_students_manual_arrival(
 
 
 @app.get('/web/payment/mock', response_class=HTMLResponse)
+def web_payment_mock(request: Request):
+    return "Mock Payment Page"
+
+
+class TeacherAllowedClassesPayload(BaseModel):
     teacher_id: int
     classes: List[str] = []
 

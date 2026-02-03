@@ -10212,23 +10212,23 @@ class AdminStation:
                     push0 = ''
                 return bool(tid0 and (key0 or push0))
 
-            def _verify_cloud_connection(tenant_id: str, api_key: str, push_url: str) -> tuple[bool, str]:
+            def _verify_cloud_connection(tenant_id: str, api_key: str, push_url: str) -> tuple[bool, str, dict]:
                 try:
                     import urllib.request
                     import urllib.parse
                     import urllib.error
                 except Exception:
-                    return False, 'חסרה תמיכה ברשת (urllib)'
+                    return False, 'חסרה תמיכה ברשת (urllib)', {}
 
                 tid = str(tenant_id or '').strip()
                 key = str(api_key or '').strip()
                 purl = str(push_url or '').strip()
                 if not tid:
-                    return False, 'חסר Tenant ID'
+                    return False, 'חסר Tenant ID', {}
                 if not key:
-                    return False, 'חסר API Key'
+                    return False, 'חסר API Key', {}
                 if not purl:
-                    return False, 'חסרה כתובת Push URL'
+                    return False, 'חסרה כתובת Push URL', {}
 
                 base = purl
                 if base.endswith('/sync/push'):
@@ -10253,8 +10253,8 @@ class AdminStation:
                     except Exception:
                         data = {}
                     if isinstance(data, dict) and bool(data.get('ok')):
-                        return True, '✓ אושר מול השרת'
-                    return False, 'השרת לא אישר התחברות'
+                        return True, '✓ אושר מול השרת', data
+                    return False, 'השרת לא אישר התחברות', {}
                 except urllib.error.HTTPError as e:
                     try:
                         body = e.read().decode('utf-8', errors='ignore')
@@ -10263,9 +10263,9 @@ class AdminStation:
                     msg = f"HTTP {getattr(e, 'code', '')}".strip()
                     if body:
                         msg = msg + f"\n{body}" if msg else body
-                    return False, msg or 'שגיאת התחברות'
+                    return False, msg or 'שגיאת התחברות', {}
                 except Exception as e:
-                    return False, str(e)
+                    return False, str(e), {}
 
             connect_row = tk.Frame(frame2, bg='#ecf0f1')
             connect_row.pack(fill=tk.X, pady=(6, 0))
@@ -10621,7 +10621,67 @@ class AdminStation:
                 _set_busy(True)
 
                 def _worker():
-                    ok, msg = _verify_cloud_connection(tid, key, purl)
+                    ok, msg, status_data = _verify_cloud_connection(tid, key, purl)
+
+                    # Auto-Snapshot logic if Cloud is empty and Local is not
+                    snapshot_pushed = False
+                    if ok and status_data:
+                        try:
+                            # Check if cloud is empty
+                            c_teachers = int(status_data.get('teachers_count') or 0)
+                            c_students = int(status_data.get('students_count') or 0)
+                            
+                            if c_teachers == 0 and c_students == 0:
+                                # Cloud is empty. Check local DB.
+                                try:
+                                    # Need a connection to local DB. 
+                                    # We are in a thread, so create new connection or use safe method.
+                                    # admin_station has self.db, but best to use sync_agent logic if available
+                                    # or just raw sqlite3 on self.base_dir/school_points.db
+                                    import sync_agent
+                                    
+                                    # Using the configured DB path logic from sync_agent might be safer 
+                                    # or just reuse what admin_station uses (self.db.conn is mostly main thread).
+                                    # Let's rely on admin_station.db_path or resolve it.
+                                    
+                                    # Quick resolve of db path similar to admin_station.__init__ logic
+                                    # actually self.db.db_path should be available if initialized
+                                    local_db_path = getattr(self.db, 'db_path', None)
+                                    if local_db_path and os.path.exists(local_db_path):
+                                        conn_loc = sync_agent._connect(local_db_path)
+                                        try:
+                                            snap = sync_agent.build_snapshot(conn_loc)
+                                            # Check if local has data
+                                            l_teachers = len(snap.get('teachers') or [])
+                                            l_students = len(snap.get('students') or [])
+                                            
+                                            if l_teachers > 0 or l_students > 0:
+                                                # Perform Auto-Push
+                                                def _upd_lbl(txt):
+                                                    try:
+                                                        cloud_state_lbl.configure(text=fix_rtl_text(txt))
+                                                    except: pass
+                                                self.root.after(0, lambda: _upd_lbl("הענן ריק. מעלה נתונים ראשוניים..."))
+                                                
+                                                # Determine snapshot URL
+                                                snap_url = sync_agent._snapshot_url_from_push(purl, {'sync_snapshot_url': ''})
+                                                
+                                                push_ok = sync_agent.push_snapshot(
+                                                    snap_url, 
+                                                    snap, 
+                                                    api_key=key, 
+                                                    tenant_id=tid, 
+                                                    station_id=getattr(self, 'station_id', 'admin')
+                                                )
+                                                if push_ok:
+                                                    snapshot_pushed = True
+                                                    self.root.after(0, lambda: _upd_lbl("העלאת נתונים הושלמה!"))
+                                        finally:
+                                            conn_loc.close()
+                                except Exception as e:
+                                    print(f"Auto-snapshot failed: {e}")
+                        except Exception as e:
+                            print(f"Auto-sync check failed: {e}")
 
                     def _on_done():
                         try:
@@ -10638,6 +10698,10 @@ class AdminStation:
                                     cloud_state_lbl.configure(text=fix_rtl_text('מחובר לענן'))
                                 except Exception:
                                     pass
+                                if snapshot_pushed:
+                                    try:
+                                        messagebox.showinfo('חיבור לענן', 'החיבור הצליח והנתונים המקומיים סונכרנו לענן בהצלחה!', parent=dialog2)
+                                    except: pass
                             else:
                                 try:
                                     cloud_state_lbl.configure(text=fix_rtl_text('לא מחובר'))
