@@ -8687,7 +8687,7 @@ def api_teacher_get(request: Request, teacher_id: int) -> Dict[str, Any]:
 
 
 @app.post('/api/teacher-classes/set')
-def api_teacher_classes_set(request: Request, payload: TeacherClassesPayload) -> Dict[str, Any]:
+def api_teacher_classes_set(request: Request, payload: TeacherAllowedClassesPayload) -> Dict[str, Any]:
     guard = _web_require_admin_teacher(request)
     if guard:
         raise HTTPException(status_code=401, detail='not authorized')
