@@ -4074,6 +4074,19 @@ def web_payment_mock(request: Request):
     return "Mock Payment Page"
 
 
+class TeacherSavePayload(BaseModel):
+    teacher_id: int | None = None
+    name: str | None = None
+    card_number: str | None = None
+    card_number2: str | None = None
+    card_number3: str | None = None
+    is_admin: int | None = None
+    can_edit_student_card: int | None = None
+    can_edit_student_photo: int | None = None
+    bonus_max_points_per_student: int | None = None
+    bonus_max_total_runs: int | None = None
+
+
 class TeacherAllowedClassesPayload(BaseModel):
     teacher_id: int
     classes: List[str] = []
