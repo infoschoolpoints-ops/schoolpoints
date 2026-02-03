@@ -10494,6 +10494,54 @@ class AdminStation:
                     def _pair_worker():
                         res = self._device_pair_start_and_poll(base, poll_timeout_sec=600) or {}
 
+                        # Auto-Snapshot logic (Pairing Flow)
+                        snapshot_pushed = False
+                        if bool(res.get('ok')):
+                            try:
+                                ptid = str(res.get('tenant_id') or '').strip()
+                                pkey = str(res.get('api_key') or '').strip()
+                                ppurl = str(res.get('push_url') or '').strip()
+                                
+                                # We verify cloud connection to get status counts
+                                pok, _, pstatus = _verify_cloud_connection(ptid, pkey, ppurl)
+                                if pok and pstatus:
+                                    c_teachers = int(pstatus.get('teachers_count') or 0)
+                                    c_students = int(pstatus.get('students_count') or 0)
+                                    
+                                    if c_teachers == 0 and c_students == 0:
+                                        # Cloud is empty. Check local DB.
+                                        import sync_agent
+                                        local_db_path = getattr(self.db, 'db_path', None)
+                                        if local_db_path and os.path.exists(local_db_path):
+                                            conn_loc = sync_agent._connect(local_db_path)
+                                            try:
+                                                snap = sync_agent.build_snapshot(conn_loc)
+                                                l_teachers = len(snap.get('teachers') or [])
+                                                l_students = len(snap.get('students') or [])
+                                                
+                                                if l_teachers > 0 or l_students > 0:
+                                                    # Perform Auto-Push
+                                                    def _upd_lbl_p(txt):
+                                                        try: cloud_state_lbl.configure(text=fix_rtl_text(txt))
+                                                        except: pass
+                                                    self.root.after(0, lambda: _upd_lbl_p("הענן ריק. מעלה נתונים ראשוניים..."))
+                                                    
+                                                    snap_url = sync_agent._snapshot_url_from_push(ppurl, {'sync_snapshot_url': ''})
+                                                    push_ok = sync_agent.push_snapshot(
+                                                        snap_url, 
+                                                        snap, 
+                                                        api_key=pkey, 
+                                                        tenant_id=ptid, 
+                                                        station_id=getattr(self, 'station_id', 'admin')
+                                                    )
+                                                    if push_ok:
+                                                        snapshot_pushed = True
+                                                        self.root.after(0, lambda: _upd_lbl_p("העלאת נתונים הושלמה!"))
+                                            finally:
+                                                conn_loc.close()
+                            except Exception as e:
+                                print(f"Auto-snapshot (pair) failed: {e}")
+
                         def _on_done():
                             try:
                                 pairing_in_progress['on'] = False
@@ -10528,24 +10576,19 @@ class AdminStation:
                                 # Auto-fetch license
                                 try:
                                     if self.license_manager:
-                                        # Use a thread or just do it (it is network IO, but we are already in a callback, wait, _on_done is run via after(0) so on main thread?)
-                                        # _on_done is scheduled on main thread via dialog2.after(0). 
-                                        # Network calls should ideally be background, but this is a short call.
-                                        # However, fetch_and_activate_from_cloud uses urllib which blocks.
-                                        # Better to run it in a thread to avoid freezing UI if it hangs.
                                         def _fetch_lic():
                                             try:
+                                                tid = str(res.get('tenant_id') or '').strip()
+                                                key = str(res.get('api_key') or '').strip()
+                                                purl = str(res.get('push_url') or '').strip()
                                                 lok, lmsg = self.license_manager.fetch_and_activate_from_cloud(purl, tid, key)
                                                 if lok:
-                                                    # Refresh UI on success
                                                     def _refresh_lic_ui():
                                                         if license_status_label:
                                                             license_status_label.config(text=get_license_status_text())
                                                         if hasattr(self, "license_header_label"):
                                                             try:
                                                                 self.license_header_label.config(text=self.license_manager.get_startup_message() or "מצב רישיון: פעיל")
-                                                                # actually we have a helper for header text but it's not in scope here easily
-                                                                # re-trigger full refresh if possible or just message
                                                             except: pass
                                                         messagebox.showinfo("רישום אוטומטי", f"הרישיון נמשך מהענן והופעל בהצלחה.\n{lmsg}", parent=dialog2)
                                                     self.root.after(0, _refresh_lic_ui)
@@ -10561,7 +10604,10 @@ class AdminStation:
                                 except Exception:
                                     pass
                                 try:
-                                    messagebox.showinfo('חיבור לענן', 'העמדה התחברה לענן בהצלחה.', parent=dialog2)
+                                    if snapshot_pushed:
+                                        messagebox.showinfo('חיבור לענן', 'החיבור הצליח והנתונים המקומיים סונכרנו לענן בהצלחה!', parent=dialog2)
+                                    else:
+                                        messagebox.showinfo('חיבור לענן', 'העמדה התחברה לענן בהצלחה.', parent=dialog2)
                                 except Exception:
                                     pass
                             else:

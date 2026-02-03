@@ -7607,9 +7607,46 @@ def web_max_points(request: Request):
             const payload = {
                 start_date: document.getElementById('mp-start').value,
                 daily_points: parseInt(document.getElementById('mp-daily').value) || 0,
+                daily_details: document.getElementById('mp-daily-desc').value,
+                weekly_points: parseInt(document.getElementById('mp-weekly').value) || 0,
+                weekly_details: document.getElementById('mp-weekly-desc').value,
+                daily_points_by_weekday: dpw,
+                policy: document.getElementById('mp-policy').value,
+                warn_within_points: parseInt(document.getElementById('mp-warn').value) || 0,
+                free_additions: freeAdditions
+            };
+
+            const res = await fetch('/api/settings/max-points', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+            if (res.ok) {
+                alert('נשמר בהצלחה');
+            } else {
+                alert('שגיאה בשמירה');
+            }
+        }
+        
+        loadMaxPoints();
+    </script>
+    """
+    return _basic_web_shell("הגבלת ניקוד", html_content, request=request)
+
+
+@app.get('/web/settings/station', response_class=HTMLResponse)
+def web_settings_station(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+    
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        value_json = _get_web_setting_json(conn, 'admin_settings', '{}')
+    finally:
         try: conn.close()
         except: pass
-    
+
     import json
     try:
         data = json.loads(value_json)
@@ -7640,37 +7677,37 @@ def web_max_points(request: Request):
     </div>
 
     <script>
-      async function saveAdminSettings() {
-        const payload = {
+      async function saveAdminSettings() {{
+        const payload = {{
             station_name: document.getElementById('as_name').value,
             enabled: document.getElementById('as_enabled').checked
-        };
+        }};
 
-        try {
-            const res = await fetch('/api/settings/save', {
+        try {{
+            const res = await fetch('/api/settings/save', {{
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ key: 'admin_settings', value: payload })
-            });
-            if (res.ok) {
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ key: 'admin_settings', value: payload }})
+            }});
+            if (res.ok) {{
                 alert('נשמר בהצלחה');
-            } else {
+            }} else {{
                 alert('שגיאה בשמירה');
-            }
-        } catch (e) {
+            }}
+        }} catch (e) {{
             alert('שגיאה: ' + e);
-        }
-      }
+        }}
+      }}
     </script>
     <style>
-        .form-group { margin-bottom:15px; }
-        .form-group label { display:block; font-weight:600; margin-bottom:5px; }
-        .form-control { width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }
-        .ck { display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }
-        .ck:hover { background:#e9ecef; }
-        .btn { padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }
-        .green { background:#2ecc71; color:white; }
-        .gray { background:#95a5a6; color:white; }
+        .form-group {{ margin-bottom:15px; }}
+        .form-group label {{ display:block; font-weight:600; margin-bottom:5px; }}
+        .form-control {{ width:100%; padding:10px; border:1px solid #ddd; border-radius:8px; box-sizing:border-box; }}
+        .ck {{ display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:600; user-select:none; background:#f8f9fa; padding:8px 12px; border-radius:20px; border:1px solid #eee; }}
+        .ck:hover {{ background:#e9ecef; }}
+        .btn {{ padding:10px 20px; border-radius:8px; text-decoration:none; font-weight:bold; border:none; cursor:pointer; font-size:14px; display:inline-block; }}
+        .green {{ background:#2ecc71; color:white; }}
+        .gray {{ background:#95a5a6; color:white; }}
     </style>
     """
     return _basic_web_shell("הגדרות עמדת ניהול", html_content, request=request)
@@ -7756,42 +7793,40 @@ def web_settings(request: Request):
     </div>
     """
     return _basic_web_shell("הגדרות", html_content, request=request)
-    redirect_to: str = Form(default='/web/admin'),
-) -> Response:
+@app.post('/api/settings/save')
+async def api_settings_save(request: Request) -> Dict[str, Any]:
     guard = _web_require_admin_teacher(request)
     if guard:
-        return guard
-    tenant_id = _web_tenant_from_cookie(request)
-    if not tenant_id:
-        return RedirectResponse(url="/web/signin", status_code=302)
-
-    k = str(setting_key or '').strip()
-    v = str(value_json or '').strip()
-    if not k:
-        return RedirectResponse(url=str(redirect_to or '/web/admin'), status_code=302)
-    # validate json (best effort)
-    try:
-        val = json.loads(v or '{}')
-    except Exception:
-        body = f"""
-        <h2>שגיאה</h2>
-        <p>הערך אינו JSON תקין.</p>
-        <div class=\"actionbar\"><a class=\"gray\" href=\"{redirect_to or '/web/admin'}\">חזרה</a></div>
-        """
-        return HTMLResponse(_public_web_shell("שגיאה", body), status_code=400)
+        raise HTTPException(status_code=401, detail='not authorized')
     
+    tenant_id = _web_tenant_from_cookie(request)
+    try:
+        data = await request.json()
+    except:
+        raise HTTPException(status_code=400, detail='invalid json')
+
+    k = str(data.get('key') or '').strip()
+    val = data.get('value')
+    if not k:
+         return {'ok': False, 'error': 'missing key'}
+
+    import json
+    if isinstance(val, (dict, list)):
+        v_str = json.dumps(val)
+    else:
+        v_str = str(val or '')
+
     conn = _tenant_school_db(tenant_id)
     try:
-        _set_setting_value(conn, k, v)
+        _set_web_setting_json(conn, k, v_str)
         conn.commit()
-        _record_tenant_change(tenant_id, 'settings', k, 'update', val)
+        _record_tenant_change(tenant_id, 'settings', k, 'update', {'key': k, 'value': v_str})
+        return {'ok': True}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    
-    return RedirectResponse(url=str(redirect_to or '/web/admin'), status_code=302)
+        try: conn.close()
+        except: pass
 
 
 def _safe_web_next(next_url: str, default: str = '/web/students') -> str:
@@ -11076,6 +11111,15 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
 
 @app.get("/web/special-bonus", response_class=HTMLResponse)
 def web_special_bonus(request: Request):
+    guard = _web_require_admin_teacher(request)
+    if guard: return guard
+
+    html_content = """
+    <div class="card" style="max-width:800px; margin:0 auto; padding:20px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+        <h2 style="margin:0;">בונוסים מיוחדים</h2>
+        <button class="green" onclick="openItemModal()">+ הוסף חדש</button>
+      </div>
       <table style="width:100%; border-collapse:collapse;">
         <thead>
           <tr style="background:#f8f9fa; border-bottom:1px solid #eee;">
@@ -12091,6 +12135,45 @@ def _super_admin_shell(title: str, body: str, request: Request = None) -> str:
     <html lang="he" dir="rtl">
     <head>
       <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <title>{title} - SchoolPoints Admin</title>
+      <style>
+        body {{ margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background:#f0f2f5; color:#333; }}
+        header {{ background:#fff; border-bottom:1px solid #ddd; padding:0 20px; height:60px; display:flex; align-items:center; justify-content:space-between; }}
+        header h1 {{ margin:0; font-size:18px; color:#2c3e50; }}
+        nav {{ display:flex; gap:20px; }}
+        nav a {{ text-decoration:none; color:#555; font-size:14px; font-weight:500; }}
+        nav a:hover {{ color:#000; }}
+        .content {{ max-width:1000px; margin:30px auto; padding:0 20px; }}
+        .card {{ background:#fff; border-radius:8px; padding:20px; box-shadow:0 1px 3px rgba(0,0,0,0.1); margin-bottom:20px; }}
+        h2 {{ margin-top:0; }}
+        button {{ padding:8px 16px; border-radius:4px; border:none; cursor:pointer; background:#3498db; color:white; }}
+        button.btn-green {{ background:#2ecc71; }}
+        button.btn-gray {{ background:#95a5a6; }}
+        input, select, textarea {{ padding:8px; border:1px solid #ddd; border-radius:4px; width:100%; box-sizing:border-box; margin-bottom:10px; }}
+        .stats-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:20px; margin-bottom:20px; }}
+        .stat-card {{ background:#fff; padding:20px; border-radius:8px; box-shadow:0 1px 3px rgba(0,0,0,0.1); text-align:center; }}
+        .stat-val {{ font-size:32px; font-weight:bold; color:#2c3e50; }}
+        .stat-label {{ color:#7f8c8d; font-size:14px; margin-top:5px; }}
+        table {{ width:100%; border-collapse:collapse; }}
+        th, td {{ padding:12px; text-align:right; border-bottom:1px solid #eee; }}
+        th {{ background:#f8f9fa; font-weight:600; color:#2c3e50; }}
+      </style>
+    </head>
+    <body>
+      <header>
+        <h1>SchoolPoints Cloud Admin</h1>
+        <nav>
+            {nav_html}
+        </nav>
+      </header>
+      <div class="content">
+        {body}
+      </div>
+    </body>
+    </html>
+    """
+
 @app.get("/admin/dashboard", response_class=HTMLResponse)
 def admin_dashboard(request: Request, admin_key: str = '') -> str:
     guard = _admin_require(request, admin_key)
@@ -12178,7 +12261,7 @@ def admin_global_settings(request: Request, admin_key: str = '') -> str:
     </div>
 
     <div class="card" style="margin-bottom:20px;">
-        <h3>📧 הגדרות דואר (SMTP)</h3>
+        <h3>הגדרות דואר (SMTP)</h3>
         <div style="margin-bottom:10px; color:#637381; font-size:14px;">הגדרות אלו משמשות לשליחת מיילים לנרשמים חדשים ולהתראות מנהל.</div>
         <table style="width:100%; max-width:600px; text-align:right;">
             <tr><td style="font-weight:600;">שרת:</td><td>{html.escape(smtp_server)}</td></tr>
@@ -12191,7 +12274,7 @@ def admin_global_settings(request: Request, admin_key: str = '') -> str:
     </div>
 
     <div class="card">
-        <h3>🛠️ כיצד להגדיר?</h3>
+        <h3>כיצד להגדיר?</h3>
         <div style="line-height:1.6; color:#2c3e50;">
             <p>ההגדרות מתבצעות באמצעות <b>משתני סביבה (Environment Variables)</b> בשרת או בקובץ <code>.env</code>.</p>
             <div style="background:#f8f9fa; padding:15px; border-radius:8px; border:1px solid #eee; direction:ltr; text-align:left; font-family:monospace; overflow-x:auto;">
@@ -12283,17 +12366,17 @@ def admin_institutions(request: Request, admin_key: str = '') -> str:
           <td>
             <div style="display:flex; gap:4px;">
                 <a href='/admin/institutions/edit?tenant_id={tid}' style="text-decoration:none;">
-                  <button style="padding:4px 8px; font-size:11px; background:#f39c12; color:white; border:none; border-radius:4px; cursor:pointer;">✏️</button>
+                  <button style="padding:4px 8px; font-size:11px; background:#f39c12; color:white; border:none; border-radius:4px; cursor:pointer;">ערוך</button>
                 </a>
                 <a href='/admin/institutions/login?tenant_id={tid}' style="text-decoration:none;">
-                  <button style="padding:4px 8px; font-size:11px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer;">🚀 כניסה</button>
+                  <button style="padding:4px 8px; font-size:11px; background:#3498db; color:white; border:none; border-radius:4px; cursor:pointer;">כניסה</button>
                 </a>
                 <a href='/admin/institutions/password?tenant_id={tid}' style="text-decoration:none;">
-                  <button style="padding:4px 8px; font-size:11px; background:#95a5a6; color:white; border:none; border-radius:4px; cursor:pointer;">🔑</button>
+                  <button style="padding:4px 8px; font-size:11px; background:#95a5a6; color:white; border:none; border-radius:4px; cursor:pointer;">סיסמה</button>
                 </a>
                 <form method="post" action="/admin/institutions/delete" onsubmit="return confirm('למחוק את המוסד {tid}? פעולה זו אינה הפיכה ותמחק את כל הנתונים שלו!');" style="margin:0;">
                     <input type="hidden" name="tenant_id" value="{tid}" />
-                    <button style="padding:4px 8px; font-size:11px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer;">🗑️</button>
+                    <button style="padding:4px 8px; font-size:11px; background:#e74c3c; color:white; border:none; border-radius:4px; cursor:pointer;">מחק</button>
                 </form>
             </div>
           </td>
@@ -12508,7 +12591,8 @@ def admin_institution_password_form(request: Request, tenant_id: str, admin_key:
     conn.close()
     if not row:
         return "<h3>Tenant not found</h3>"
-    return f"""
+    
+    part1 = """
     <!doctype html>
     <html lang="he">
     <head>
@@ -12516,20 +12600,15 @@ def admin_institution_password_form(request: Request, tenant_id: str, admin_key:
       <meta name="viewport" content="width=device-width, initial-scale=1" />
       <title>עדכון סיסמת מוסד</title>
       <style>
-        body {{ margin:0; font-family: Arial, sans-serif; background:#f2f5f6; color:#1f2d3a; direction: rtl; }}
-        .wrap {{ max-width: 720px; margin: 30px auto; padding: 0 16px; }}
-        .card {{ background:#fff; border-radius:14px; padding:20px; border:1px solid #e1e8ee; }}
-        label {{ display:block; margin:10px 0 6px; font-weight:600; }}
-        input {{ width:100%; padding:10px; border:1px solid #d9e2ec; border-radius:8px; }}
-        button {{ margin-top:14px; padding:10px 16px; border:none; border-radius:8px; background:#1abc9c; color:#fff; font-weight:600; cursor:pointer; }}
-        .links {{ margin-top:16px; font-size:13px; }}
-        .links a {{ color:#1f2d3a; text-decoration:none; margin-left:10px; }}
       </style>
     </head>
     <body>
       <div class="wrap">
         <div class="card">
-          """ + _admin_status_bar() + f"""
+    """
+
+    part2 = f"""
+          {_admin_status_bar()}
           <h2>עדכון סיסמת מוסד</h2>
           <div style="margin-bottom:10px;">מוסד: <b>{row['name']}</b> ({row['tenant_id']})</div>
           <form method="post" action="/admin/institutions/password">
@@ -12547,6 +12626,7 @@ def admin_institution_password_form(request: Request, tenant_id: str, admin_key:
     </body>
     </html>
     """
+    return part1 + part2
 
 
 @app.post("/admin/institutions/password", response_class=HTMLResponse)
