@@ -3786,6 +3786,10 @@ class StudentSavePayload(BaseModel):
     is_free_fix_blocked: int | None = None
 
 
+class StudentDeletePayload(BaseModel):
+    student_id: int
+
+
 class StudentQuickUpdatePayload(BaseModel):
     operation: str
     points: int
