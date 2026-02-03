@@ -4060,12 +4060,17 @@ def api_students_manual_arrival(
         }
         
     finally:
-        try: conn.close()
-        except: pass
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.get('/web/payment/mock', response_class=HTMLResponse)
 def web_payment_mock(request: Request):
+    """
+    Mock payment page for testing
+    """
     return "Mock Payment Page"
 
 
