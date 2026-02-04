@@ -2495,6 +2495,27 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
           background: #ffffff;
         }
 
+        /* Fix input visibility in dark theme context */
+        input, select, textarea {
+          color: #1f2d3a;
+          background: #fff;
+          border: 1px solid #dce0e4;
+        }
+        ::placeholder {
+          color: #95a5a6;
+          opacity: 1;
+        }
+
+        /* Override specific classes */
+        .reg-input {
+          background: #2c3e50 !important;
+          color: #fff !important;
+          border: 1px solid rgba(255,255,255,0.1) !important;
+        }
+        .reg-input::placeholder {
+          color: rgba(255,255,255,0.5) !important;
+        }
+
         table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
         table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
         table thead th { background: rgba(15, 32, 39, 0.98); }
