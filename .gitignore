@@ -31,6 +31,8 @@ Thumbs.db
 
 # Local databases / local configs (clean install versions are under _clean_install)
 /school_points.db
+/cloud_service/*.db
+/נתונים ביתר/
 /config.json
 /bonus_settings.json
 /color_settings.json
