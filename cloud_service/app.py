@@ -2316,6 +2316,16 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
     </script>
     """
 
+    footer = """
+    <div class="footerbar">
+        <div class="footer-title">SchoolPoints</div>
+        <div style="font-size:12px; opacity:0.7; margin-top:4px;">מערכת ניהול נקודות ומשמעת למוסדות חינוך</div>
+        <div class="whoami" style="margin-top:10px;">
+            &copy; 2024 כל הזכויות שמורות
+        </div>
+    </div>
+    """
+
     return f"""
     <!doctype html>
     <html lang="he">
