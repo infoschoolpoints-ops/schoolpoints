@@ -6059,6 +6059,37 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
             students_n = _replace_rows(tconn, 'students', payload.students or [])
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"snapshot failed: students replace: {e}")
+
+        static_n = 0
+        try:
+            static_n = _replace_rows(tconn, 'static_messages', payload.static_messages or [])
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"snapshot failed: static_messages replace: {e}")
+
+        threshold_n = 0
+        try:
+            threshold_n = _replace_rows(tconn, 'threshold_messages', payload.threshold_messages or [])
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"snapshot failed: threshold_messages replace: {e}")
+
+        news_n = 0
+        try:
+            news_n = _replace_rows(tconn, 'news_items', payload.news_items or [])
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"snapshot failed: news_items replace: {e}")
+
+        ads_n = 0
+        try:
+            ads_n = _replace_rows(tconn, 'ads_items', payload.ads_items or [])
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"snapshot failed: ads_items replace: {e}")
+
+        student_msg_n = 0
+        try:
+            student_msg_n = _replace_rows(tconn, 'student_messages', payload.student_messages or [])
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"snapshot failed: student_messages replace: {e}")
+
         tconn.commit()
     except Exception as e:
         try:
