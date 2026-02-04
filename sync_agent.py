@@ -130,9 +130,38 @@ def _get_config_file_path(base_dir: str) -> str:
     return os.path.join(base_dir, 'config.json')
 
 
+def _is_unc_path(path: str) -> bool:
+    try:
+        p = str(path or '')
+    except Exception:
+        return False
+    return p.startswith('\\') or p.startswith('//')
+
+
+def _apply_pragmas(conn: sqlite3.Connection, *, db_path: str) -> None:
+    try:
+        conn.execute('PRAGMA foreign_keys = ON')
+    except Exception:
+        pass
+    try:
+        conn.execute('PRAGMA busy_timeout = 5000')
+    except Exception:
+        pass
+    try:
+        if _is_unc_path(db_path):
+            conn.execute('PRAGMA journal_mode = DELETE')
+            conn.execute('PRAGMA synchronous = FULL')
+        else:
+            conn.execute('PRAGMA journal_mode = WAL')
+            conn.execute('PRAGMA synchronous = NORMAL')
+    except Exception:
+        pass
+
+
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.row_factory = sqlite3.Row
+    _apply_pragmas(conn, db_path=db_path)
     return conn
 
 
@@ -199,22 +228,47 @@ def _snapshot_url_from_push(push_url: str, cfg: Dict[str, Any]) -> str:
     return ''
 
 
+def _snapshot2_url_from_snapshot(snapshot_url: str) -> str:
+    try:
+        u = str(snapshot_url or '').strip()
+    except Exception:
+        return ''
+    if not u:
+        return ''
+    u = u.rstrip('/')
+    if u.endswith('/sync/snapshot'):
+        return u + '2'
+    return ''
+
+
 def pull_snapshot(snapshot_url: str, *, api_key: str = '', tenant_id: str = '') -> Dict[str, Any] | None:
     if not snapshot_url:
         return None
-    q = f"tenant_id={urllib.parse.quote(str(tenant_id or ''))}"
-    url = snapshot_url + ('&' if '?' in snapshot_url else '?') + q
-    req = urllib.request.Request(
-        url,
-        headers={
-            'Content-Type': 'application/json',
-            'api-key': str(api_key or ''),
-            'x-api-key': str(api_key or ''),
-        }
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
+
+    def _do_pull(url: str, timeout_s: int) -> Dict[str, Any] | None:
+        q = f"tenant_id={urllib.parse.quote(str(tenant_id or ''))}"
+        full_url = url + ('&' if '?' in url else '?') + q
+        req = urllib.request.Request(
+            full_url,
+            headers={
+                'Content-Type': 'application/json',
+                'Accept-Encoding': 'gzip',
+                'api-key': str(api_key or ''),
+                'x-api-key': str(api_key or ''),
+            }
+        )
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             body = resp.read() or b''
+            try:
+                enc = str(resp.headers.get('Content-Encoding') or '').strip().lower()
+            except Exception:
+                enc = ''
+        if enc == 'gzip':
+            try:
+                import gzip as _gz
+                body = _gz.decompress(body)
+            except Exception:
+                pass
         try:
             data = json.loads(body.decode('utf-8', errors='ignore') or '{}')
         except Exception:
@@ -222,6 +276,25 @@ def pull_snapshot(snapshot_url: str, *, api_key: str = '', tenant_id: str = '') 
         if not isinstance(data, dict):
             return None
         return data
+
+    url2 = _snapshot2_url_from_snapshot(snapshot_url)
+    if url2:
+        try:
+            data2 = _do_pull(url2, timeout_s=60)
+            if isinstance(data2, dict) and data2.get('ok'):
+                return data2
+        except urllib.error.HTTPError as exc:
+            if int(getattr(exc, 'code', 0) or 0) not in (404, 405):
+                try:
+                    body = exc.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    body = ''
+                print(f"[SNAPSHOT2-PULL] HTTP {exc.code}: {body}")
+        except Exception as exc:
+            print(f"[SNAPSHOT2-PULL] Request error: {exc}")
+
+    try:
+        return _do_pull(snapshot_url, timeout_s=25)
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read().decode('utf-8', errors='ignore')
@@ -251,6 +324,14 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
     snap = snapshot.get('snapshot') if isinstance(snapshot, dict) else None
     if not isinstance(snap, dict):
         snap = snapshot if isinstance(snapshot, dict) else {}
+
+    exclude = {
+        'change_log',
+        'applied_events',
+        'purchase_holds',
+        'sync_state',
+        'sqlite_sequence',
+    }
 
     tables = [
         'teachers',
@@ -285,6 +366,24 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
         'refunds_log',
         'time_bonus_given',
     ]
+
+    # Apply any additional tables included in the snapshot (forward-compatible)
+    try:
+        extra_tables: List[str] = []
+        for t in (snap.keys() if isinstance(snap, dict) else []):
+            if not isinstance(t, str):
+                continue
+            if t in exclude:
+                continue
+            if t in tables:
+                continue
+            if not _safe_table_name(t):
+                continue
+            extra_tables.append(t)
+        if extra_tables:
+            tables = list(tables) + sorted(set(extra_tables))
+    except Exception:
+        pass
     applied: Dict[str, int] = {}
     cur = conn.cursor()
     cur.execute('BEGIN IMMEDIATE')
@@ -369,6 +468,20 @@ def _load_config(base_dir: str) -> Dict[str, Any]:
     return {}
 
 
+def _check_db_path_file(base_dir: str) -> Optional[str]:
+    try:
+        p = os.path.join(base_dir, 'db_path.txt')
+        if os.path.exists(p):
+            with open(p, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        return line
+    except Exception:
+        pass
+    return None
+
+
 def _default_db_path(base_dir: str, cfg: Dict[str, Any]) -> str:
     try:
         if cfg.get('db_path'):
@@ -378,6 +491,11 @@ def _default_db_path(base_dir: str, cfg: Dict[str, Any]) -> str:
             return os.path.join(shared, 'school_points.db')
     except Exception:
         pass
+
+    # Check for db_path.txt override (e.g. linked station)
+    custom = _check_db_path_file(base_dir)
+    if custom:
+        return custom
 
     return os.path.join(base_dir, 'school_points.db')
 
@@ -537,6 +655,41 @@ def _fetch_all(conn: sqlite3.Connection, sql: str, params: tuple = ()) -> List[D
     return [dict(r) for r in rows]
 
 
+def _safe_table_name(name: str) -> bool:
+    try:
+        n = str(name or '').strip()
+    except Exception:
+        return False
+    if not n:
+        return False
+    for ch in n:
+        if not (ch.isalnum() or ch == '_'):
+            return False
+    return True
+
+
+def _list_user_tables(conn: sqlite3.Connection) -> List[str]:
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        rows = cur.fetchall() or []
+        out: List[str] = []
+        for r in rows:
+            try:
+                nm = r['name']
+            except Exception:
+                try:
+                    nm = r[0]
+                except Exception:
+                    nm = None
+            nm = str(nm or '').strip()
+            if nm:
+                out.append(nm)
+        return out
+    except Exception:
+        return []
+
+
 def build_snapshot(conn: sqlite3.Connection) -> Dict[str, Any]:
     teachers = []
     students = []
@@ -567,9 +720,32 @@ def build_snapshot(conn: sqlite3.Connection) -> Dict[str, Any]:
         )
     except Exception:
         students = []
+
+    snapshot: Dict[str, Any] = {}
+    exclude = {
+        'change_log',
+        'applied_events',
+        'purchase_holds',
+        'sync_state',
+        'sqlite_sequence',
+    }
+    try:
+        for t in _list_user_tables(conn):
+            if t in exclude:
+                continue
+            if not _safe_table_name(t):
+                continue
+            try:
+                snapshot[t] = _fetch_all(conn, f"SELECT * FROM {t}")
+            except Exception:
+                snapshot[t] = []
+    except Exception:
+        snapshot = {}
+
     return {
         'teachers': teachers,
         'students': students,
+        'snapshot': snapshot,
     }
 
 
@@ -610,6 +786,57 @@ def push_snapshot(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str =
         return False
     except Exception as exc:
         print(f"[SNAPSHOT] Request error: {exc}")
+        return False
+
+
+def push_snapshot2(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str = '', tenant_id: str = '', station_id: str = '') -> bool:
+    url2 = _snapshot2_url_from_snapshot(snapshot_url)
+    if not url2:
+        return False
+    snap_obj = snapshot.get('snapshot') if isinstance(snapshot, dict) else None
+    if not isinstance(snap_obj, dict):
+        snap_obj = {}
+    payload_raw = json.dumps({
+        'tenant_id': str(tenant_id or ''),
+        'station_id': str(station_id or ''),
+        'snapshot': snap_obj,
+    }, ensure_ascii=False).encode('utf-8')
+    try:
+        import gzip as _gz
+        payload = _gz.compress(payload_raw, compresslevel=6)
+        content_encoding = 'gzip'
+    except Exception:
+        payload = payload_raw
+        content_encoding = ''
+    req = urllib.request.Request(
+        url2,
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            **({'Content-Encoding': content_encoding} if content_encoding else {}),
+            'api-key': str(api_key or ''),
+            'x-api-key': str(api_key or ''),
+        }
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body_bytes = resp.read() or b''
+        try:
+            body_text = body_bytes.decode('utf-8', errors='ignore')
+        except Exception:
+            body_text = ''
+        if body_text.strip():
+            print(f"[SNAPSHOT2] Server response: {body_text.strip()}")
+        return True
+    except urllib.error.HTTPError as exc:
+        try:
+            body = exc.read().decode('utf-8', errors='ignore')
+        except Exception:
+            body = ''
+        print(f"[SNAPSHOT2] HTTP {exc.code}: {body}")
+        return False
+    except Exception as exc:
+        print(f"[SNAPSHOT2] Request error: {exc}")
         return False
 
 

@@ -1,0 +1,61 @@
+{
+    "campaign_name": "אשראיכם",
+    "theme": "dark",
+    "background_mode": "default",
+    "background_color": "#2980b9",
+    "background_interval_sec": 5,
+    "panel_style": "solid",
+    "background_layout": "tile",
+    "slideshow_display_mode": "grid_dynamic",
+    "slideshow_grid_cols": 4,
+    "update_manifest_url": "",
+    "update_download_url": "",
+    "update_message": "",
+    "shared_folder": "\\\\Yeladim\\schoolpoints$",
+    "excel_path": "\\\\Yeladim\\schoolpoints$\\טבלה למבצע אשראי.xlsx",
+    "screen_orientation": "landscape",
+    "background_template": "template1",
+    "restart_public_stations_token": "12",
+    "logo_path": "//YELADIM/SchoolPoints$/אשראיכם ביתר זהב.png",
+    "sounds_enabled": "1",
+    "sound_volume": "100",
+    "news_ticker_speed": "fast",
+    "time_bonus_first_today": {
+        "enabled": false,
+        "mode": "first_per_class",
+        "n": 1,
+        "text": "כל הכבוד הגעת ראשוןֱֱֱֱ!!!!"
+    },
+    "ads_popup_enabled": true,
+    "ads_popup_idle_sec": 180,
+    "ads_popup_show_sec": 12.0,
+    "ads_popup_gap_sec": 8.0,
+    "ads_popup_border": true,
+    "anti_spam_enabled": true,
+    "anti_spam_rules": [
+        {
+            "type": "block",
+            "count": 20,
+            "minutes": 1,
+            "duration": 2,
+            "message": "אני יודע שמשמעם לך אבל תפנה את העמדה למשתמשים נוספים!",
+            "sound_key": "003 חסימה"
+        },
+        {
+            "type": "block",
+            "count": 30,
+            "minutes": 2,
+            "duration": 10,
+            "message": "צדיק בזמן הזה שתיקפת היית יכול לסיים חצי עמוד תנך או פרק משנה בע\"פ.",
+            "sound_key": "003 חסימה"
+        },
+        {
+            "type": "warning",
+            "count": 15,
+            "minutes": 2,
+            "duration": 0,
+            "message": "לך לשחק או ללמוד, חבל הזמן שלך!!!",
+            "sound_key": "004 חסימה"
+        }
+    ]
+}

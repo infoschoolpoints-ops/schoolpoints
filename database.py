@@ -7,6 +7,7 @@ import json
 import shutil
 import re
 import uuid
+import time
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -125,6 +126,7 @@ class Database:
                         Database._db_path_printed = True
         else:
             self.db_path = db_path
+        self._last_backup_ts = 0.0
         self.create_tables()
     
     def get_connection(self):
@@ -137,13 +139,111 @@ class Database:
             # אם לא הצלחנו ליצור תיקייה – ניתן ל-sqlite לטפל בשגיאה
             pass
 
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row  # מאפשר גישה לעמודות לפי שם
-        return conn
+        self._maybe_backup_db()
+
+        last_err = None
+        for attempt in range(3):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=10)
+                conn.row_factory = sqlite3.Row  # מאפשר גישה לעמודות לפי שם
+                self._apply_pragmas(conn)
+                return conn
+            except sqlite3.DatabaseError as e:
+                last_err = e
+                if 'malformed' in str(e).lower():
+                    self._handle_corrupt_db(e)
+                    continue
+                raise
+            except sqlite3.OperationalError as e:
+                last_err = e
+                msg = str(e).lower()
+                if attempt < 2 and ('locked' in msg or 'busy' in msg):
+                    time.sleep(0.4 + 0.3 * attempt)
+                    continue
+                raise
+        if last_err:
+            raise last_err
+        raise sqlite3.DatabaseError('failed to open database')
 
     def _cleanup_expired_holds(self, cursor) -> None:
         try:
             cursor.execute('DELETE FROM purchase_holds WHERE expires_at <= CURRENT_TIMESTAMP')
+        except Exception:
+            pass
+
+    def _is_unc_path(self) -> bool:
+        try:
+            p = str(self.db_path or '')
+        except Exception:
+            return False
+        return p.startswith('\\') or p.startswith('//')
+
+    def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute('PRAGMA foreign_keys = ON')
+        except Exception:
+            pass
+        try:
+            conn.execute('PRAGMA busy_timeout = 5000')
+        except Exception:
+            pass
+        try:
+            if self._is_unc_path():
+                conn.execute('PRAGMA journal_mode = DELETE')
+                conn.execute('PRAGMA synchronous = FULL')
+            else:
+                conn.execute('PRAGMA journal_mode = WAL')
+                conn.execute('PRAGMA synchronous = NORMAL')
+        except Exception:
+            pass
+
+    def _backup_dir(self) -> str:
+        base = os.path.dirname(self.db_path) or '.'
+        return os.path.join(base, 'backups')
+
+    def _last_backup_path(self) -> str:
+        return os.path.join(self._backup_dir(), 'school_points.last.db')
+
+    def _maybe_backup_db(self, min_interval_s: int = 600) -> None:
+        try:
+            if not os.path.exists(self.db_path):
+                return
+        except Exception:
+            return
+        now = time.time()
+        if (now - float(self._last_backup_ts or 0)) < int(min_interval_s):
+            return
+        try:
+            os.makedirs(self._backup_dir(), exist_ok=True)
+        except Exception:
+            return
+        try:
+            shutil.copy2(self.db_path, self._last_backup_path())
+            self._last_backup_ts = now
+        except Exception:
+            pass
+
+    def _handle_corrupt_db(self, err: Exception) -> None:
+        try:
+            print(f"[DB] Corruption detected: {err}")
+        except Exception:
+            pass
+        last_backup = self._last_backup_path()
+        try:
+            if os.path.exists(last_backup):
+                shutil.copy2(last_backup, self.db_path)
+                try:
+                    print("[DB] Restored last backup.")
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+        try:
+            if os.path.exists(self.db_path):
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                bad = self.db_path + f".corrupt_{ts}"
+                shutil.move(self.db_path, bad)
         except Exception:
             pass
 
@@ -5599,13 +5699,18 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT COUNT(DISTINCT DATE(swiped_at)) AS days
-            FROM swipe_log
-            WHERE station_type = ? AND strftime('%w', swiped_at) != '6'
-        ''', (station_type,))
-        row = cursor.fetchone()
-        conn.close()
+        try:
+            cursor.execute('''
+                SELECT COUNT(DISTINCT DATE(swiped_at)) AS days
+                FROM swipe_log
+                WHERE station_type = ? AND strftime('%w', swiped_at) != '6'
+            ''', (station_type,))
+            row = cursor.fetchone()
+        except Exception as e:
+            print(f"Error reading total_school_days (DB corrupt?): {e}")
+            row = None
+        finally:
+            conn.close()
         
         if row and row[0] is not None:
             return int(row[0])
@@ -5620,16 +5725,23 @@ class Database:
         
         placeholders = ','.join('?' * len(student_ids))
         params = list(student_ids) + [station_type]
-        cursor.execute(f'''
-            SELECT student_id, COUNT(*) AS total_swipes
-            FROM swipe_log
-            WHERE student_id IN ({placeholders})
-              AND station_type = ?
-              AND strftime('%w', swiped_at) != '6'
-            GROUP BY student_id
-        ''', params)
-        rows = cursor.fetchall()
-        conn.close()
+        
+        rows = []
+        try:
+            cursor.execute(f'''
+                SELECT student_id, COUNT(*) AS total_swipes
+                FROM swipe_log
+                WHERE student_id IN ({placeholders})
+                  AND station_type = ?
+                  AND strftime('%w', swiped_at) != '6'
+                GROUP BY student_id
+            ''', params)
+            rows = cursor.fetchall()
+        except Exception as e:
+            print(f"Error reading swipe_totals (DB corrupt?): {e}")
+            rows = []
+        finally:
+            conn.close()
         
         totals: Dict[int, int] = {}
         for row in rows:

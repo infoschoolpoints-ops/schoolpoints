@@ -45,9 +45,36 @@ class MessagesDB:
             # אם לא הצלחנו ליצור תיקייה – ניתן ל-sqlite לטפל בשגיאה
             pass
 
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
+        self._apply_pragmas(conn)
         return conn
+
+    def _is_unc_path(self) -> bool:
+        try:
+            p = str(self.db_path or '')
+        except Exception:
+            return False
+        return p.startswith('\\') or p.startswith('//')
+
+    def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
+        try:
+            conn.execute('PRAGMA foreign_keys = ON')
+        except Exception:
+            pass
+        try:
+            conn.execute('PRAGMA busy_timeout = 5000')
+        except Exception:
+            pass
+        try:
+            if self._is_unc_path():
+                conn.execute('PRAGMA journal_mode = DELETE')
+                conn.execute('PRAGMA synchronous = FULL')
+            else:
+                conn.execute('PRAGMA journal_mode = WAL')
+                conn.execute('PRAGMA synchronous = NORMAL')
+        except Exception:
+            pass
     
     def init_tables(self):
         """יצירת טבלאות הודעות"""

@@ -10033,7 +10033,13 @@ class AdminStation:
                         conn.close()
                         
                     # Push
-                    ok = sync_agent.push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=socket.gethostname())
+                    ok = False
+                    try:
+                        ok = bool(sync_agent.push_snapshot2(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=socket.gethostname()))
+                    except Exception:
+                        ok = False
+                    if not ok:
+                        ok = sync_agent.push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=socket.gethostname())
                     if ok:
                         messagebox.showinfo('הצלחה', 'הנתונים נשלחו לענן בהצלחה.', parent=dialog2)
                     else:
@@ -10527,13 +10533,25 @@ class AdminStation:
                                                     self.root.after(0, lambda: _upd_lbl_p("הענן ריק. מעלה נתונים ראשוניים..."))
                                                     
                                                     snap_url = sync_agent._snapshot_url_from_push(ppurl, {'sync_snapshot_url': ''})
-                                                    push_ok = sync_agent.push_snapshot(
-                                                        snap_url, 
-                                                        snap, 
-                                                        api_key=pkey, 
-                                                        tenant_id=ptid, 
-                                                        station_id=getattr(self, 'station_id', 'admin')
-                                                    )
+                                                    push_ok = False
+                                                    try:
+                                                        push_ok = bool(sync_agent.push_snapshot2(
+                                                            snap_url,
+                                                            snap,
+                                                            api_key=pkey,
+                                                            tenant_id=ptid,
+                                                            station_id=getattr(self, 'station_id', 'admin')
+                                                        ))
+                                                    except Exception:
+                                                        push_ok = False
+                                                    if not push_ok:
+                                                        push_ok = sync_agent.push_snapshot(
+                                                            snap_url,
+                                                            snap,
+                                                            api_key=pkey,
+                                                            tenant_id=ptid,
+                                                            station_id=getattr(self, 'station_id', 'admin')
+                                                        )
                                                     if push_ok:
                                                         snapshot_pushed = True
                                                         self.root.after(0, lambda: _upd_lbl_p("העלאת נתונים הושלמה!"))
@@ -10712,13 +10730,25 @@ class AdminStation:
                                                 # Determine snapshot URL
                                                 snap_url = sync_agent._snapshot_url_from_push(purl, {'sync_snapshot_url': ''})
                                                 
-                                                push_ok = sync_agent.push_snapshot(
-                                                    snap_url, 
-                                                    snap, 
-                                                    api_key=key, 
-                                                    tenant_id=tid, 
-                                                    station_id=getattr(self, 'station_id', 'admin')
-                                                )
+                                                push_ok = False
+                                                try:
+                                                    push_ok = bool(sync_agent.push_snapshot2(
+                                                        snap_url,
+                                                        snap,
+                                                        api_key=key,
+                                                        tenant_id=tid,
+                                                        station_id=getattr(self, 'station_id', 'admin')
+                                                    ))
+                                                except Exception:
+                                                    push_ok = False
+                                                if not push_ok:
+                                                    push_ok = sync_agent.push_snapshot(
+                                                        snap_url,
+                                                        snap,
+                                                        api_key=key,
+                                                        tenant_id=tid,
+                                                        station_id=getattr(self, 'station_id', 'admin')
+                                                    )
                                                 if push_ok:
                                                     snapshot_pushed = True
                                                     self.root.after(0, lambda: _upd_lbl("העלאת נתונים הושלמה!"))

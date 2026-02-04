@@ -17,6 +17,7 @@ import secrets
 import hashlib
 import hmac
 import shutil
+import gzip
 import urllib.parse
 import datetime
 import traceback
@@ -1796,7 +1797,7 @@ def web_signin_submit(
         try:
             _ensure_teacher_columns(tconn)
             cur = tconn.cursor()
-            cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers WHERE is_admin = 1'))
+            cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers'))
             row = cur.fetchone()
             cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
             need_bootstrap = (cnt <= 0)
@@ -1809,11 +1810,65 @@ def web_signin_submit(
         need_bootstrap = True
 
     resp = RedirectResponse(
-        url=(f"/web/bootstrap-admin?next={urllib.parse.quote(nxt, safe='')}") if need_bootstrap else nxt,
+        url=(f"/web/bootstrap-choice?next={urllib.parse.quote(nxt, safe='')}") if need_bootstrap else nxt,
         status_code=302
     )
     resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
     return resp
+
+
+@app.get('/web/bootstrap-choice', response_class=HTMLResponse)
+def web_bootstrap_choice(request: Request, next: str = Query(default='/web/admin')) -> Response:
+    guard = _web_require_tenant(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    nxt = _web_next_from_request(request, '/web/admin')
+    if nxt in ('/web/login', '/web/signin', '/web/teacher-login'):
+        nxt = '/web/admin'
+
+    try:
+        tconn = _tenant_school_db(tenant_id)
+        try:
+            _ensure_teacher_columns(tconn)
+            cur = tconn.cursor()
+            cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers'))
+            row = cur.fetchone()
+            cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
+            if cnt > 0:
+                return RedirectResponse(url='/web/teacher-login', status_code=302)
+        finally:
+            try:
+                tconn.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    body = f"""
+    <h2>חיבור ראשוני למוסד</h2>
+    <div style="color:#637381; margin-top:-6px; line-height:1.8;">
+      נראה שאין עדיין מורים בענן. אם יש לך תוכנה קיימת עם נתונים – יש לבצע חיבור (Pairing) כדי לטעון את המורים והנתונים.
+    </div>
+    <div class="card" style="margin-top:14px; padding:16px;">
+      <div style="font-weight:800;">יש לך תוכנה קיימת?</div>
+      <div style="margin-top:6px; color:#637381;">פתח/י את התוכנה בעמדת הניהול, הפעל חיבור, והזן כאן את קוד ההתאמה:</div>
+      <form method="get" action="/web/device/pair" style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input name="code" placeholder="קוד חיבור" style="padding:10px;border:1px solid var(--line);border-radius:10px;font-size:15px; width:200px;" required />
+        <button class="green" type="submit" style="padding:10px 14px;border-radius:8px;border:none;background:#2ecc71;color:#fff;font-weight:900;cursor:pointer;">אישור חיבור</button>
+      </form>
+    </div>
+    <div class="card" style="margin-top:14px; padding:16px;">
+      <div style="font-weight:800;">אין לך תוכנה קיימת?</div>
+      <div style="margin-top:6px; color:#637381;">צור/י מנהל ראשוני חדש בענן.</div>
+      <div class="actionbar" style="justify-content:flex-start;">
+        <a class="blue" href="/web/bootstrap-admin?next={urllib.parse.quote(nxt, safe='')}">יצירת מנהל ראשוני</a>
+      </div>
+    </div>
+    """
+    return HTMLResponse(_public_web_shell('חיבור ראשוני', body, request=request))
 
 
 @app.get('/web/bootstrap-admin', response_class=HTMLResponse)
@@ -1871,7 +1926,7 @@ def web_bootstrap_admin_submit(
     try:
         _ensure_teacher_columns(conn)
         cur = conn.cursor()
-        cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers WHERE is_admin = 1'))
+        cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers'))
         row = cur.fetchone()
         cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
         if cnt > 0:
@@ -1880,7 +1935,11 @@ def web_bootstrap_admin_submit(
         teacher_id = None
         if USE_POSTGRES:
             cur.execute('SELECT COALESCE(MAX(id), 0) + 1 FROM teachers')
-            teacher_id = int((cur.fetchone() or [1])[0])
+            row = cur.fetchone()
+            if isinstance(row, dict):
+                teacher_id = int((list(row.values())[0] if row else 1) or 1)
+            else:
+                teacher_id = int((row[0] if row else 1) or 1)
             cur.execute(
                 _sql_placeholder('INSERT INTO teachers (id, name, card_number, is_admin) VALUES (?, ?, ?, 1)'),
                 (int(teacher_id), nm, cn)
@@ -1892,6 +1951,11 @@ def web_bootstrap_admin_submit(
             )
             teacher_id = int(cur.lastrowid or 0)
         conn.commit()
+    except _integrity_errors():
+        return HTMLResponse(
+            _public_web_shell('שגיאה', '<h2>שגיאה</h2><p>לא ניתן ליצור מורה. ייתכן שמספר הכרטיס כבר קיים.</p>', request=request),
+            status_code=400
+        )
     finally:
         try:
             conn.close()
@@ -2815,6 +2879,16 @@ def _init_db():
                 )
                 '''
             )
+
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS snapshots2 (
+                    tenant_id TEXT PRIMARY KEY,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    snapshot_gzip BYTEA
+                )
+                '''
+            )
         else:
             cur.execute(
                 '''
@@ -2887,9 +2961,105 @@ def _init_db():
                 )
                 '''
             )
+
+            cur.execute(
+                '''
+                CREATE TABLE IF NOT EXISTS snapshots2 (
+                    tenant_id TEXT PRIMARY KEY,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    snapshot_gzip BLOB
+                )
+                '''
+            )
         conn.commit()
     finally:
         conn.close()
+
+
+def _save_snapshot2_blob(tenant_id: str, snapshot_dict: Dict[str, Any]) -> None:
+    tid = str(tenant_id or '').strip()
+    if not tid:
+        return
+    try:
+        raw = json.dumps(snapshot_dict or {}, ensure_ascii=False).encode('utf-8')
+    except Exception:
+        raw = b'{}'
+    try:
+        blob = gzip.compress(raw, compresslevel=6)
+    except Exception:
+        blob = raw
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute(
+                _sql_placeholder(
+                    '''
+                    INSERT INTO snapshots2 (tenant_id, updated_at, snapshot_gzip)
+                    VALUES (?, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT(tenant_id) DO UPDATE
+                       SET updated_at = EXCLUDED.updated_at,
+                           snapshot_gzip = EXCLUDED.snapshot_gzip
+                    '''
+                ),
+                (tid, psycopg2.Binary(blob) if psycopg2 is not None else blob)
+            )
+        else:
+            cur.execute(
+                _sql_placeholder(
+                    '''
+                    INSERT INTO snapshots2 (tenant_id, updated_at, snapshot_gzip)
+                    VALUES (?, CURRENT_TIMESTAMP, ?)
+                    ON CONFLICT(tenant_id) DO UPDATE
+                       SET updated_at = CURRENT_TIMESTAMP,
+                           snapshot_gzip = excluded.snapshot_gzip
+                    '''
+                ),
+                (tid, sqlite3.Binary(blob))
+            )
+        conn.commit()
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _load_snapshot2_blob(tenant_id: str) -> Dict[str, Any] | None:
+    tid = str(tenant_id or '').strip()
+    if not tid:
+        return None
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT snapshot_gzip FROM snapshots2 WHERE tenant_id = ? LIMIT 1'), (tid,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        blob = None
+        try:
+            blob = row.get('snapshot_gzip') if isinstance(row, dict) else row[0]
+        except Exception:
+            blob = None
+        if not blob:
+            return None
+        try:
+            raw = gzip.decompress(blob)
+        except Exception:
+            try:
+                raw = bytes(blob)
+            except Exception:
+                raw = b''
+        try:
+            data = json.loads((raw or b'{}').decode('utf-8', errors='ignore') or '{}')
+        except Exception:
+            data = None
+        return data if isinstance(data, dict) else None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.get('/web/whoami')
@@ -3753,6 +3923,40 @@ class SnapshotPayload(BaseModel):
     news_items: List[Dict[str, Any]] = []
     ads_items: List[Dict[str, Any]] = []
     student_messages: List[Dict[str, Any]] = []
+
+
+class Snapshot2Payload(BaseModel):
+    tenant_id: str
+    station_id: str | None = None
+    snapshot: Dict[str, Any] = {}
+
+
+def _fetch_table_rows_postgres(conn, table: str) -> List[Dict[str, Any]]:
+    cols = _table_columns_postgres(conn, table)
+    if not cols:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(f'SELECT {",".join(cols)} FROM {table}')
+        rows = cur.fetchall() or []
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            try:
+                out.append(dict(r))
+            except Exception:
+                try:
+                    out.append({cols[i]: r[i] for i in range(len(cols))})
+                except Exception:
+                    pass
+        return out
+    except Exception:
+        return []
+
+
+def _fetch_table_rows_any(conn, table: str) -> List[Dict[str, Any]]:
+    if USE_POSTGRES:
+        return _fetch_table_rows_postgres(conn, table)
+    return _fetch_table_rows(conn, table)
 
 
 def _fetch_table_rows(conn: sqlite3.Connection, table: str) -> List[Dict[str, Any]]:
@@ -5995,6 +6199,116 @@ def _replace_rows(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any
     return int(len(values))
 
 
+def _safe_table_name(name: str) -> bool:
+    try:
+        n = str(name or '').strip()
+    except Exception:
+        return False
+    if not n:
+        return False
+    for ch in n:
+        if not (ch.isalnum() or ch == '_'):
+            return False
+    return True
+
+
+def _list_user_tables(conn, tenant_id: str | None = None) -> List[str]:
+    try:
+        if USE_POSTGRES:
+            schema = _tenant_schema(str(tenant_id or ''))
+            cur = conn.cursor()
+            cur.execute(
+                _sql_placeholder(
+                    """
+                    SELECT table_name
+                      FROM information_schema.tables
+                     WHERE table_schema = ?
+                       AND table_type = 'BASE TABLE'
+                    ORDER BY table_name
+                    """
+                ),
+                (schema,)
+            )
+            rows = cur.fetchall() or []
+            return [str(r[0]) for r in rows if r and str(r[0] or '').strip()]
+
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        rows = cur.fetchall() or []
+        out: List[str] = []
+        for r in rows:
+            try:
+                nm = r['name']
+            except Exception:
+                try:
+                    nm = r[0]
+                except Exception:
+                    nm = None
+            nm = str(nm or '').strip()
+            if nm:
+                out.append(nm)
+        return out
+    except Exception:
+        return []
+
+
+def _apply_full_snapshot_sqlite(tconn: sqlite3.Connection, snap: Dict[str, Any]) -> Dict[str, int]:
+    applied: Dict[str, int] = {}
+    if not isinstance(snap, dict):
+        return applied
+
+    exclude = {
+        'change_log',
+        'applied_events',
+        'purchase_holds',
+        'sync_state',
+        'sqlite_sequence',
+    }
+
+    # Apply core tables first (referential integrity), then the rest
+    base_order = [
+        'teachers',
+        'teacher_classes',
+        'students',
+        'settings',
+    ]
+    tables: List[str] = []
+    for t in base_order:
+        if t in snap and t not in exclude:
+            tables.append(t)
+    for t in snap.keys():
+        if not isinstance(t, str):
+            continue
+        if t in exclude:
+            continue
+        if t in tables:
+            continue
+        if not _safe_table_name(t):
+            continue
+        tables.append(t)
+
+    try:
+        _begin_tenant_write(tconn)
+    except Exception:
+        pass
+    for t in tables:
+        rows = snap.get(t)
+        if not isinstance(rows, list):
+            rows = []
+        try:
+            applied[t] = _replace_rows(tconn, t, rows)
+        except Exception:
+            applied[t] = 0
+    try:
+        tconn.commit()
+    except Exception:
+        try:
+            tconn.rollback()
+        except Exception:
+            pass
+    return applied
+
+
 @app.post("/sync/snapshot")
 def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
     if not payload.tenant_id:
@@ -6204,6 +6518,173 @@ def sync_snapshot_get(
                 data[t] = _fetch_table_rows(tconn, t)
             except Exception:
                 data[t] = []
+        return {
+            'ok': True,
+            'tenant_id': tenant_id,
+            'snapshot': data,
+            'last_event_id': int(last_event_id),
+            'last_change_id': int(last_change_id),
+        }
+    finally:
+        try:
+            tconn.close()
+        except Exception:
+            pass
+
+
+@app.post('/sync/snapshot2')
+def sync_snapshot2(payload: Snapshot2Payload, request: Request, api_key: str = Header(default='')) -> Dict[str, Any]:
+    if not payload.tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = _get_api_key(request, api_key).strip()
+    if not api_key:
+        raise HTTPException(status_code=401, detail='missing api_key')
+
+    conn = _db()
+    cur = conn.cursor()
+    cur.execute(
+        _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
+        (payload.tenant_id, api_key)
+    )
+    row = cur.fetchone()
+    if not row:
+        allow_auto = str(os.getenv('AUTO_CREATE_TENANT') or '').strip() == '1'
+        if allow_auto:
+            try:
+                cur.execute(
+                    _sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)'),
+                    (payload.tenant_id, payload.tenant_id, api_key)
+                )
+                conn.commit()
+                try:
+                    _ensure_tenant_db_exists(str(payload.tenant_id))
+                except Exception:
+                    pass
+                cur.execute(
+                    _sql_placeholder('SELECT id FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
+                    (payload.tenant_id, api_key)
+                )
+                row = cur.fetchone()
+            except _integrity_errors():
+                row = None
+        if not row:
+            conn.close()
+            raise HTTPException(status_code=401, detail='invalid api_key')
+    conn.close()
+
+    snap = payload.snapshot if isinstance(payload.snapshot, dict) else {}
+    tconn = _tenant_school_db(payload.tenant_id)
+    try:
+        applied = _apply_full_snapshot_sqlite(tconn, snap)
+        try:
+            _save_snapshot2_blob(payload.tenant_id, {
+                'tenant_id': payload.tenant_id,
+                'snapshot': snap,
+            })
+        except Exception:
+            pass
+        return {
+            'ok': True,
+            'tenant_id': payload.tenant_id,
+            'station_id': payload.station_id,
+            'applied': applied,
+        }
+    finally:
+        try:
+            tconn.close()
+        except Exception:
+            pass
+
+
+@app.get('/sync/snapshot2')
+def sync_snapshot2_get(
+    request: Request,
+    tenant_id: str = Query(default=''),
+    api_key: str = Header(default=''),
+) -> Dict[str, Any]:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = _get_api_key(request, api_key).strip()
+    if not api_key:
+        raise HTTPException(status_code=401, detail='missing api_key')
+
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT 1 FROM institutions WHERE tenant_id = ? AND api_key = ? LIMIT 1'),
+            (tenant_id, api_key)
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail='invalid api_key')
+
+        last_event_id = 0
+        try:
+            cur.execute(
+                _sql_placeholder('SELECT MAX(id) FROM sync_events WHERE tenant_id = ?'),
+                (tenant_id,)
+            )
+            r2 = cur.fetchone()
+            if r2:
+                val2 = r2[0] if not isinstance(r2, dict) else list(r2.values())[0]
+                last_event_id = _safe_int(val2, 0)
+        except Exception:
+            last_event_id = 0
+
+        last_change_id = 0
+        try:
+            cur.execute('SELECT MAX(id) FROM changes')
+            r3 = cur.fetchone()
+            if r3:
+                val3 = r3[0] if not isinstance(r3, dict) else list(r3.values())[0]
+                last_change_id = _safe_int(val3, 0)
+        except Exception:
+            last_change_id = 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    cached = _load_snapshot2_blob(tenant_id)
+    if isinstance(cached, dict):
+        cached_snap = cached.get('snapshot') if isinstance(cached.get('snapshot'), dict) else None
+        if isinstance(cached_snap, dict) and cached_snap:
+            return {
+                'ok': True,
+                'tenant_id': tenant_id,
+                'snapshot': cached_snap,
+                'last_event_id': int(last_event_id),
+                'last_change_id': int(last_change_id),
+            }
+
+    tconn = _tenant_school_db(tenant_id)
+    try:
+        tables = _list_user_tables(tconn, tenant_id)
+        exclude = {
+            'change_log',
+            'applied_events',
+            'purchase_holds',
+            'sync_state',
+            'sqlite_sequence',
+        }
+        data: Dict[str, Any] = {}
+        for t in tables:
+            if t in exclude or not _safe_table_name(t):
+                continue
+            try:
+                data[t] = _fetch_table_rows_any(tconn, t)
+            except Exception:
+                data[t] = []
+        try:
+            _save_snapshot2_blob(tenant_id, {
+                'tenant_id': tenant_id,
+                'snapshot': data,
+            })
+        except Exception:
+            pass
         return {
             'ok': True,
             'tenant_id': tenant_id,
@@ -12165,57 +12646,11 @@ def web_logs(request: Request):
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_index(request: Request, admin_key: str = '') -> str:
+def admin_index(request: Request, admin_key: str = '') -> Response:
     guard = _admin_require(request, admin_key)
     if guard:
         return guard  # type: ignore[return-value]
-    conn = _db()
-    cur = conn.cursor()
-    cur.execute('SELECT COUNT(*) AS total FROM changes')
-    row = cur.fetchone() or {}
-    total = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
-    cur.execute('SELECT COUNT(*) AS total FROM institutions')
-    row = cur.fetchone() or {}
-    inst_total = int((row.get('total') if isinstance(row, dict) else row[0]) or 0)
-    cur.execute('SELECT MAX(received_at) AS last_received FROM changes')
-    row = cur.fetchone() or {}
-    last_received = (row.get('last_received') if isinstance(row, dict) else row[0])
-    conn.close()
-    return f"""
-    <!doctype html>
-    <html lang="he">
-    <head>
-      <meta charset="utf-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1" />
-      <title>סטטוס סינכרון</title>
-      <style>
-        body {{ margin:0; font-family: Arial, sans-serif; background:#f2f5f6; color:#1f2d3a; direction: rtl; }}
-        .wrap {{ max-width: 720px; margin: 30px auto; padding: 0 16px; }}
-        .card {{ background:#fff; border-radius:14px; padding:20px; border:1px solid #e1e8ee; }}
-        .stat {{ margin:8px 0; font-weight:600; }}
-        .links {{ margin-top:12px; font-size:13px; }}
-        .links a {{ color:#1f2d3a; text-decoration:none; margin-left:10px; }}
-      </style>
-    </head>
-    <body>
-      <div class="wrap">
-        <div class="card">
-          """ + _admin_status_bar() + """
-          <h2>סטטוס סינכרון</h2>
-          <div class="stat">כמות מוסדות רשומים: {inst_total}</div>
-          <div class="stat">סה"כ שינויים שהתקבלו: {total}</div>
-          <div class="stat">תאריך שינוי אחרון: {last_received or '—'}</div>
-          <div class="links">
-            <a href="/admin/changes">שינויים אחרונים</a>
-            <a href="/admin/institutions">מוסדות</a>
-            <a href="/admin/logout">יציאה</a>
-            <a href="/web/admin">עמדת ניהול ווב</a>
-          </div>
-        </div>
-      </div>
-    </body>
-    </html>
-    """
+    return RedirectResponse(url="/admin/dashboard", status_code=302)
 
 
 @app.get("/admin/changes", response_class=HTMLResponse)
@@ -13688,24 +14123,36 @@ def web_admin(request: Request):
     if is_admin:
         tiles_html += """
         <a href="/web/teachers" class="tile red">
-          <div class="icon">👨‍🏫</div>
+          <div class="icon">👥</div>
           <div class="label">מורים</div>
         </a>
         <a href="/web/classes" class="tile orange">
           <div class="icon">🏫</div>
           <div class="label">כיתות</div>
         </a>
-        <a href="/web/messages" class="tile purple">
-          <div class="icon">📢</div>
-          <div class="label">הודעות</div>
+        <a href="/web/import" class="tile dark">
+          <div class="icon">📥</div>
+          <div class="label">ייבוא</div>
         </a>
-        <a href="/web/time-bonus" class="tile teal">
-          <div class="icon">⏱️</div>
-          <div class="label">בונוס זמנים</div>
+        <a href="/web/reports" class="tile cyan">
+          <div class="icon">📤</div>
+          <div class="label">ייצוא</div>
+        </a>
+        <a href="/web/upgrades" class="tile orange">
+          <div class="icon">🎁</div>
+          <div class="label">שדרוגים</div>
+        </a>
+        <a href="/web/messages" class="tile purple">
+          <div class="icon">💬</div>
+          <div class="label">הודעות כלליות</div>
         </a>
         <a href="/web/special-bonus" class="tile pink">
           <div class="icon">✨</div>
           <div class="label">בונוס מיוחד</div>
+        </a>
+        <a href="/web/time-bonus" class="tile teal">
+          <div class="icon">⏱️</div>
+          <div class="label">בונוס זמנים</div>
         </a>
         <a href="/web/holidays" class="tile green">
           <div class="icon">📅</div>
@@ -13714,10 +14161,6 @@ def web_admin(request: Request):
         <a href="/web/purchases" class="tile indigo">
           <div class="icon">🛒</div>
           <div class="label">קניות</div>
-        </a>
-        <a href="/web/reports" class="tile cyan">
-          <div class="icon">📊</div>
-          <div class="label">דוחות</div>
         </a>
         <a href="/web/max-points" class="tile red">
           <div class="icon">📉</div>
@@ -13731,22 +14174,18 @@ def web_admin(request: Request):
           <div class="icon">🌙</div>
           <div class="label">מצב שקט</div>
         </a>
-        <a href="/web/settings" class="tile gray">
+        <a href="/web/system-settings" class="tile gray">
           <div class="icon">⚙️</div>
-          <div class="label">הגדרות</div>
+          <div class="label">הגדרות מערכת</div>
         </a>
-        <a href="/web/import" class="tile dark">
-          <div class="icon">📥</div>
-          <div class="label">ייבוא</div>
+        <a href="/web/display-settings" class="tile gray">
+          <div class="icon">🖥️</div>
+          <div class="label">הגדרות תצוגה</div>
         </a>
         """
 
     # Personal Area (Everyone)
     tiles_html += """
-    <a href="/web/upgrades" class="tile orange">
-      <div class="icon">🎁</div>
-      <div class="label">עדכון מערכת</div>
-    </a>
     <a href="/web/personal" class="tile dark">
       <div class="icon">👤</div>
       <div class="label">אזור אישי</div>
