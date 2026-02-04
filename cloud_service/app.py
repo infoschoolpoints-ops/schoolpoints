@@ -8216,6 +8216,109 @@ def web_teachers(request: Request):
     guard = _web_require_admin_teacher(request)
     if guard:
         return guard
+
+    html_body = """
+    <style>
+        .cell { padding:8px; border-bottom:1px solid #eee; text-align:right; }
+        .ltr { direction:ltr; text-align:left; }
+        .ck { display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer; user-select:none; }
+        .btn-primary { background:#3498db; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; }
+        .btn-gray { background:#95a5a6; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; }
+        .btn-danger { background:#e74c3c; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; }
+        .form-input { padding:6px; border:1px solid #ccc; border-radius:4px; }
+    </style>
+    <div style="max-width:1200px; margin:0 auto; padding:20px;">
+        <h2 style="margin-bottom:20px;">ניהול מורים</h2>
+        <div class="card" style="padding:20px; background:#fff; border-radius:12px; border:1px solid #eee;">
+            <div class="actionbar" style="display:flex; gap:10px; margin-bottom:15px; align-items:center;">
+                 <input type="text" id="t_search" placeholder="חיפוש מורה..." style="padding:8px; border:1px solid #ccc; border-radius:4px; width:200px;" oninput="load()">
+                 <button id="t_new" class="btn-primary" onclick="openAdd()">+ מורה חדש</button>
+                 <span id="t_status" style="color:#888; margin-right:auto;"></span>
+            </div>
+            <div style="margin-bottom:10px; display:flex; gap:10px; align-items:center;">
+                 <button id="t_edit" class="btn-gray" onclick="openEdit()" style="opacity:0.55; pointer-events:none;">ערוך</button>
+                 <button id="t_delete" class="btn-danger" onclick="if(confirm('למחוק?')) del(selectedId)" style="opacity:0.55; pointer-events:none;">מחק</button>
+                 <span id="t_selected" style="font-weight:bold; color:#2c3e50;">לא נבחר מורה</span>
+            </div>
+            
+            <div style="overflow-x:auto;">
+                <table style="width:100%; border-collapse:collapse; font-size:14px;">
+                    <thead>
+                        <tr style="background:#f8f9fa; border-bottom:2px solid #eee;">
+                            <th class="cell">שם</th>
+                            <th class="cell">כרטיס</th>
+                            <th class="cell">תפקיד</th>
+                            <th class="cell">כיתות</th>
+                            <th class="cell">בונוס/תלמיד</th>
+                            <th class="cell">בונוס/סה"כ</th>
+                            <th class="cell">נוצל היום</th>
+                            <th class="cell">נק' היום</th>
+                        </tr>
+                    </thead>
+                    <tbody id="t_rows"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="t_modal" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:9999;">
+        <div class="modal-content" style="background:white; width:600px; max-width:90%; padding:20px; border-radius:8px; max-height:90vh; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.15);">
+            <h3 id="t_modal_title" style="margin-top:0;">עריכת מורה</h3>
+            <input type="hidden" id="m_teacher_id">
+            
+            <div style="margin-bottom:10px;">
+                <label style="display:block; margin-bottom:4px; font-weight:bold;">שם המורה:</label>
+                <input type="text" id="m_name" class="form-input" style="width:100%; box-sizing:border-box;">
+            </div>
+            
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-top:10px;">
+                <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px;">כרטיס 1:</label>
+                    <input type="text" id="m_card1" class="form-input" style="width:100%; box-sizing:border-box;">
+                </div>
+                 <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px;">כרטיס 2:</label>
+                    <input type="text" id="m_card2" class="form-input" style="width:100%; box-sizing:border-box;">
+                </div>
+                 <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px;">כרטיס 3:</label>
+                    <input type="text" id="m_card3" class="form-input" style="width:100%; box-sizing:border-box;">
+                </div>
+            </div>
+
+            <div style="margin-top:15px; display:flex; gap:20px; flex-wrap:wrap;">
+                <label class="ck"><input type="checkbox" id="m_is_admin"> מנהל מערכת</label>
+                <label class="ck"><input type="checkbox" id="m_can_edit_student_card"> עריכת כרטיס תלמיד</label>
+                <label class="ck"><input type="checkbox" id="m_can_edit_student_photo"> עריכת תמונת תלמיד</label>
+            </div>
+
+            <h4 style="margin:15px 0 5px 0; border-bottom:1px solid #eee; padding-bottom:4px;">הגדרות בונוס (אופציונלי)</h4>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px;">מקסימום נקודות לתלמיד:</label>
+                    <input type="number" id="m_bonus_max_points_per_student" class="form-input" style="width:100%; box-sizing:border-box;" placeholder="ללא הגבלה">
+                </div>
+                 <div>
+                    <label style="display:block; margin-bottom:4px; font-size:13px;">מקסימום הרצות כולל:</label>
+                    <input type="number" id="m_bonus_max_total_runs" class="form-input" style="width:100%; box-sizing:border-box;" placeholder="ללא הגבלה">
+                </div>
+            </div>
+
+            <h4 style="margin:15px 0 5px 0; border-bottom:1px solid #eee; padding-bottom:4px;">כיתות מורשות</h4>
+            <div style="display:flex; gap:10px; margin-bottom:5px;">
+                 <button type="button" id="m_select_all" onclick="document.getElementById('m_classes_box').querySelectorAll('input').forEach(c=>c.checked=true)" style="font-size:12px; padding:2px 6px;">בחר הכל</button>
+                 <button type="button" id="m_clear_all" onclick="document.getElementById('m_classes_box').querySelectorAll('input').forEach(c=>c.checked=false)" style="font-size:12px; padding:2px 6px;">נקה הכל</button>
+            </div>
+            <div id="m_classes_box" style="border:1px solid #ccc; padding:10px; height:100px; overflow-y:auto; display:flex; flex-wrap:wrap; gap:10px; border-radius:4px; background:#f9f9f9;"></div>
+            
+            <div style="margin-top:20px; text-align:left; display:flex; gap:10px; justify-content:flex-end;">
+                <button id="m_cancel" onclick="closeModal()" class="btn-gray">ביטול</button>
+                <button id="m_save" class="btn-primary">שמירה</button>
+            </div>
+        </div>
+    </div>
+    """
+
     js = """
       <script>
         const rowsEl = document.getElementById('t_rows');
@@ -8419,7 +8522,7 @@ def web_teachers(request: Request):
           mCard2.value = String(t.card_number2 ?? '');
           mCard3.value = String(t.card_number3 ?? '');
     """
-    return _basic_web_shell("ניהול מורים", html_content, request=request)
+    return _basic_web_shell("ניהול מורים", html_body + js, request=request)
 
 
 @app.get("/web/classes", response_class=HTMLResponse)
