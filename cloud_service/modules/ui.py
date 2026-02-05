@@ -126,6 +126,8 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
         }
 
         .brand { display: flex; align-items: center; gap: 12px; }
+        .brand-link { display: inline-flex; align-items: center; gap: 12px; text-decoration: none; color: inherit; }
+        .brand-link:hover { opacity: 0.9; }
         .brand img { width: 40px; height: 40px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
         .brand-text { display: flex; flex-direction: column; }
         .brand-title { font-weight: 900; font-size: 18px; letter-spacing: 0.5px; line-height: 1; }
@@ -366,13 +368,15 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
     <body>
       <nav class="topbar">
         <div class="topbar-inner">
-          <div class="brand">
-            <img src="/web/assets/icons/admin.png" alt="Logo">
-            <div class="brand-text">
-              <div class="brand-title">SchoolPoints</div>
-              <div class="brand-sub">Cloud Admin</div>
+          <a class="brand-link" href="/web">
+            <div class="brand">
+              <img src="/web/assets/icons/admin.png" alt="Logo">
+              <div class="brand-text">
+                <div class="brand-title">SchoolPoints</div>
+                <div class="brand-sub">Cloud Admin</div>
+              </div>
             </div>
-          </div>
+          </a>
           <div class="top-nav">
             <a href="/web" class="btn-glass">אתר ראשי</a>
             <a href="/web/logout" class="btn-glass primary">יציאה</a>
@@ -610,13 +614,15 @@ def public_web_shell(title: str, body_html: str, request: Request = None) -> str
     <body>
       <nav class="topbar">
         <div class="topbar-inner">
-          <div class="brand">
-            <img src="/web/assets/icons/public.png" alt="Logo">
-            <div class="brand-text">
-              <div class="brand-title">SchoolPoints</div>
-              <div class="brand-sub">Cloud</div>
+          <a class="brand-link" href="/web">
+            <div class="brand">
+              <img src="/web/assets/icons/public.png" alt="Logo">
+              <div class="brand-text">
+                <div class="brand-title">SchoolPoints</div>
+                <div class="brand-sub">Cloud</div>
+              </div>
             </div>
-          </div>
+          </a>
           <div class="top-nav">
             <a href="/web/register" class="btn-glass primary">הרשמה למוסד</a>
             <a href="/web/signin" class="btn-glass">כניסה</a>

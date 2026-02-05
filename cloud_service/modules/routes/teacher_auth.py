@@ -20,16 +20,14 @@ def web_login() -> Response:
 
 @router.get('/web/teacher-login', response_class=HTMLResponse)
 def web_teacher_login(request: Request) -> Response:
-    guard = web_require_tenant(request)
-    if guard:
-        return guard
-    
-    # If master is logged in, redirect to admin
     tenant_id = web_tenant_from_cookie(request)
-    if tenant_id:
-        master_cookie = request.cookies.get('web_master')
-        if master_cookie and master_token_valid(master_cookie, tenant_id):
-             return RedirectResponse(url='/web/admin', status_code=302)
+    if not tenant_id:
+        return RedirectResponse(url='/web', status_code=302)
+
+    # If master is logged in, redirect to admin
+    master_cookie = request.cookies.get('web_master')
+    if master_cookie and master_token_valid(master_cookie, tenant_id):
+         return RedirectResponse(url='/web/admin', status_code=302)
 
     nxt = web_next_from_request(request, '/web/admin')
     body = f"""

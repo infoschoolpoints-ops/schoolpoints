@@ -29,41 +29,69 @@ def save_contact_message(name: str, email: str, subject: str, message: str) -> N
 
 @router.get('/web/contact', response_class=HTMLResponse)
 def web_contact() -> str:
-    body = f"""
-    <div style="max-width:600px; margin:0 auto;">
-        <h2 style="text-align:center; margin-bottom:10px;">צור קשר</h2>
-        <p style="text-align:center; opacity:0.8; margin-bottom:30px;">נשמח לשמוע מכם! מלאו את הפרטים ונחזור אליכם בהקדם.</p>
-        
-        <form method="post" action="/web/contact">
-            <div class="glass" style="padding:30px; border-radius:16px;">
-                <div class="form-group">
-                    <label>שם מלא</label>
-                    <input name="name" class="form-input reg-input" required placeholder="שם ושם משפחה" />
-                </div>
-                
-                <div class="form-group">
-                    <label>אימייל</label>
-                    <input name="email" type="email" class="form-input reg-input" required placeholder="name@example.com" style="direction:ltr; text-align:right;" />
-                </div>
-                
-                <div class="form-group">
-                    <label>נושא הפנייה</label>
-                    <input name="subject" class="form-input reg-input" placeholder="בנושא..." />
-                </div>
-                
-                <div class="form-group">
-                    <label>תוכן ההודעה</label>
-                    <textarea name="message" class="form-input reg-input" style="min-height:150px; resize:vertical;" required placeholder="כתוב כאן את הודעתך..."></textarea>
-                </div>
-                
-                <div class="actionbar" style="justify-content:space-between; margin-top:20px;">
-                     <a class="btn-glass" href="/web">ביטול וחזרה</a>
-                     <button class="btn-primary" type="submit" style="padding-left:30px; padding-right:30px;">שליחת הודעה</button>
-                </div>
-            </div>
-        </form>
+    body = """
+<style>
+  .contact-wrap { max-width: 900px; margin: 0 auto; }
+  .contact-hero { text-align: center; margin-bottom: 28px; }
+  .contact-hero h2 { margin: 0 0 8px; }
+  .contact-hero p { margin: 0; opacity: 0.8; }
+  .contact-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    padding: 32px;
+    box-shadow: var(--glass-shadow);
+  }
+  .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .contact-grid .form-group { margin-bottom: 20px; }
+  .contact-full { grid-column: 1 / -1; }
+  .contact-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 24px;
+    gap: 12px;
+  }
+</style>
+
+<div class="contact-wrap">
+  <div class="contact-hero">
+    <h2>צור קשר</h2>
+    <p>נשמח לשמוע מכם! מלאו את הפרטים ונחזור אליכם בהקדם.</p>
+  </div>
+
+  <form method="post" action="/web/contact">
+    <div class="contact-card">
+      <div class="contact-grid">
+        <div class="form-group">
+          <label>שם מלא</label>
+          <input name="name" class="form-input reg-input" required placeholder="שם ושם משפחה" />
+        </div>
+        <div class="form-group">
+          <label>אימייל</label>
+          <input name="email" type="email" class="form-input reg-input" required placeholder="name@example.com" style="direction:ltr; text-align:left;" />
+        </div>
+        <div class="form-group contact-full">
+          <label>נושא הפנייה</label>
+          <input name="subject" class="form-input reg-input" placeholder="בנושא..." />
+        </div>
+        <div class="form-group contact-full">
+          <label>תוכן ההודעה</label>
+          <textarea name="message" class="form-input reg-input" style="min-height:150px; resize:vertical;" required placeholder="כתוב כאן את הודעתך..."></textarea>
+        </div>
+      </div>
+
+      <div class="contact-actions">
+        <a class="btn-glass" href="/web">ביטול וחזרה</a>
+        <button class="btn-primary" type="submit" style="padding-left:30px; padding-right:30px;">שליחת הודעה</button>
+      </div>
     </div>
-    """
+  </form>
+</div>
+"""
+"""
     return public_web_shell('צור קשר', body)
 
 @router.post('/web/contact', response_class=HTMLResponse)

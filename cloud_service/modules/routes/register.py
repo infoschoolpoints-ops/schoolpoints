@@ -18,55 +18,76 @@ logger = logging.getLogger("schoolpoints.register")
 @router.get('/web/register', response_class=HTMLResponse)
 def web_register(request: Request) -> str:
     body = """
-    <div style="max-width:600px; margin:0 auto;">
-        <h2 style="text-align:center; margin-bottom:10px;">הרשמה למוסד חדש</h2>
-        <p style="text-align:center; opacity:0.8; margin-bottom:30px;">הצטרפו למאות מוסדות שכבר נהנים מניהול נקודות מתקדם.</p>
-        
-        <form id="regForm" onsubmit="submitRegister(event)">
-            <div class="glass" style="padding:24px; border-radius:16px;">
-                <h3 style="margin-top:0; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">פרטי המוסד</h3>
-                
-                <div class="form-group">
-                    <label>שם המוסד</label>
-                    <input name="institution_name" class="form-input reg-input" required placeholder="לדוגמה: תלמוד תורה חכמת שלמה" />
-                </div>
-                
-                <div class="form-group">
-                    <label>קוד מוסד (באנגלית/מספרים בלבד)</label>
-                    <input name="institution_code" class="form-input reg-input" required pattern="[a-zA-Z0-9\-_]+" placeholder="לדוגמה: hekmat-shlomo" style="direction:ltr; text-align:left;" />
-                    <div style="font-size:12px; opacity:0.6; margin-top:4px;">זהו המזהה הייחודי שלכם במערכת (Tenant ID).</div>
-                </div>
-                
-                <div class="form-group">
-                    <label>סיסמת ניהול ראשית</label>
-                    <input name="password" type="password" class="form-input reg-input" required placeholder="סיסמה חזקה לניהול המערכת" />
-                </div>
+<div style="max-width:600px; margin:0 auto;">
+    <h2 style="text-align:center; margin-bottom:10px;">הרשמה למוסד חדש</h2>
+    <p style="text-align:center; opacity:0.8; margin-bottom:30px;">הצטרפו למאות תלמידים שכבר נהנים מניהול נקודות מתקדם.</p>
+    
+    <form id="regForm" onsubmit="submitRegister(event)">
+        <div class="glass" style="padding:24px; border-radius:16px;">
+            <h3 style="margin-top:0; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">פרטי המוסד</h3>
+            
+            <div class="form-group">
+                <label>שם המוסד</label>
+                <input name="institution_name" class="form-input reg-input" required placeholder="לדוגמה: תלמוד תורה חכמת שלמה" />
+            </div>
+            
+            <div class="form-group">
+                <label>קוד מוסד (ספרות בלבד)</label>
+                <input name="institution_code" class="form-input reg-input" required pattern="[0-9]+" placeholder="12345" style="direction:ltr; text-align:left;" />
+                <div style="font-size:12px; opacity:0.6; margin-top:4px;">זהו המזהה הייחודי שלכם במערכת (Tenant ID).</div>
+            </div>
+            
+            <div class="form-group">
+                <label>סיסמת ניהול ראשית</label>
+                <input name="password" type="password" class="form-input reg-input" required placeholder="סיסמה חזקה לניהול המערכת" />
+            </div>
 
-                <h3 style="margin-top:30px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">איש קשר</h3>
-                
-                <div class="form-group">
-                    <label>שם מלא</label>
-                    <input name="contact_name" class="form-input reg-input" required />
-                </div>
-                
-                <div class="form-group">
-                    <label>אימייל</label>
-                    <input name="email" type="email" class="form-input reg-input" required style="direction:ltr; text-align:left;" />
-                </div>
-                
-                <div class="form-group">
-                    <label>טלפון</label>
-                    <input name="phone" class="form-input reg-input" style="direction:ltr; text-align:left;" />
-                </div>
+            <h3 style="margin-top:30px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">בחירת מסלול</h3>
+            <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:20px;">
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; padding:12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; transition:background 0.2s;">
+                    <input type="radio" name="plan" value="basic" checked style="margin:0;">
+                    <div>
+                        <strong>Basic</strong> – עד 100 תלמידים
+                    </div>
+                </label>
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; padding:12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; transition:background 0.2s;">
+                    <input type="radio" name="plan" value="extended" style="margin:0;">
+                    <div>
+                        <strong>Extended</strong> – עד 300 תלמידים
+                    </div>
+                </label>
+                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; padding:12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; transition:background 0.2s;">
+                    <input type="radio" name="plan" value="unlimited" style="margin:0;">
+                    <div>
+                        <strong>Unlimited</strong> – ללא הגבלה
+                    </div>
+                </label>
+            </div>
 
-                <div class="form-group" style="margin-top:20px; display:flex; gap:10px; align-items:center;">
-                    <input type="checkbox" id="terms" name="terms" required style="width:20px; height:20px;" />
-                    <label for="terms" style="margin:0; font-weight:400;">קראתי ואני מאשר את <a href="/web/terms" target="_blank" style="text-decoration:underline;">התקנון ותנאי השימוש</a></label>
-                </div>
+            <h3 style="margin-top:30px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">איש קשר</h3>
+            
+            <div class="form-group">
+                <label>שם מלא</label>
+                <input name="contact_name" class="form-input reg-input" required />
+            </div>
+            
+            <div class="form-group">
+                <label>אימייל</label>
+                <input name="email" type="email" class="form-input reg-input" required style="direction:ltr; text-align:left;" />
+            </div>
+            
+            <div class="form-group">
+                <label>טלפון</label>
+                <input name="phone" class="form-input reg-input" style="direction:ltr; text-align:left;" />
+            </div>
 
-                <div style="margin-top:30px; text-align:center;">
-                    <button type="submit" class="btn-primary" style="width:100%; font-size:18px; padding:16px;">הרשמה ותשלום</button>
-                </div>
+            <div class="form-group" style="margin-top:20px; display:flex; gap:10px; align-items:center;">
+                <input type="checkbox" id="terms" name="terms" required style="width:20px; height:20px;" />
+                <label for="terms" style="margin:0; font-weight:400;">קראתי ואני מאשר את <a href="/web/terms" target="_blank" style="text-decoration:underline;">התקנון ותנאי השימוש</a></label>
+            </div>
+
+            <div style="margin-top:30px; text-align:center;">
+                <button type="submit" class="btn-primary" style="width:100%; font-size:18px; padding:16px;">הרשמה ותשלום</button>
             </div>
         </form>
     </div>
@@ -83,10 +104,9 @@ def web_register(request: Request) -> str:
         const data = Object.fromEntries(formData.entries());
         data.terms = !!document.getElementById('terms').checked;
         
-        // Get plan from URL if present
-        const urlParams = new URLSearchParams(window.location.search);
-        const plan = urlParams.get('plan') || 'basic';
-        data.plan = plan;
+        // Get selected plan from radio buttons
+        const selectedPlan = document.querySelector('input[name="plan"]:checked').value;
+        data.plan = selectedPlan;
 
         try {
             const res = await fetch('/api/register', {
@@ -98,7 +118,7 @@ def web_register(request: Request) -> str:
             
             if (res.ok && result.ok) {
                 // Redirect to mock payment
-                window.location.href = `/web/payment/mock?reg_email=${encodeURIComponent(data.email)}&plan=${plan}`;
+                window.location.href = `/web/payment/mock?reg_email=${encodeURIComponent(data.email)}&plan=${selectedPlan}`;
             } else {
                 alert('שגיאה בהרשמה: ' + (result.detail || result.message || 'Unknown error'));
                 btn.disabled = false;
@@ -111,7 +131,9 @@ def web_register(request: Request) -> str:
         }
     }
     </script>
-    """
+</div>
+"""
+"""
     return public_web_shell("הרשמה", body, request=request)
 
 @router.post('/api/register')
