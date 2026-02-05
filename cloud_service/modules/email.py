@@ -9,7 +9,7 @@ from .config import (
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, 
     SMTP_FROM, CONTACT_EMAIL_TO
 )
-from .utils import safe_int
+from .auth import safe_int
 
 logger = logging.getLogger("schoolpoints.email")
 
