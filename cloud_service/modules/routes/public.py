@@ -35,6 +35,10 @@ def web_assets(asset_path: str) -> Response:
 def root() -> Response:
     return RedirectResponse(url="/web", status_code=302)
 
+@router.get('/admin', include_in_schema=False)
+def admin_redirect() -> Response:
+    return RedirectResponse(url="/web/signin", status_code=302)
+
 @router.get('/web', response_class=HTMLResponse)
 @router.get('/web/', response_class=HTMLResponse)
 def web_home() -> str:
