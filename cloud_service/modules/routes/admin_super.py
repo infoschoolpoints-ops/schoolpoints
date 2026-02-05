@@ -4,7 +4,7 @@ from typing import Dict, Any, List
 import datetime
 import secrets
 
-from ..utils import basic_web_shell
+from ..ui import basic_web_shell
 from ..db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, delete_tenant_db
 from ..config import ADMIN_KEY, MASTER_LOGIN_SECRET, USE_POSTGRES, DATA_DIR
 from ..auth import pbkdf2_hash

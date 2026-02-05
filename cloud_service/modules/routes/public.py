@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, FileResponse
-from ..utils import public_web_shell, read_text_file, replace_guide_base64_images
+from ..ui import public_web_shell
+from ..utils import read_text_file, replace_guide_base64_images
 from ..config import ROOT_DIR
 import os
 import re

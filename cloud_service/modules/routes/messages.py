@@ -5,7 +5,8 @@ import json
 import os
 import shutil
 
-from ..utils import basic_web_shell, time_to_minutes
+from ..utils import time_to_minutes
+from ..ui import basic_web_shell
 from ..auth import web_require_admin_teacher, web_require_teacher, web_tenant_from_cookie, safe_int
 from ..db import tenant_db_connection, sql_placeholder, integrity_errors
 from ..config import USE_POSTGRES, DATA_DIR

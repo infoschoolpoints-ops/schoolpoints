@@ -3,7 +3,7 @@ from typing import Dict, Any
 from fastapi.responses import HTMLResponse, RedirectResponse
 import urllib.parse
 
-from ..utils import public_web_shell
+from ..ui import public_web_shell
 from ..auth import web_require_tenant, web_tenant_from_cookie, web_next_from_request, master_token_valid, web_teacher_from_cookie
 from ..db import tenant_db_connection, sql_placeholder, integrity_errors, get_db_connection
 from ..config import USE_POSTGRES

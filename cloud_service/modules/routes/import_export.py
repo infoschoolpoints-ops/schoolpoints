@@ -5,7 +5,7 @@ import io
 import csv
 import traceback
 
-from ..utils import basic_web_shell
+from ..ui import basic_web_shell
 from ..auth import web_require_admin_teacher, web_tenant_from_cookie, web_current_teacher
 from ..db import tenant_db_connection, sql_placeholder
 from ..sync_logic import record_sync_event

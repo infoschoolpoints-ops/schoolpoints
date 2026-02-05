@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ..utils import basic_web_shell
+from ..ui import basic_web_shell
 from ..auth import web_require_teacher, web_current_teacher, web_master_ok
 from ..auth import safe_int
 

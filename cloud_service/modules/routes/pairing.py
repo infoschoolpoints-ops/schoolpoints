@@ -4,7 +4,8 @@ from typing import Dict, Any, Optional
 from pydantic import BaseModel
 
 from ..db import get_db_connection, sql_placeholder, integrity_errors
-from ..utils import random_pair_code, public_web_shell, time_to_minutes, basic_web_shell
+from ..utils import random_pair_code, time_to_minutes
+from ..ui import public_web_shell, basic_web_shell
 from ..auth import web_require_tenant, web_tenant_from_cookie
 from ..config import USE_POSTGRES
 

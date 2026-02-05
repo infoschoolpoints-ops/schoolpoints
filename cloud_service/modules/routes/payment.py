@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request, HTTPException, Body, Query
 from fastapi.responses import HTMLResponse
 from typing import Dict, Any
 
-from ..utils import public_web_shell
+from ..ui import public_web_shell
 from ..registration_logic import approve_pending_registration
 from ..db import get_db_connection, sql_placeholder, ensure_pending_registrations_table
 

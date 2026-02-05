@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, Form, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
-from ..utils import public_web_shell
+from ..ui import public_web_shell
 from ..db import get_db_connection, sql_placeholder
 from ..email import send_contact_email
 

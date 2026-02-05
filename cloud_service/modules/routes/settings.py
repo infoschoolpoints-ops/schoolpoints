@@ -4,7 +4,7 @@ from typing import Dict, Any, List
 import json
 import html
 
-from ..utils import basic_web_shell
+from ..ui import basic_web_shell
 from ..auth import web_require_admin_teacher, web_require_teacher, web_tenant_from_cookie
 from ..db import tenant_db_connection, sql_placeholder, integrity_errors
 from ..config import USE_POSTGRES

@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from typing import Dict, Any, List
 import json
 
-from ..utils import basic_web_shell
+from ..ui import basic_web_shell
 from ..auth import web_require_teacher, web_tenant_from_cookie, safe_int, web_current_teacher
 from ..db import tenant_db_connection, sql_placeholder, table_columns
 from ..config import USE_POSTGRES
