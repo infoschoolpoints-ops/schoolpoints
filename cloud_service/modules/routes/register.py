@@ -350,7 +350,6 @@ async function submitRegister(e) {
 }
 </script>
 """
-"""
     return public_web_shell("הרשמה", body, request=request)
 
 @router.post('/api/register')
