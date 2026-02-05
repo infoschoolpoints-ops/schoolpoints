@@ -91,7 +91,6 @@ def web_contact() -> str:
   </form>
 </div>
 """
-"""
     return public_web_shell('צור קשר', body)
 
 @router.post('/web/contact', response_class=HTMLResponse)
