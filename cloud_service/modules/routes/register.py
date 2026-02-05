@@ -10,9 +10,109 @@ from ..db import get_db_connection, sql_placeholder, integrity_errors, ensure_pe
 from ..config import USE_POSTGRES
 from ..auth import pbkdf2_hash
 from ..utils import random_pair_code
+from ..ui import public_web_shell
 
 router = APIRouter()
 logger = logging.getLogger("schoolpoints.register")
+
+@router.get('/web/register', response_class=HTMLResponse)
+def web_register(request: Request) -> str:
+    body = """
+    <div style="max-width:600px; margin:0 auto;">
+        <h2 style="text-align:center; margin-bottom:10px;">הרשמה למוסד חדש</h2>
+        <p style="text-align:center; opacity:0.8; margin-bottom:30px;">הצטרפו למאות מוסדות שכבר נהנים מניהול נקודות מתקדם.</p>
+        
+        <form id="regForm" onsubmit="submitRegister(event)">
+            <div class="glass" style="padding:24px; border-radius:16px;">
+                <h3 style="margin-top:0; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">פרטי המוסד</h3>
+                
+                <div class="form-group">
+                    <label>שם המוסד</label>
+                    <input name="institution_name" class="form-input reg-input" required placeholder="לדוגמה: תלמוד תורה חכמת שלמה" />
+                </div>
+                
+                <div class="form-group">
+                    <label>קוד מוסד (באנגלית/מספרים בלבד)</label>
+                    <input name="institution_code" class="form-input reg-input" required pattern="[a-zA-Z0-9\-_]+" placeholder="לדוגמה: hekmat-shlomo" style="direction:ltr; text-align:left;" />
+                    <div style="font-size:12px; opacity:0.6; margin-top:4px;">זהו המזהה הייחודי שלכם במערכת (Tenant ID).</div>
+                </div>
+                
+                <div class="form-group">
+                    <label>סיסמת ניהול ראשית</label>
+                    <input name="password" type="password" class="form-input reg-input" required placeholder="סיסמה חזקה לניהול המערכת" />
+                </div>
+
+                <h3 style="margin-top:30px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">איש קשר</h3>
+                
+                <div class="form-group">
+                    <label>שם מלא</label>
+                    <input name="contact_name" class="form-input reg-input" required />
+                </div>
+                
+                <div class="form-group">
+                    <label>אימייל</label>
+                    <input name="email" type="email" class="form-input reg-input" required style="direction:ltr; text-align:left;" />
+                </div>
+                
+                <div class="form-group">
+                    <label>טלפון</label>
+                    <input name="phone" class="form-input reg-input" style="direction:ltr; text-align:left;" />
+                </div>
+
+                <div class="form-group" style="margin-top:20px; display:flex; gap:10px; align-items:center;">
+                    <input type="checkbox" id="terms" name="terms" required style="width:20px; height:20px;" />
+                    <label for="terms" style="margin:0; font-weight:400;">קראתי ואני מאשר את <a href="/web/terms" target="_blank" style="text-decoration:underline;">התקנון ותנאי השימוש</a></label>
+                </div>
+
+                <div style="margin-top:30px; text-align:center;">
+                    <button type="submit" class="btn-primary" style="width:100%; font-size:18px; padding:16px;">הרשמה ותשלום</button>
+                </div>
+            </div>
+        </form>
+    </div>
+
+    <script>
+    async function submitRegister(e) {
+        e.preventDefault();
+        const btn = e.target.querySelector('button');
+        const originalText = btn.innerText;
+        btn.disabled = true;
+        btn.innerText = 'מעבד...';
+
+        const formData = new FormData(e.target);
+        const data = Object.fromEntries(formData.entries());
+        data.terms = !!document.getElementById('terms').checked;
+        
+        // Get plan from URL if present
+        const urlParams = new URLSearchParams(window.location.search);
+        const plan = urlParams.get('plan') || 'basic';
+        data.plan = plan;
+
+        try {
+            const res = await fetch('/api/register', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            });
+            const result = await res.json();
+            
+            if (res.ok && result.ok) {
+                // Redirect to mock payment
+                window.location.href = `/web/payment/mock?reg_email=${encodeURIComponent(data.email)}&plan=${plan}`;
+            } else {
+                alert('שגיאה בהרשמה: ' + (result.detail || result.message || 'Unknown error'));
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
+        } catch (err) {
+            alert('שגיאה בתקשורת: ' + err);
+            btn.disabled = false;
+            btn.innerText = originalText;
+        }
+    }
+    </script>
+    """
+    return public_web_shell("הרשמה", body, request=request)
 
 @router.post('/api/register')
 def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:

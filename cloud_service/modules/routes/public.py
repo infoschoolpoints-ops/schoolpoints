@@ -38,42 +38,152 @@ def root() -> Response:
 @router.get('/web', response_class=HTMLResponse)
 @router.get('/web/', response_class=HTMLResponse)
 def web_home() -> str:
+    # Use some guide images for the montage
+    montage_images = ['01.png', '02.png', '03.png', '04.png']
+    
     body = f"""
-    <div style="text-align:center;">
-      <h1 style="font-size:42px; font-weight:900; margin-bottom:10px; background: -webkit-linear-gradient(45deg, #00cec9, #6c5ce7); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">SchoolPoints Cloud</h1>
-      <p style="font-size:18px; opacity:0.8; max-width:600px; margin:0 auto 30px;">
-        מערכת ניהול נקודות מתקדמת למוסדות חינוך. סנכרון מלא בין עמדות הקצה לענן, ניהול תלמידים, מורים, בונוסים וקניות.
-      </p>
+    <style>
+      .hero-section {{
+        text-align: center;
+        padding: 40px 20px;
+        position: relative;
+        overflow: hidden;
+      }}
       
-      <div class="actionbar" style="justify-content:center; gap:16px;">
-        <a class="btn-glass primary" href="/web/signin" style="padding:14px 28px; font-size:16px;">כניסה למערכת</a>
-        <a class="btn-glass" href="/web/register" style="padding:14px 28px; font-size:16px;">הרשמה למוסד</a>
-      </div>
+      .hero-title {{
+        font-size: 56px;
+        font-weight: 900;
+        margin-bottom: 16px;
+        background: linear-gradient(135deg, #ffffff 0%, #a5b1c2 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        text-shadow: 0 10px 30px rgba(0,0,0,0.3);
+      }}
+      
+      .hero-subtitle {{
+        font-size: 20px;
+        opacity: 0.9;
+        max-width: 700px;
+        margin: 0 auto 40px;
+        line-height: 1.6;
+        color: #dfe6e9;
+      }}
+      
+      .montage-container {{
+        position: relative;
+        height: 300px;
+        margin: 40px auto;
+        max-width: 1000px;
+        perspective: 1000px;
+        pointer-events: none;
+      }}
+      
+      .montage-card {{
+        position: absolute;
+        border-radius: 12px;
+        box-shadow: 0 15px 35px rgba(0,0,0,0.4);
+        border: 1px solid rgba(255,255,255,0.2);
+        transition: transform 0.5s ease;
+        background: rgba(255,255,255,0.1);
+        backdrop-filter: blur(5px);
+        overflow: hidden;
+      }}
+      
+      .montage-card img {{
+        width: 100%;
+        height: auto;
+        display: block;
+        opacity: 0.9;
+      }}
+      
+      /* Floating Animation */
+      @keyframes float {{
+        0% {{ transform: translateY(0px) rotate(var(--rot)); }}
+        50% {{ transform: translateY(-10px) rotate(var(--rot)); }}
+        100% {{ transform: translateY(0px) rotate(var(--rot)); }}
+      }}
+      
+      .card-1 {{ top: 10px; left: 10%; width: 220px; transform: rotate(-6deg); --rot: -6deg; animation: float 6s ease-in-out infinite; z-index: 2; }}
+      .card-2 {{ top: 40px; right: 10%; width: 240px; transform: rotate(5deg); --rot: 5deg; animation: float 7s ease-in-out infinite 1s; z-index: 2; }}
+      .card-3 {{ top: 80px; left: 35%; width: 300px; transform: rotate(0deg); --rot: 0deg; animation: float 8s ease-in-out infinite 0.5s; z-index: 3; box-shadow: 0 20px 50px rgba(0,0,0,0.6); }}
+      
+      .stars {{
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        pointer-events: none;
+        z-index: 0;
+      }}
+      .star {{
+        position: absolute;
+        background: white;
+        border-radius: 50%;
+        animation: twinkle var(--dur) ease-in-out infinite;
+        opacity: var(--op);
+      }}
+      @keyframes twinkle {{
+        0%, 100% {{ opacity: var(--op); transform: scale(1); }}
+        50% {{ opacity: 0; transform: scale(0.5); }}
+      }}
 
-      <div style="margin-top:50px; display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:20px; max-width:1000px; margin-left:auto; margin-right:auto;">
-        <div class="glass" style="padding:24px; border-radius:16px; text-align:center;">
-          <div style="font-size:32px; margin-bottom:10px;">☁️</div>
-          <div style="font-weight:800; font-size:18px; margin-bottom:8px;">ענן היברידי</div>
-          <div style="font-size:14px; opacity:0.7;">הנתונים מסונכרנים בזמן אמת בין כל העמדות במוסד לבין הענן.</div>
+    </style>
+
+    <div class="hero-section">
+        <!-- Stars Background -->
+        <div class="stars">
+            {''.join([f'<div class="star" style="top:{x*7}%; left:{y*13}%; width:{s}px; height:{s}px; --dur:{d}s; --op:{o};"></div>' for x,y,s,d,o in [(1,5,2,3,0.8), (8,2,3,4,0.6), (2,8,2,5,0.9), (6,6,3,3,0.7), (3,3,2,6,0.5), (7,9,2,4,0.8)]])}
         </div>
-        <div class="glass" style="padding:24px; border-radius:16px; text-align:center;">
-          <div style="font-size:32px; margin-bottom:10px;">🎓</div>
-          <div style="font-weight:800; font-size:18px; margin-bottom:8px;">תלמידים</div>
-          <div style="font-size:14px; opacity:0.7;">מעקב נקודות, רכישות ובונוסים אישי לכל תלמיד.</div>
-        </div>
-        <div class="glass" style="padding:24px; border-radius:16px; text-align:center;">
-          <div style="font-size:32px; margin-bottom:10px;">🛡️</div>
-          <div style="font-weight:800; font-size:18px; margin-bottom:8px;">אבטחה</div>
-          <div style="font-size:14px; opacity:0.7;">גיבוי נתונים יומי והגנה מתקדמת על המידע.</div>
-        </div>
-      </div>
+
+        <h1 class="hero-title">תוכנת הנקודות</h1>
+        <p class="hero-subtitle">
+            המערכת המתקדמת לניהול נקודות, תלמידים ורכישות במוסדות חינוך.<br/>
+            סנכרון מלא לענן, עיצוב חדשני וחווית משתמש מושלמת.
+        </p>
       
-      <div style="margin-top:40px;">
-        <a href="/web/download" style="color:var(--accent-blue); font-weight:700;">הורדת התוכנה למחשב &larr;</a>
-      </div>
+        <div class="actionbar" style="justify-content:center; gap:20px; margin-bottom:40px; position:relative; z-index:10;">
+            <a class="btn-glass primary" href="/web/signin" style="padding:16px 32px; font-size:18px;">כניסה למערכת</a>
+            <a class="btn-glass" href="/web/register" style="padding:16px 32px; font-size:18px;">הרשמה למוסד</a>
+        </div>
+        
+        <div class="actionbar" style="justify-content:center; gap:16px; margin-bottom:20px; position:relative; z-index:10;">
+            <a href="/web/guide" style="color:rgba(255,255,255,0.8); font-weight:700; display:flex; align-items:center; gap:6px; font-size:16px;">
+                <span style="font-size:20px;">📚</span> מדריך למשתמש
+            </a>
+            <span style="opacity:0.3;">|</span>
+            <a href="/web/contact" style="color:rgba(255,255,255,0.8); font-weight:700; display:flex; align-items:center; gap:6px; font-size:16px;">
+                <span style="font-size:20px;">✉️</span> צור קשר
+            </a>
+            <span style="opacity:0.3;">|</span>
+             <a href="/web/download" style="color:rgba(255,255,255,0.8); font-weight:700; display:flex; align-items:center; gap:6px; font-size:16px;">
+                <span style="font-size:20px;">⬇️</span> הורדה
+            </a>
+        </div>
+
+        <div class="montage-container">
+            <div class="montage-card card-1"><img src="/web/assets/guide_images/02.png" alt="Screen 1"></div>
+            <div class="montage-card card-2"><img src="/web/assets/guide_images/06.png" alt="Screen 2"></div>
+            <div class="montage-card card-3"><img src="/web/assets/guide_images/01.png" alt="Screen 3"></div>
+        </div>
+
+        <div style="margin-top:60px; display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:24px; max-width:1100px; margin-left:auto; margin-right:auto; position:relative; z-index:5;">
+            <div class="glass" style="padding:30px; border-radius:20px; text-align:center;">
+                <div style="font-size:48px; margin-bottom:16px;">☁️</div>
+                <div style="font-weight:900; font-size:22px; margin-bottom:12px; color:#fff;">ענן היברידי</div>
+                <div style="font-size:16px; opacity:0.8; line-height:1.6;">הנתונים מסונכרנים בזמן אמת. גם אם האינטרנט נופל, העמדות ממשיכות לעבוד והנתונים יעלו כשהחיבור יחזור.</div>
+            </div>
+            <div class="glass" style="padding:30px; border-radius:20px; text-align:center;">
+                <div style="font-size:48px; margin-bottom:16px;">💎</div>
+                <div style="font-weight:900; font-size:22px; margin-bottom:12px; color:#fff;">ממשק זכוכיתי</div>
+                <div style="font-size:16px; opacity:0.8; line-height:1.6;">עיצוב נקי ומודרני המותאם לכל המסכים. חווית משתמש נוחה ואינטואיטיבית למורים ולתלמידים.</div>
+            </div>
+            <div class="glass" style="padding:30px; border-radius:20px; text-align:center;">
+                <div style="font-size:48px; margin-bottom:16px;">🛡️</div>
+                <div style="font-weight:900; font-size:22px; margin-bottom:12px; color:#fff;">אבטחה מתקדמת</div>
+                <div style="font-size:16px; opacity:0.8; line-height:1.6;">הצפנת נתונים, גיבויים אוטומטיים וניהול הרשאות קפדני לשמירה על פרטיות המוסד.</div>
+            </div>
+        </div>
     </div>
     """
-    return public_web_shell('SchoolPoints', body)
+    return public_web_shell('תוכנת הנקודות', body)
 
 @router.get('/web/guide', response_class=HTMLResponse)
 def web_guide(request: Request) -> str:

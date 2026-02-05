@@ -30,30 +30,39 @@ def save_contact_message(name: str, email: str, subject: str, message: str) -> N
 @router.get('/web/contact', response_class=HTMLResponse)
 def web_contact() -> str:
     body = f"""
-    <h2>צור קשר</h2>
-    <div style="opacity:.86; margin-top:-6px;">נחזור אליך בהקדם.</div>
-    <form method="post" action="/web/contact" style="margin-top:12px; max-width:680px;">
-      <div class="form-group">
-        <label>שם</label>
-        <input name="name" class="form-input" required />
-      </div>
-      <div class="form-group">
-        <label>אימייל</label>
-        <input name="email" type="email" class="form-input" required />
-      </div>
-      <div class="form-group">
-        <label>נושא</label>
-        <input name="subject" class="form-input" />
-      </div>
-      <div class="form-group">
-        <label>הודעה</label>
-        <textarea name="message" class="form-input" style="min-height:120px;" required></textarea>
-      </div>
-      <div class="actionbar" style="justify-content:flex-start;">
-        <button class="green" type="submit">שליחה</button>
-        <a class="gray" href="/web">חזרה</a>
-      </div>
-    </form>
+    <div style="max-width:600px; margin:0 auto;">
+        <h2 style="text-align:center; margin-bottom:10px;">צור קשר</h2>
+        <p style="text-align:center; opacity:0.8; margin-bottom:30px;">נשמח לשמוע מכם! מלאו את הפרטים ונחזור אליכם בהקדם.</p>
+        
+        <form method="post" action="/web/contact">
+            <div class="glass" style="padding:30px; border-radius:16px;">
+                <div class="form-group">
+                    <label>שם מלא</label>
+                    <input name="name" class="form-input reg-input" required placeholder="שם ושם משפחה" />
+                </div>
+                
+                <div class="form-group">
+                    <label>אימייל</label>
+                    <input name="email" type="email" class="form-input reg-input" required placeholder="name@example.com" style="direction:ltr; text-align:right;" />
+                </div>
+                
+                <div class="form-group">
+                    <label>נושא הפנייה</label>
+                    <input name="subject" class="form-input reg-input" placeholder="בנושא..." />
+                </div>
+                
+                <div class="form-group">
+                    <label>תוכן ההודעה</label>
+                    <textarea name="message" class="form-input reg-input" style="min-height:150px; resize:vertical;" required placeholder="כתוב כאן את הודעתך..."></textarea>
+                </div>
+                
+                <div class="actionbar" style="justify-content:space-between; margin-top:20px;">
+                     <a class="btn-glass" href="/web">ביטול וחזרה</a>
+                     <button class="btn-primary" type="submit" style="padding-left:30px; padding-right:30px;">שליחת הודעה</button>
+                </div>
+            </div>
+        </form>
+    </div>
     """
     return public_web_shell('צור קשר', body)
 

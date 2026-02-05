@@ -10,6 +10,14 @@ from ..config import USE_POSTGRES
 
 router = APIRouter()
 
+@router.get('/web/signin', response_class=RedirectResponse)
+def web_signin() -> Response:
+    return RedirectResponse(url='/web/teacher-login', status_code=302)
+
+@router.get('/web/login', response_class=RedirectResponse)
+def web_login() -> Response:
+    return RedirectResponse(url='/web/teacher-login', status_code=302)
+
 @router.get('/web/teacher-login', response_class=HTMLResponse)
 def web_teacher_login(request: Request) -> Response:
     guard = web_require_tenant(request)
