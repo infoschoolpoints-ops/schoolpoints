@@ -36,7 +36,7 @@ def api_license_fetch(payload: LicenseFetchPayload) -> Dict[str, Any]:
         authenticated = False
         if api_key and api_key == real_api_key:
             authenticated = True
-        elif password and check_password_hash(password, real_pw_hash):
+        elif password and check_password_hash(real_pw_hash, password):
             authenticated = True
             
         if not authenticated:

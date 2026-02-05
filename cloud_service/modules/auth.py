@@ -18,6 +18,16 @@ def pbkdf2_hash(password: str) -> str:
         100000
     ).hex()
 
+def generate_password_hash(password: str) -> str:
+    """Generate a password hash."""
+    return pbkdf2_hash(password)
+
+def check_password_hash(pwhash: str, password: str) -> bool:
+    """Check a password against a hash."""
+    if not pwhash or not password:
+        return False
+    return hmac.compare_digest(pwhash, pbkdf2_hash(password))
+
 def master_token_valid(token: str, tenant_id: str) -> bool:
     """Check if the master token is valid for the given tenant."""
     if not token or not tenant_id:
