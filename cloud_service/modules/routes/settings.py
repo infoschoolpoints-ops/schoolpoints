@@ -223,8 +223,8 @@ def web_display_settings(request: Request):
       </div>
     </div>
     <script>
-      async function saveSettings() {
-        const payload = {
+      async function saveSettings() {{
+        const payload = {{
             title_text: document.getElementById('p_title').value,
             subtitle_text: document.getElementById('p_subtitle').value,
             logo_url: document.getElementById('p_logo').value,
@@ -235,23 +235,23 @@ def web_display_settings(request: Request):
             dark_mode: document.getElementById('p_dark').checked,
             show_clock: document.getElementById('p_clock').checked,
             show_qr: document.getElementById('p_qr').checked
-        };
+        }};
 
-        try {
-            const res = await fetch('/api/settings/save', {
+        try {{
+            const res = await fetch('/api/settings/save', {{
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ key: 'display_settings', value: payload })
-            });
-            if (res.ok) {
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{ key: 'display_settings', value: payload }})
+            }});
+            if (res.ok) {{
                 alert('נשמר בהצלחה');
-            } else {
+            }} else {{
                 alert('שגיאה בשמירה');
-            }
-        } catch (e) {
+            }}
+        }} catch (e) {{
             alert('שגיאה: ' + e);
-        }
-      }
+        }}
+      }}
     </script>
     """
     return basic_web_shell("הגדרות תצוגה", html_content, request=request)
