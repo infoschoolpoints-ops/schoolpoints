@@ -28,6 +28,7 @@ SMTP_USER = (os.getenv('SMTP_USER') or '').strip()
 SMTP_PASSWORD = (os.getenv('SMTP_PASSWORD') or os.getenv('SMTP_PASS') or '').strip()
 SMTP_FROM = (os.getenv('SMTP_FROM') or SMTP_USER).strip()
 CONTACT_EMAIL_TO = (os.getenv('CONTACT_EMAIL_TO') or SMTP_USER).strip()
+REGISTRATION_NOTIFY_EMAIL = (os.getenv('REGISTRATION_NOTIFY_EMAIL') or '').strip()
 
 # Other
 MASTER_PASSWORD_HASH = "8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92" # sha256 of 'master' (default)
