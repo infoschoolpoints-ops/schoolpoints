@@ -133,7 +133,6 @@ def web_register(request: Request) -> str:
     </script>
 </div>
 """
-"""
     return public_web_shell("הרשמה", body, request=request)
 
 @router.post('/api/register')
