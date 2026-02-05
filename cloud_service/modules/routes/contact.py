@@ -31,35 +31,123 @@ def save_contact_message(name: str, email: str, subject: str, message: str) -> N
 def web_contact() -> str:
     body = """
 <style>
-  .contact-wrap { max-width: 900px; margin: 0 auto; }
-  .contact-hero { text-align: center; margin-bottom: 28px; }
-  .contact-hero h2 { margin: 0 0 8px; }
-  .contact-hero p { margin: 0; opacity: 0.8; }
+  .contact-wrap { max-width: 1000px; margin: 0 auto; padding: 20px; }
+  .contact-hero { text-align: center; margin-bottom: 40px; }
+  .contact-hero h2 { 
+    font-size: 48px; 
+    margin: 0 0 16px; 
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700;
+  }
+  .contact-hero p { 
+    font-size: 20px; 
+    margin: 0; 
+    opacity: 0.9; 
+    line-height: 1.6;
+  }
   .contact-card {
     background: var(--glass-bg);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
     border: 1px solid var(--glass-border);
-    border-radius: 20px;
-    padding: 32px;
-    box-shadow: var(--glass-shadow);
+    border-radius: 24px;
+    padding: 48px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
   }
-  .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  .contact-grid .form-group { margin-bottom: 20px; }
+  .contact-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 25px 70px rgba(0,0,0,0.15);
+  }
+  .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
   .contact-full { grid-column: 1 / -1; }
+  .form-group { margin-bottom: 24px; }
+  .form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .form-input {
+    width: 100%;
+    padding: 16px 20px;
+    font-size: 16px;
+    border: 2px solid var(--glass-border);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.05);
+    transition: all 0.3s ease;
+  }
+  .form-input:focus {
+    border-color: #667eea;
+    background: rgba(255,255,255,0.08);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(102,126,234,0.1);
+  }
+  textarea.form-input {
+    min-height: 160px;
+    resize: vertical;
+    font-family: inherit;
+  }
   .contact-actions {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: 24px;
-    gap: 12px;
+    margin-top: 40px;
+    gap: 20px;
+  }
+  .btn-glass {
+    padding: 16px 32px;
+    font-size: 16px;
+    font-weight: 600;
+    border-radius: 12px;
+    transition: all 0.3s ease;
+  }
+  .btn-primary {
+    padding: 16px 48px;
+    font-size: 18px;
+    font-weight: 700;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    transition: all 0.3s ease;
+  }
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 30px rgba(102,126,234,0.3);
+  }
+  .contact-info {
+    margin-top: 48px;
+    padding: 32px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 16px;
+    text-align: center;
+  }
+  .contact-info h3 {
+    font-size: 24px;
+    margin-bottom: 16px;
+  }
+  .contact-info p {
+    font-size: 16px;
+    opacity: 0.8;
+    margin: 8px 0;
+  }
+  @media (max-width: 768px) {
+    .contact-grid { grid-template-columns: 1fr; gap: 24px; }
+    .contact-card { padding: 32px 24px; }
+    .contact-hero h2 { font-size: 36px; }
+    .contact-hero p { font-size: 18px; }
+    .contact-actions { flex-direction: column; }
+    .btn-primary { width: 100%; }
   }
 </style>
 
 <div class="contact-wrap">
   <div class="contact-hero">
     <h2>צור קשר</h2>
-    <p>נשמח לשמוע מכם! מלאו את הפרטים ונחזור אליכם בהקדם.</p>
+    <p>נשמח לשמוע מכם ולעזור בכל שאלה.<br>הצוות שלנו זמין 24/7 לתמיכה מלאה.</p>
   </div>
 
   <form method="post" action="/web/contact">
@@ -67,7 +155,7 @@ def web_contact() -> str:
       <div class="contact-grid">
         <div class="form-group">
           <label>שם מלא</label>
-          <input name="name" class="form-input reg-input" required placeholder="שם ושם משפחה" />
+          <input name="name" class="form-input reg-input" required placeholder="הכנס שם ושם משפחה" />
         </div>
         <div class="form-group">
           <label>אימייל</label>
@@ -75,21 +163,29 @@ def web_contact() -> str:
         </div>
         <div class="form-group contact-full">
           <label>נושא הפנייה</label>
-          <input name="subject" class="form-input reg-input" placeholder="בנושא..." />
+          <input name="subject" class="form-input reg-input" placeholder="לדוגמה: שאלה טכנית, בקשת הצעה, תמיכה..." />
         </div>
         <div class="form-group contact-full">
           <label>תוכן ההודעה</label>
-          <textarea name="message" class="form-input reg-input" style="min-height:150px; resize:vertical;" required placeholder="כתוב כאן את הודעתך..."></textarea>
+          <textarea name="message" class="form-input reg-input" required placeholder="כתוב כאן את הודעתך בפירוט כדי שנוכל לעזור לך בצורה הטובה ביותר..."></textarea>
         </div>
       </div>
 
       <div class="contact-actions">
         <a class="btn-glass" href="/web">ביטול וחזרה</a>
-        <button class="btn-primary" type="submit" style="padding-left:30px; padding-right:30px;">שליחת הודעה</button>
+        <button class="btn-primary" type="submit">שליחת הודעה</button>
       </div>
     </div>
   </form>
+
+  <div class="contact-info">
+    <h3>דרכים נוספות ליצירת קשר</h3>
+    <p>📧 אימייל: info@schoolpoints.co.il</p>
+    <p>📱 טלפון: 03-1234567</p>
+    <p>💬 צ'אט תמיכה: זמין באתר בכל יום</p>
+  </div>
 </div>
+"""
 """
     return public_web_shell('צור קשר', body)
 

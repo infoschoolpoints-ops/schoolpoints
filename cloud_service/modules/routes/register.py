@@ -18,120 +18,338 @@ logger = logging.getLogger("schoolpoints.register")
 @router.get('/web/register', response_class=HTMLResponse)
 def web_register(request: Request) -> str:
     body = """
-<div style="max-width:600px; margin:0 auto;">
-    <h2 style="text-align:center; margin-bottom:10px;">הרשמה למוסד חדש</h2>
-    <p style="text-align:center; opacity:0.8; margin-bottom:30px;">הצטרפו למאות תלמידים שכבר נהנים מניהול נקודות מתקדם.</p>
-    
-    <form id="regForm" onsubmit="submitRegister(event)">
-        <div class="glass" style="padding:24px; border-radius:16px;">
-            <h3 style="margin-top:0; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">פרטי המוסד</h3>
-            
-            <div class="form-group">
-                <label>שם המוסד</label>
-                <input name="institution_name" class="form-input reg-input" required placeholder="לדוגמה: תלמוד תורה חכמת שלמה" />
-            </div>
-            
-            <div class="form-group">
-                <label>קוד מוסד (ספרות בלבד)</label>
-                <input name="institution_code" class="form-input reg-input" required pattern="[0-9]+" placeholder="12345" style="direction:ltr; text-align:left;" />
-                <div style="font-size:12px; opacity:0.6; margin-top:4px;">זהו המזהה הייחודי שלכם במערכת (Tenant ID).</div>
-            </div>
-            
-            <div class="form-group">
-                <label>סיסמת ניהול ראשית</label>
-                <input name="password" type="password" class="form-input reg-input" required placeholder="סיסמה חזקה לניהול המערכת" />
-            </div>
+<style>
+  .register-wrap { max-width: 800px; margin: 0 auto; padding: 20px; }
+  .register-hero { text-align: center; margin-bottom: 40px; }
+  .register-hero h2 { 
+    font-size: 48px; 
+    margin: 0 0 16px; 
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700;
+  }
+  .register-hero p { 
+    font-size: 20px; 
+    margin: 0; 
+    opacity: 0.9; 
+    line-height: 1.6;
+  }
+  .register-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--glass-border);
+    border-radius: 24px;
+    padding: 48px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+  }
+  .register-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 25px 70px rgba(0,0,0,0.15);
+  }
+  .section-title {
+    font-size: 24px;
+    font-weight: 700;
+    margin: 30px 0 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .section-title:first-child { margin-top: 0; }
+  .form-group { margin-bottom: 24px; }
+  .form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .form-input {
+    width: 100%;
+    padding: 16px 20px;
+    font-size: 16px;
+    border: 2px solid var(--glass-border);
+    border-radius: 12px;
+    background: rgba(255,255,255,0.05);
+    transition: all 0.3s ease;
+  }
+  .form-input:focus {
+    border-color: #667eea;
+    background: rgba(255,255,255,0.08);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(102,126,234,0.1);
+  }
+  .plan-grid { 
+    display: grid; 
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+    gap: 16px; 
+    margin-bottom: 20px; 
+  }
+  .plan-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 20px;
+    border: 2px solid var(--glass-border);
+    border-radius: 16px;
+    background: rgba(255,255,255,0.03);
+    cursor: pointer;
+    transition: all 0.3s ease;
+  }
+  .plan-option:hover {
+    border-color: rgba(102,126,234,0.5);
+    background: rgba(255,255,255,0.06);
+  }
+  .plan-option.selected {
+    border-color: #667eea;
+    background: rgba(102,126,234,0.1);
+  }
+  .plan-option input[type="radio"] { 
+    width: 20px; 
+    height: 20px; 
+    margin: 0; 
+  }
+  .plan-details {
+    flex: 1;
+  }
+  .plan-name {
+    font-size: 18px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 4px;
+  }
+  .plan-desc {
+    font-size: 14px;
+    opacity: 0.7;
+  }
+  .plan-price {
+    font-size: 16px;
+    font-weight: 600;
+    color: #2ecc71;
+  }
+  .checkbox-group {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    margin: 24px 0;
+  }
+  .checkbox-group input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+    margin-top: 2px;
+  }
+  .checkbox-group label {
+    margin: 0;
+    font-weight: 400;
+    line-height: 1.6;
+  }
+  .checkbox-group a {
+    color: #667eea;
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .checkbox-group a:hover { text-decoration: underline; }
+  .submit-section {
+    margin-top: 40px;
+    text-align: center;
+  }
+  .btn-primary {
+    padding: 18px 48px;
+    font-size: 20px;
+    font-weight: 700;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    color: white;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    width: 100%;
+    max-width: 400px;
+  }
+  .btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 30px rgba(102,126,234,0.3);
+  }
+  .btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+  }
+  .pricing-link {
+    margin-top: 20px;
+    font-size: 16px;
+    opacity: 0.8;
+  }
+  .pricing-link a {
+    color: #667eea;
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .pricing-link a:hover { text-decoration: underline; }
+  .help-text {
+    font-size: 12px;
+    opacity: 0.6;
+    margin-top: 4px;
+  }
+  @media (max-width: 768px) {
+    .register-card { padding: 32px 24px; }
+    .register-hero h2 { font-size: 36px; }
+    .register-hero p { font-size: 18px; }
+    .plan-grid { grid-template-columns: 1fr; }
+  }
+</style>
 
-            <h3 style="margin-top:30px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">בחירת מסלול</h3>
-            <div style="display:flex; flex-direction:column; gap:12px; margin-bottom:20px;">
-                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; padding:12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; transition:background 0.2s;">
-                    <input type="radio" name="plan" value="basic" checked style="margin:0;">
-                    <div>
-                        <strong>Basic</strong> – עד 100 תלמידים
-                    </div>
-                </label>
-                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; padding:12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; transition:background 0.2s;">
-                    <input type="radio" name="plan" value="extended" style="margin:0;">
-                    <div>
-                        <strong>Extended</strong> – עד 300 תלמידים
-                    </div>
-                </label>
-                <label style="display:flex; align-items:center; gap:10px; cursor:pointer; padding:12px; border:1px solid rgba(255,255,255,0.1); border-radius:10px; transition:background 0.2s;">
-                    <input type="radio" name="plan" value="unlimited" style="margin:0;">
-                    <div>
-                        <strong>Unlimited</strong> – ללא הגבלה
-                    </div>
-                </label>
-            </div>
+<div class="register-wrap">
+  <div class="register-hero">
+    <h2>הרשמה למוסד חדש</h2>
+    <p>הצטרפו למאות מוסדות חינוך שכבר נהנים ממערכת ניהול הנקודות המתקדמת בישראל</p>
+  </div>
 
-            <h3 style="margin-top:30px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">איש קשר</h3>
-            
-            <div class="form-group">
-                <label>שם מלא</label>
-                <input name="contact_name" class="form-input reg-input" required />
-            </div>
-            
-            <div class="form-group">
-                <label>אימייל</label>
-                <input name="email" type="email" class="form-input reg-input" required style="direction:ltr; text-align:left;" />
-            </div>
-            
-            <div class="form-group">
-                <label>טלפון</label>
-                <input name="phone" class="form-input reg-input" style="direction:ltr; text-align:left;" />
-            </div>
+  <form id="regForm" onsubmit="submitRegister(event)">
+    <div class="register-card">
+      <div class="section-title">
+        <span>🏫</span> פרטי המוסד
+      </div>
+      
+      <div class="form-group">
+        <label>שם המוסד</label>
+        <input name="institution_name" class="form-input reg-input" required placeholder="לדוגמה: תלמוד תורה חכמת שלמה" />
+      </div>
+      
+      <div class="form-group">
+        <label>קוד מוסד (Tenant ID)</label>
+        <input name="institution_code" class="form-input reg-input" required pattern="[0-9]+" placeholder="מספר ספרות בלבד" style="direction:ltr; text-align:left;" />
+        <div class="help-text">זהו המזהה הייחודי שלכם במערכת</div>
+      </div>
+      
+      <div class="form-group">
+        <label>סיסמת ניהול ראשית</label>
+        <input name="password" type="password" class="form-input reg-input" required placeholder="סיסמה חזקה לניהול המערכת" />
+      </div>
 
-            <div class="form-group" style="margin-top:20px; display:flex; gap:10px; align-items:center;">
-                <input type="checkbox" id="terms" name="terms" required style="width:20px; height:20px;" />
-                <label for="terms" style="margin:0; font-weight:400;">קראתי ואני מאשר את <a href="/web/terms" target="_blank" style="text-decoration:underline;">התקנון ותנאי השימוש</a></label>
-            </div>
-
-            <div style="margin-top:30px; text-align:center;">
-                <button type="submit" class="btn-primary" style="width:100%; font-size:18px; padding:16px;">הרשמה ותשלום</button>
-            </div>
-        </form>
-    </div>
-
-    <script>
-    async function submitRegister(e) {
-        e.preventDefault();
-        const btn = e.target.querySelector('button');
-        const originalText = btn.innerText;
-        btn.disabled = true;
-        btn.innerText = 'מעבד...';
-
-        const formData = new FormData(e.target);
-        const data = Object.fromEntries(formData.entries());
-        data.terms = !!document.getElementById('terms').checked;
+      <div class="section-title">
+        <span>💎</span> בחירת מסלול
+      </div>
+      
+      <div class="plan-grid">
+        <label class="plan-option">
+          <input type="radio" name="plan" value="basic" checked>
+          <div class="plan-details">
+            <div class="plan-name">Basic</div>
+            <div class="plan-desc">עד 100 תלמיד</div>
+          </div>
+          <div class="plan-price">₪50/חודש</div>
+        </label>
         
-        // Get selected plan from radio buttons
-        const selectedPlan = document.querySelector('input[name="plan"]:checked').value;
-        data.plan = selectedPlan;
+        <label class="plan-option">
+          <input type="radio" name="plan" value="extended">
+          <div class="plan-details">
+            <div class="plan-name">Extended</div>
+            <div class="plan-desc">עד 300 תלמיד</div>
+          </div>
+          <div class="plan-price">₪120/חודש</div>
+        </label>
+        
+        <label class="plan-option">
+          <input type="radio" name="plan" value="unlimited">
+          <div class="plan-details">
+            <div class="plan-name">Unlimited</div>
+            <div class="plan-desc">ללא הגבלה</div>
+          </div>
+          <div class="plan-price">₪200/חודש</div>
+        </label>
+      </div>
 
-        try {
-            const res = await fetch('/api/register', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(data)
-            });
-            const result = await res.json();
-            
-            if (res.ok && result.ok) {
-                // Redirect to mock payment
-                window.location.href = `/web/payment/mock?reg_email=${encodeURIComponent(data.email)}&plan=${selectedPlan}`;
-            } else {
-                alert('שגיאה בהרשמה: ' + (result.detail || result.message || 'Unknown error'));
-                btn.disabled = false;
-                btn.innerText = originalText;
-            }
-        } catch (err) {
-            alert('שגיאה בתקשורת: ' + err);
-            btn.disabled = false;
-            btn.innerText = originalText;
-        }
-    }
-    </script>
+      <div class="section-title">
+        <span>👤</span> איש קשר
+      </div>
+      
+      <div class="form-group">
+        <label>שם מלא</label>
+        <input name="contact_name" class="form-input reg-input" required placeholder="שם פרטי ושם משפחה" />
+      </div>
+      
+      <div class="form-group">
+        <label>אימייל</label>
+        <input name="email" type="email" class="form-input reg-input" required placeholder="name@example.com" style="direction:ltr; text-align:left;" />
+      </div>
+      
+      <div class="form-group">
+        <label>טלפון</label>
+        <input name="phone" class="form-input reg-input" placeholder="050-1234567" style="direction:ltr; text-align:left;" />
+      </div>
+
+      <div class="checkbox-group">
+        <input type="checkbox" id="terms" name="terms" required>
+        <label for="terms">קראתי ואני מאשר את <a href="/web/terms" target="_blank">התקנון ותנאי השימוש</a></label>
+      </div>
+
+      <div class="submit-section">
+        <button type="submit" class="btn-primary" id="submitBtn">הרשמה והמשך לתשלום</button>
+        <div class="pricing-link">
+          <a href="/web/pricing" target="_blank">לצפייה בפירוט המחירים והיתרונות ></a>
+        </div>
+      </div>
+    </div>
+  </form>
 </div>
+
+<script>
+// Handle plan selection visual feedback
+document.querySelectorAll('.plan-option').forEach(option => {
+  option.addEventListener('click', function() {
+    document.querySelectorAll('.plan-option').forEach(o => o.classList.remove('selected'));
+    this.classList.add('selected');
+    this.querySelector('input[type="radio"]').checked = true;
+  });
+});
+
+// Set initial selected state
+document.querySelector('.plan-option input:checked').closest('.plan-option').classList.add('selected');
+
+async function submitRegister(e) {
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  const originalText = btn.innerText;
+  btn.disabled = true;
+  btn.innerText = 'מעבד...';
+
+  const formData = new FormData(e.target);
+  const data = Object.fromEntries(formData.entries());
+  data.terms = !!document.getElementById('terms').checked;
+  
+  // Get selected plan
+  const selectedPlan = document.querySelector('input[name="plan"]:checked').value;
+  data.plan = selectedPlan;
+
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data)
+    });
+    const result = await res.json();
+    
+    if (res.ok && result.ok) {
+      // Redirect to mock payment
+      window.location.href = `/web/payment/mock?reg_email=${encodeURIComponent(data.email)}&plan=${selectedPlan}`;
+    } else {
+      alert('שגיאה בהרשמה: ' + (result.detail || result.message || 'Unknown error'));
+      btn.disabled = false;
+      btn.innerText = originalText;
+    }
+  } catch (err) {
+    alert('שגיאה בתקשורת: ' + err);
+    btn.disabled = false;
+    btn.innerText = originalText;
+  }
+}
+</script>
+"""
 """
     return public_web_shell("הרשמה", body, request=request)
 

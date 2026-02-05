@@ -198,13 +198,24 @@ def web_guide(request: Request) -> str:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
         return public_web_shell('מדריך', body, request=request)
 
-    html_content = str(html_content)
-    html_content = html_content.replace('file:///C:/ProgramData/SchoolPoints/equipment_required.html', '/web/equipment-required')
-    html_content = html_content.replace('file:///C:/%D7%9E%D7%99%D7%A6%D7%93/SchoolPoints/equipment_required.html', '/web/equipment-required')
-    html_content = html_content.replace('equipment_required.html', '/web/equipment-required')
-    html_content = replace_guide_base64_images(html_content)
-
-    return html_content
+    # Extract the body content from the HTML
+    import re
+    body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
+    if body_match:
+        body = body_match.group(1)
+        # Remove any existing header/footer from the embedded guide
+        body = re.sub(r'<header[^>]*>.*?</header>', '', body, flags=re.DOTALL | re.IGNORECASE)
+        body = re.sub(r'<footer[^>]*>.*?</footer>', '', body, flags=re.DOTALL | re.IGNORECASE)
+        body = re.sub(r'<div[^>]*class="top"[^>]*>.*?</div>', '', body, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Fix relative paths for images
+        body = body.replace('src="guide_images/', 'src="/web/assets/guide_images/')
+        body = body.replace('src="images/', 'src="/web/assets/guide_images/')
+        
+        return public_web_shell('מדריך למשתמש', body, request=request)
+    
+    # Fallback: return as-is with wrapper
+    return public_web_shell('מדריך למשתמש', html_content, request=request)
 
 @router.get('/web/pricing', response_class=HTMLResponse)
 def web_pricing() -> str:
