@@ -179,14 +179,18 @@ class Database:
         return p.startswith('\\') or p.startswith('//')
 
     def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
+        # PRAGMA commands usually succeed unless the DB is corrupt or busy.
+        # We allow OperationalError (busy) to be ignored if needed, but DatabaseError (corruption) must be raised.
         try:
             conn.execute('PRAGMA foreign_keys = ON')
-        except Exception:
+        except sqlite3.OperationalError:
             pass
+            
         try:
             conn.execute('PRAGMA busy_timeout = 5000')
-        except Exception:
+        except sqlite3.OperationalError:
             pass
+            
         try:
             if self._is_unc_path():
                 conn.execute('PRAGMA journal_mode = DELETE')
@@ -194,7 +198,7 @@ class Database:
             else:
                 conn.execute('PRAGMA journal_mode = WAL')
                 conn.execute('PRAGMA synchronous = NORMAL')
-        except Exception:
+        except sqlite3.OperationalError:
             pass
 
     def _backup_dir(self) -> str:
