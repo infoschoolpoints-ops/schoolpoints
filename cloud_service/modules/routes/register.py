@@ -6,69 +6,13 @@ import secrets
 import re
 import logging
 
-from ..db import get_db_connection, sql_placeholder, integrity_errors
+from ..db import get_db_connection, sql_placeholder, integrity_errors, ensure_pending_registrations_table
 from ..config import USE_POSTGRES
 from ..auth import pbkdf2_hash
 from ..utils import random_pair_code
 
 router = APIRouter()
 logger = logging.getLogger("schoolpoints.register")
-
-def ensure_pending_registrations_table() -> None:
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-        try:
-            if USE_POSTGRES:
-                cur.execute(
-                    '''
-                    CREATE TABLE IF NOT EXISTS pending_registrations (
-                        id BIGSERIAL PRIMARY KEY,
-                        institution_name TEXT NOT NULL,
-                        institution_code TEXT,
-                        contact_name TEXT,
-                        email TEXT NOT NULL,
-                        phone TEXT,
-                        password_hash TEXT,
-                        plan TEXT,
-                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        payment_status TEXT DEFAULT 'pending',
-                        payment_id TEXT
-                    )
-                    '''
-                )
-            else:
-                cur.execute(
-                    '''
-                    CREATE TABLE IF NOT EXISTS pending_registrations (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        institution_name TEXT NOT NULL,
-                        institution_code TEXT,
-                        contact_name TEXT,
-                        email TEXT NOT NULL,
-                        phone TEXT,
-                        password_hash TEXT,
-                        plan TEXT,
-                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                        payment_status TEXT DEFAULT 'pending',
-                        payment_id TEXT
-                    )
-                    '''
-                )
-        except Exception:
-            pass
-
-        try:
-            if USE_POSTGRES:
-                cur.execute('ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS institution_code TEXT')
-            else:
-                cur.execute('ALTER TABLE pending_registrations ADD COLUMN institution_code TEXT')
-        except Exception:
-            pass
-        conn.commit()
-    finally:
-        try: conn.close()
-        except: pass
 
 @router.post('/api/register')
 def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:

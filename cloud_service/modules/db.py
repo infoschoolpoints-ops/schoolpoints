@@ -383,3 +383,62 @@ def delete_tenant_db(tenant_id: str) -> bool:
                 logger.error(f"Failed to delete tenant DB file {db_path}: {e}")
                 return False
         return True
+
+def ensure_pending_registrations_table() -> None:
+    """Ensure the pending_registrations table exists."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            if USE_POSTGRES:
+                cur.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS pending_registrations (
+                        id BIGSERIAL PRIMARY KEY,
+                        institution_name TEXT NOT NULL,
+                        institution_code TEXT,
+                        contact_name TEXT,
+                        email TEXT NOT NULL,
+                        phone TEXT,
+                        password_hash TEXT,
+                        plan TEXT,
+                        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        payment_status TEXT DEFAULT 'pending',
+                        payment_id TEXT
+                    )
+                    '''
+                )
+            else:
+                cur.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS pending_registrations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        institution_name TEXT NOT NULL,
+                        institution_code TEXT,
+                        contact_name TEXT,
+                        email TEXT NOT NULL,
+                        phone TEXT,
+                        password_hash TEXT,
+                        plan TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        payment_status TEXT DEFAULT 'pending',
+                        payment_id TEXT
+                    )
+                    '''
+                )
+        except Exception:
+            pass
+
+        try:
+            if USE_POSTGRES:
+                cur.execute('ALTER TABLE pending_registrations ADD COLUMN IF NOT EXISTS institution_code TEXT')
+            else:
+                # SQLite ALTER TABLE ADD COLUMN does not support IF NOT EXISTS in all versions, 
+                # but we can try and ignore error
+                cur.execute('ALTER TABLE pending_registrations ADD COLUMN institution_code TEXT')
+        except Exception:
+            pass
+        conn.commit()
+    finally:
+        try: conn.close()
+        except: pass
