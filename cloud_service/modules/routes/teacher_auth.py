@@ -2,21 +2,149 @@ from fastapi import APIRouter, Request, Response, Form, Query
 from typing import Dict, Any
 from fastapi.responses import HTMLResponse, RedirectResponse
 import urllib.parse
+import hashlib
 
 from ..ui import public_web_shell
-from ..auth import web_require_tenant, web_tenant_from_cookie, web_next_from_request, master_token_valid, web_teacher_from_cookie
+from ..auth import (
+    web_require_tenant,
+    web_tenant_from_cookie,
+    web_next_from_request,
+    master_token_valid,
+    web_teacher_from_cookie,
+    check_password_hash,
+    pbkdf2_hash,
+)
 from ..db import tenant_db_connection, sql_placeholder, integrity_errors, get_db_connection
 from ..config import USE_POSTGRES
 
 router = APIRouter()
 
-@router.get('/web/signin', response_class=RedirectResponse)
-def web_signin() -> Response:
-    return RedirectResponse(url='/web/teacher-login', status_code=302)
+@router.get('/web/signin', response_class=HTMLResponse)
+def web_signin(request: Request) -> Response:
+    tenant_id = web_tenant_from_cookie(request)
+    teacher_id = web_teacher_from_cookie(request)
+    if tenant_id and teacher_id:
+        return RedirectResponse(url='/web/admin', status_code=302)
+    if tenant_id:
+        return RedirectResponse(url='/web/teacher-login', status_code=302)
+
+    nxt = web_next_from_request(request, '/web/teacher-login')
+    body = f"""
+    <h2>כניסת מוסד</h2>
+    <div style="color:#637381; margin-top:-6px;">יש להזין קוד מוסד וסיסמת מוסד.</div>
+    <form method="post" action="/web/signin?next={urllib.parse.quote(nxt, safe='')}" style="margin-top:12px; max-width:520px;">
+      <label style="display:block;margin:10px 0 6px;font-weight:800;">קוד מוסד</label>
+      <input name="tenant_id" autocomplete="username" pattern="[a-zA-Z0-9_-]+" class="form-input" style="direction:ltr; text-align:left;" required />
+      <label style="display:block;margin:10px 0 6px;font-weight:800;">סיסמה</label>
+      <input name="password" type="password" autocomplete="current-password" class="form-input" required />
+      <div class="actionbar" style="justify-content:flex-start;">
+        <button class="green" type="submit">כניסה</button>
+        <a class="gray" href="/web/download">הורדה</a>
+      </div>
+    </form>
+    """
+    return HTMLResponse(public_web_shell('כניסת מוסד', body, request=request))
 
 @router.get('/web/login', response_class=RedirectResponse)
 def web_login() -> Response:
-    return RedirectResponse(url='/web/teacher-login', status_code=302)
+    return RedirectResponse(url='/web/signin', status_code=302)
+
+@router.get('/web/logout', include_in_schema=False)
+def web_logout() -> Response:
+    resp = RedirectResponse(url='/web', status_code=302)
+    resp.delete_cookie('web_teacher')
+    resp.delete_cookie('web_tenant')
+    resp.delete_cookie('web_user')
+    resp.delete_cookie('web_master')
+    return resp
+
+@router.post('/web/signin', response_class=HTMLResponse)
+def web_signin_submit(
+    request: Request,
+    tenant_id: str = Form(default=''),
+    password: str = Form(default=''),
+) -> Response:
+    tenant_id = str(tenant_id or '').strip()
+    password = str(password or '').strip()
+    if not tenant_id or not password:
+        return HTMLResponse(public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>חסרים פרטים.</p>', request=request))
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder('SELECT password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id,))
+        row = cur.fetchone()
+    finally:
+        try: conn.close()
+        except: pass
+
+    if not row:
+        return HTMLResponse(public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>מוסד לא נמצא.</p>', request=request))
+
+    pw_hash = row['password_hash'] if isinstance(row, dict) else row[0]
+    pw_hash = str(pw_hash or '').strip()
+    if not pw_hash:
+        return HTMLResponse(public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>לא הוגדרה סיסמת מוסד.</p>', request=request))
+
+    if not check_password_hash(pw_hash, password):
+        return HTMLResponse(public_web_shell('כניסת מוסד', '<h2>שגיאה</h2><p>סיסמה שגויה.</p>', request=request))
+
+    used_legacy_sha = False
+    try:
+        is_hex64 = (len(pw_hash) == 64) and all(c in '0123456789abcdef' for c in pw_hash.lower())
+    except Exception:
+        is_hex64 = False
+    if is_hex64:
+        try:
+            used_legacy_sha = hashlib.sha256(password.encode('utf-8')).hexdigest() == pw_hash.lower()
+        except Exception:
+            used_legacy_sha = False
+
+    if used_legacy_sha:
+        try:
+            new_hash = pbkdf2_hash(password)
+            conn = get_db_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    sql_placeholder('UPDATE institutions SET password_hash = ? WHERE tenant_id = ?'),
+                    (new_hash, tenant_id)
+                )
+                conn.commit()
+            finally:
+                try: conn.close()
+                except: pass
+        except Exception:
+            pass
+
+    nxt = web_next_from_request(request, '/web/teacher-login')
+    if nxt in ('/web/login', '/web/signin'):
+        nxt = '/web/teacher-login'
+
+    need_bootstrap = False
+    try:
+        tconn = tenant_db_connection(tenant_id)
+        try:
+            cur = tconn.cursor()
+            cur.execute('SELECT COUNT(*) FROM teachers')
+            row = cur.fetchone()
+            cnt = 0
+            if row:
+                if isinstance(row, dict):
+                    cnt = int(list(row.values())[0] or 0)
+                else:
+                    cnt = int(row[0] or 0)
+            need_bootstrap = cnt <= 0
+        finally:
+            try: tconn.close()
+            except: pass
+    except Exception:
+        need_bootstrap = True
+
+    target = f"/web/bootstrap-choice?next={urllib.parse.quote(nxt, safe='')}" if need_bootstrap else nxt
+    resp = RedirectResponse(url=target, status_code=302)
+    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    return resp
 
 @router.get('/web/teacher-login', response_class=HTMLResponse)
 def web_teacher_login(request: Request) -> Response:
@@ -42,7 +170,7 @@ def web_teacher_login(request: Request) -> Response:
       </div>
     </form>
     """
-    return HTMLResponse(public_web_shell('כניסת מורה', body))
+    return HTMLResponse(public_web_shell('כניסת מורה', body, request=request))
 
 @router.post('/web/teacher-login', response_class=HTMLResponse)
 def web_teacher_login_submit(
@@ -55,7 +183,7 @@ def web_teacher_login_submit(
     tenant_id = web_tenant_from_cookie(request)
     card_number = str(card_number or '').strip()
     if not card_number:
-        return HTMLResponse(public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>חסר כרטיס.</p>'))
+        return HTMLResponse(public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>חסר כרטיס.</p>', request=request))
 
     conn = tenant_db_connection(tenant_id)
     try:
@@ -70,7 +198,7 @@ def web_teacher_login_submit(
             )
             row = cur.fetchone()
             if not row:
-                return HTMLResponse(public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>מורה לא נמצא.</p>'))
+                return HTMLResponse(public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>מורה לא נמצא.</p>', request=request))
             
             t_id = row['id'] if isinstance(row, dict) else row[0]
             
@@ -79,7 +207,7 @@ def web_teacher_login_submit(
             resp.set_cookie('web_teacher', str(t_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
             return resp
         except Exception as e:
-             return HTMLResponse(public_web_shell('שגיאה', f'<h2>שגיאה</h2><p>תקלה בבסיס הנתונים: {e}</p>'))
+             return HTMLResponse(public_web_shell('שגיאה', f'<h2>שגיאה</h2><p>תקלה בבסיס הנתונים: {e}</p>', request=request))
     finally:
         try: conn.close()
         except: pass
@@ -240,7 +368,7 @@ def web_bootstrap_admin_submit(
                 public_web_shell('שגיאה', '<h2>שגיאה</h2><p>לא ניתן ליצור מורה. ייתכן שמספר הכרטיס כבר קיים.</p>', request=request),
                 status_code=400
             )
-        return HTMLResponse(public_web_shell('שגיאה', f'<h2>שגיאה</h2><p>תקלה: {e}</p>'), status_code=500)
+        return HTMLResponse(public_web_shell('שגיאה', f'<h2>שגיאה</h2><p>תקלה: {e}</p>', request=request), status_code=500)
     finally:
         try: conn.close()
         except: pass

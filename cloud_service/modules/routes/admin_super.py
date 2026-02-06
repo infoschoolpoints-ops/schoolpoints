@@ -175,7 +175,7 @@ def admin_institutions(request: Request) -> str:
         <form method="post" action="/admin/institutions/create">
             <div style="display:flex; gap:10px; flex-wrap:wrap;">
                 <input name="name" placeholder="שם מוסד" class="form-input" style="flex:1;" required>
-                <input name="tenant_id" placeholder="קוד מוסד (ספרות)" class="form-input" style="flex:1;" inputmode="numeric" pattern="[0-9]+">
+                <input name="tenant_id" placeholder="קוד מוסד (אותיות/ספרות)" class="form-input" style="flex:1;" pattern="[a-zA-Z0-9_-]+">
                 <input name="institution_password" placeholder="סיסמה" type="password" class="form-input" style="flex:1;" required>
                 <button class="btn-primary">צור</button>
             </div>

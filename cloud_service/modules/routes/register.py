@@ -217,13 +217,13 @@ def web_register(request: Request) -> str:
       
       <div class="form-group">
         <label>שם המוסד</label>
-        <input name="institution_name" class="form-input reg-input" required placeholder="לדוגמה: תלמוד תורה חכמת שלמה" />
+        <input name="institution_name" class="form-input reg-input" required placeholder="לדוגמה: בית ספר לדוגמה" />
       </div>
       
       <div class="form-group">
         <label>קוד מוסד (Tenant ID)</label>
-        <input name="institution_code" class="form-input reg-input" required pattern="[0-9]+" placeholder="מספר ספרות בלבד" style="direction:ltr; text-align:left;" />
-        <div class="help-text">זהו המזהה הייחודי שלכם במערכת</div>
+        <input name="institution_code" class="form-input reg-input" required pattern="[a-zA-Z0-9_-]+" placeholder="אותיות/ספרות ללא רווחים" style="direction:ltr; text-align:left;" />
+        <div class="help-text">זהו המזהה הייחודי שלכם במערכת (אותיות/ספרות, ללא רווחים).</div>
       </div>
       
       <div class="form-group">
