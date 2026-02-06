@@ -18,6 +18,20 @@ def pbkdf2_hash(password: str) -> str:
         100000
     ).hex()
 
+def pbkdf2_sha256_verify(password: str, hashed: str) -> bool:
+    """Verify password against pbkdf2_sha256$... format."""
+    try:
+        scheme, iters_s, salt_hex, dk_hex = (hashed or '').split('$', 3)
+        if scheme != 'pbkdf2_sha256':
+            return False
+        iters = int(iters_s)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(dk_hex)
+        actual = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, iters)
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
 def generate_password_hash(password: str) -> str:
     """Generate a password hash."""
     return pbkdf2_hash(password)
@@ -26,6 +40,24 @@ def check_password_hash(pwhash: str, password: str) -> bool:
     """Check a password against a hash."""
     if not pwhash or not password:
         return False
+    if pwhash.startswith('pbkdf2_sha256$'):
+        return pbkdf2_sha256_verify(password, pwhash)
+
+    try:
+        is_hex64 = (len(pwhash) == 64) and all(c in '0123456789abcdef' for c in pwhash.lower())
+    except Exception:
+        is_hex64 = False
+    if is_hex64:
+        try:
+            if hmac.compare_digest(pwhash.lower(), hashlib.sha256(password.encode('utf-8')).hexdigest()):
+                return True
+        except Exception:
+            pass
+        try:
+            return hmac.compare_digest(pwhash, pbkdf2_hash(password))
+        except Exception:
+            return False
+
     return hmac.compare_digest(pwhash, pbkdf2_hash(password))
 
 def master_token_valid(token: str, tenant_id: str) -> bool:
