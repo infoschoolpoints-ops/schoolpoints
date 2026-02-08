@@ -9,6 +9,7 @@ import secrets
 import threading
 import time
 import gzip
+import traceback
 
 from ..config import USE_POSTGRES, BASE_DIR
 from ..db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, tenant_db_connection
@@ -175,23 +176,27 @@ def sync_connect_page(request: Request) -> str:
 
 @router.post('/sync/connect', response_model=EnhancedConnectResponse)
 def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
-    tenant_id = str(payload.tenant_id or '').strip()
-    password = str(payload.password or '').strip()
-    station_id = str(payload.station_id or 'admin').strip()
-
-    if not tenant_id or not password:
-        return {'ok': False, 'error': 'Missing tenant_id or password'}
-
-    conn = get_db_connection()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            sql_placeholder('SELECT id, name FROM institutions WHERE tenant_id = ? AND password = ? LIMIT 1'),
-            (tenant_id, password)
-        )
-        row = cur.fetchone()
-        if not row:
-            return {'ok': False, 'error': 'Invalid tenant_id or password'}
+        tenant_id = str(payload.tenant_id or '').strip()
+        password = str(payload.password or '').strip()
+        station_id = str(payload.station_id or 'admin').strip()
+        conn = None
+
+        if not tenant_id or not password:
+            return {'ok': False, 'error': 'Missing tenant_id or password'}
+
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                sql_placeholder('SELECT id, name FROM institutions WHERE tenant_id = ? AND password = ? LIMIT 1'),
+                (tenant_id, password)
+            )
+            row = cur.fetchone()
+            if not row:
+                return {'ok': False, 'error': 'Invalid tenant_id or password'}
+        finally:
+            pass
 
         institution_name = str(row[1] or '').strip()
         logo_url = ''
@@ -246,9 +251,15 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
             'institution_name': institution_name,
             'logo_url': logo_url
         }
+    except Exception as exc:
+        traceback.print_exc()
+        return {'ok': False, 'error': f'Internal error: {exc}'}
     finally:
-        try: conn.close()
-        except Exception: pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
 
 
 @router.get('/sync/progress')
