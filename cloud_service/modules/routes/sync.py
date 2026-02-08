@@ -197,6 +197,7 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
         logo_url = ''
         tconn = None
         try:
+            ensure_tenant_db_exists(tenant_id)
             tconn = tenant_db_connection(tenant_id)
             display_json = get_web_setting_json(tconn, 'display_settings', '{}')
             try:
