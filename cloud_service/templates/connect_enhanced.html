@@ -311,20 +311,31 @@
                         station_id: 'admin'
                     })
                 });
-                
-                const data = await response.json();
-                
-                if (data.ok) {
+                let data = null;
+                let responseText = '';
+                try {
+                    responseText = await response.text();
+                    data = responseText ? JSON.parse(responseText) : null;
+                } catch (parseError) {
+                    data = null;
+                }
+
+                if (!response.ok) {
+                    showError('loginError', `שגיאה מהשרת (${response.status})${responseText ? ': ' + responseText : ''}`);
+                    return;
+                }
+
+                if (data && data.ok) {
                     syncToken = data.sync_token;
                     updateInstitutionHeader(data);
                     document.getElementById('loginForm').style.display = 'none';
                     document.getElementById('progressContainer').style.display = 'block';
                     startProgressPolling();
                 } else {
-                    showError('loginError', data.error || 'שגיאת התחברות');
+                    showError('loginError', (data && data.error) ? data.error : 'שגיאת התחברות');
                 }
             } catch (error) {
-                showError('loginError', 'שגיאת תקשורת. נסה שוב.');
+                showError('loginError', `שגיאת תקשורת. נסה שוב. (${error.message || 'error'})`);
             } finally {
                 if (connectBtn) {
                     connectBtn.disabled = false;
