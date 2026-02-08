@@ -13,6 +13,7 @@ import gzip
 from ..config import USE_POSTGRES, BASE_DIR
 from ..db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, tenant_db_connection
 from .settings import get_web_setting_json
+from ..ui import public_web_shell
 from ..sync_logic import (
     record_sync_event, apply_change_to_tenant_db, make_event_id, 
     save_snapshot2_blob, load_snapshot2_blob, apply_full_snapshot_sqlite,
@@ -160,24 +161,16 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
 
 
 @router.get('/sync/connect', response_class=HTMLResponse)
-def sync_connect_page() -> str:
+def sync_connect_page(request: Request) -> str:
     template_path = os.path.join(BASE_DIR, 'templates', 'connect_enhanced.html')
     if os.path.exists(template_path):
         with open(template_path, 'r', encoding='utf-8') as f:
-            return f.read()
-    return """
-    <!DOCTYPE html>
-    <html dir="rtl" lang="he">
-    <head>
-        <meta charset="UTF-8">
-        <title>חיבור לענן - SchoolPoints</title>
-    </head>
-    <body>
-        <h1>דף החיבור המשופר לא נמצא</h1>
-        <p>אנא ודא שקובץ התבנית קיים ב: templates/connect_enhanced.html</p>
-    </body>
-    </html>
+            return public_web_shell("חיבור לענן", f.read(), request=request)
+    body = """
+    <h2>דף החיבור המשופר לא נמצא</h2>
+    <p>אנא ודא שקובץ התבנית קיים ב: templates/connect_enhanced.html</p>
     """
+    return public_web_shell("חיבור לענן", body, request=request)
 
 
 @router.post('/sync/connect', response_model=EnhancedConnectResponse)

@@ -1,39 +1,33 @@
-<!DOCTYPE html>
-<html dir="rtl" lang="he">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>חיבור לענן - SchoolPoints</title>
-    <style>
-        * {
+<style>
+        .sync-connect * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
         
-        body {
-            font-family: Arial, sans-serif;
-            background: #f5f5f5;
+        .sync-connect {
+            font-family: 'Heebo', 'Segoe UI', Arial, sans-serif;
             padding: 20px;
         }
         
-        .container {
+        .sync-connect .container {
             max-width: 500px;
             margin: 0 auto;
             background: white;
             border-radius: 10px;
             box-shadow: 0 2px 10px rgba(0,0,0,0.1);
             overflow: hidden;
+            color: #1f2d3a;
         }
         
-        .header {
+        .sync-connect .header {
             background: #2c3e50;
             color: white;
             padding: 20px;
             text-align: center;
         }
 
-        .header-brand {
+        .sync-connect .header-brand {
             display: flex;
             align-items: center;
             justify-content: center;
@@ -41,7 +35,7 @@
             margin-bottom: 8px;
         }
 
-        .header-logo {
+        .sync-connect .header-logo {
             width: 48px;
             height: 48px;
             border-radius: 10px;
@@ -51,38 +45,38 @@
             display: none;
         }
 
-        .header-title-group {
+        .sync-connect .header-title-group {
             display: flex;
             flex-direction: column;
             gap: 2px;
         }
         
-        .header h1 {
+        .sync-connect .header h1 {
             font-size: 24px;
             margin-bottom: 5px;
         }
         
-        .header p {
+        .sync-connect .header p {
             opacity: 0.9;
             font-size: 14px;
         }
         
-        .content {
+        .sync-connect .content {
             padding: 30px;
         }
         
-        .form-group {
+        .sync-connect .form-group {
             margin-bottom: 20px;
         }
         
-        .form-group label {
+        .sync-connect .form-group label {
             display: block;
             margin-bottom: 8px;
             font-weight: bold;
             color: #333;
         }
         
-        .form-group input {
+        .sync-connect .form-group input {
             width: 100%;
             padding: 12px;
             border: 2px solid #ddd;
@@ -91,12 +85,12 @@
             transition: border-color 0.3s;
         }
         
-        .form-group input:focus {
+        .sync-connect .form-group input:focus {
             outline: none;
             border-color: #3498db;
         }
         
-        .btn {
+        .sync-connect .btn {
             width: 100%;
             padding: 14px;
             background: #3498db;
@@ -109,21 +103,21 @@
             transition: background 0.3s;
         }
         
-        .btn:hover {
+        .sync-connect .btn:hover {
             background: #2980b9;
         }
         
-        .btn:disabled {
+        .sync-connect .btn:disabled {
             background: #95a5a6;
             cursor: not-allowed;
         }
         
-        .progress-container {
+        .sync-connect .progress-container {
             margin-top: 30px;
             display: none;
         }
         
-        .progress-bar {
+        .sync-connect .progress-bar {
             width: 100%;
             height: 30px;
             background: #ecf0f1;
@@ -132,7 +126,7 @@
             margin-bottom: 10px;
         }
         
-        .progress-fill {
+        .sync-connect .progress-fill {
             height: 100%;
             background: linear-gradient(90deg, #3498db, #2ecc71);
             width: 0%;
@@ -144,13 +138,13 @@
             font-weight: bold;
         }
         
-        .progress-message {
+        .sync-connect .progress-message {
             text-align: center;
             color: #333;
             margin-bottom: 10px;
         }
         
-        .teacher-password {
+        .sync-connect .teacher-password {
             margin-top: 20px;
             padding: 20px;
             background: #e8f4f8;
@@ -158,26 +152,26 @@
             display: none;
         }
         
-        .error {
+        .sync-connect .error {
             color: #e74c3c;
             margin-top: 10px;
             text-align: center;
         }
         
-        .success {
+        .sync-connect .success {
             color: #27ae60;
             margin-top: 10px;
             text-align: center;
         }
         
-        .phase-indicator {
+        .sync-connect .phase-indicator {
             display: flex;
             justify-content: space-between;
             margin-bottom: 20px;
             font-size: 12px;
         }
         
-        .phase {
+        .sync-connect .phase {
             text-align: center;
             flex: 1;
             padding: 5px;
@@ -185,30 +179,46 @@
             transition: all 0.3s;
         }
         
-        .phase.active {
+        .sync-connect .phase.active {
             background: #3498db;
             color: white;
         }
         
-        .phase.completed {
+        .sync-connect .phase.completed {
             background: #2ecc71;
             color: white;
         }
+
+        .sync-connect .auth-links {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 14px;
+            font-size: 14px;
+        }
+
+        .sync-connect .auth-links a {
+            color: #2c3e50;
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .sync-connect .auth-links a:hover {
+            color: #3498db;
+        }
     </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <div class="header-brand">
-                <img id="institutionLogo" class="header-logo" alt="לוגו מוסד">
-                <div class="header-title-group">
-                    <h1 id="institutionName">חיבור לענן</h1>
-                    <p id="institutionSubtitle">הזן פרטי מוסד לסנכרון נתונים</p>
+    <div class="sync-connect">
+        <div class="container">
+            <div class="header">
+                <div class="header-brand">
+                    <img id="institutionLogo" class="header-logo" alt="לוגו מוסד">
+                    <div class="header-title-group">
+                        <h1 id="institutionName">חיבור לענן</h1>
+                        <p id="institutionSubtitle">הזן פרטי מוסד לסנכרון נתונים</p>
+                    </div>
                 </div>
             </div>
-        </div>
         
-        <div class="content">
+            <div class="content">
             <!-- Login Form -->
             <div id="loginForm">
                 <div class="form-group">
@@ -221,7 +231,12 @@
                     <input type="password" id="password" placeholder="הזן סיסמה">
                 </div>
                 
-                <button class="btn" onclick="startConnection()">התחבר וסנכרן</button>
+                <button class="btn" type="button" onclick="startConnection()">התחבר וסנכרן</button>
+
+                <div class="auth-links">
+                    <a href="/web/register">הרשמה</a>
+                    <a href="/web/contact">שכחתי סיסמה</a>
+                </div>
                 
                 <div id="loginError" class="error"></div>
             </div>
@@ -256,6 +271,7 @@
                 <div id="teacherError" class="error"></div>
             </div>
         </div>
+    </div>
     </div>
     
     <script>
@@ -405,5 +421,3 @@
             element.style.display = 'block';
         }
     </script>
-</body>
-</html>

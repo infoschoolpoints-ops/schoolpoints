@@ -1,7 +1,14 @@
 """
 מודול ייבוא נתונים מקובץ Excel
 """
-import pandas as pd
+try:
+    import pandas as pd
+    _PANDAS_AVAILABLE = True
+except Exception:
+    pd = None
+    _PANDAS_AVAILABLE = False
+_PANDAS_WARNED = False
+_PANDAS_MISSING_MSG = "חסר רכיב pandas. פעולות ייבוא/ייצוא Excel לא זמינות עד להתקנה."
 from database import Database
 from typing import List, Dict
 from collections import Counter
@@ -20,6 +27,29 @@ def _strip_asterisk_annotations(text: str) -> str:
         return text
 
 
+def _warn_missing_pandas() -> None:
+    global _PANDAS_WARNED
+    if _PANDAS_WARNED:
+        return
+    _PANDAS_WARNED = True
+    msg = _PANDAS_MISSING_MSG
+    try:
+        from tkinter import messagebox
+        messagebox.showerror("שגיאה", msg)
+    except Exception:
+        try:
+            print(msg)
+        except Exception:
+            pass
+
+
+def _require_pandas() -> bool:
+    if _PANDAS_AVAILABLE:
+        return True
+    _warn_missing_pandas()
+    return False
+
+
 class ExcelImporter:
     def __init__(self, db: Database):
         self.db = db
@@ -28,6 +58,8 @@ class ExcelImporter:
         """ייצוא היסטוריית נקודות מפורטת לתלמיד לקובץ Excel.
         logs: רשימת רשומות מ-DB.points_log (dict).
         """
+        if not _require_pandas():
+            return False
         try:
             from openpyxl import load_workbook
             from openpyxl.styles import Alignment
@@ -144,6 +176,8 @@ class ExcelImporter:
         Returns:
             tuple של (מספר תלמידים שעודכנו, רשימת שגיאות)
         """
+        if not _require_pandas():
+            return 0, [_PANDAS_MISSING_MSG]
         errors = []
         updated_count = 0
         
@@ -225,6 +259,8 @@ class ExcelImporter:
         Returns:
             tuple של (מספר תלמידים שיובאו, רשימת שגיאות)
         """
+        if not _require_pandas():
+            return 0, [_PANDAS_MISSING_MSG]
         errors = []
         imported_count = 0
         # נתוני תיקופים לייבוא (רק כאשר clear_existing=True)
@@ -464,6 +500,8 @@ class ExcelImporter:
         ייצוא חכם - עדכון רק עמודות G, H, I (כרטיס, נקודות, הודעה)
         לא דורס את שאר העמודות!
         """
+        if not _require_pandas():
+            return False
         try:
             from openpyxl import load_workbook
             import pandas as pd
@@ -531,6 +569,8 @@ class ExcelImporter:
         אם אין תלמידים במסד הנתונים – ייווצר קובץ שבלונה עם שורת כותרות בלבד.
         כולל גם מספר תיקופים וממוצע תיקופים לכל תלמיד (מבוסס swipe_log).
         """
+        if not _require_pandas():
+            return False
         try:
             from openpyxl import load_workbook
             from openpyxl.styles import Alignment
@@ -1005,6 +1045,8 @@ class ExcelImporter:
             return False
 
     def export_daily_points_summary_excel(self, excel_path: str, *, allowed_classes: list = None) -> bool:
+        if not _require_pandas():
+            return False
         try:
             from openpyxl import load_workbook
             from openpyxl.styles import Alignment
