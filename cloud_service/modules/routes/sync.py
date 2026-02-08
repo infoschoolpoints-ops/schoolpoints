@@ -12,7 +12,7 @@ import gzip
 
 from ..config import USE_POSTGRES, BASE_DIR
 from ..db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, tenant_db_connection
-from ..settings import get_web_setting_json
+from .settings import get_web_setting_json
 from ..sync_logic import (
     record_sync_event, apply_change_to_tenant_db, make_event_id, 
     save_snapshot2_blob, load_snapshot2_blob, apply_full_snapshot_sqlite,
