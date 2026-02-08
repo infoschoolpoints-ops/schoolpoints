@@ -231,7 +231,7 @@
                     <input type="password" id="password" placeholder="הזן סיסמה">
                 </div>
                 
-                <button class="btn" type="button" onclick="startConnection()">התחבר וסנכרן</button>
+                <button class="btn" type="button" id="connectBtn">התחבר וסנכרן</button>
 
                 <div class="auth-links">
                     <a href="/web/register">הרשמה</a>
@@ -277,38 +277,58 @@
     <script>
         let syncToken = null;
         let progressInterval = null;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const connectBtn = document.getElementById('connectBtn');
+            if (connectBtn) {
+                connectBtn.addEventListener('click', startConnection);
+            }
+        });
         
         async function startConnection() {
             const tenantId = document.getElementById('tenantId').value.trim();
             const password = document.getElementById('password').value;
+            const connectBtn = document.getElementById('connectBtn');
             
             if (!tenantId || !password) {
                 showError('loginError', 'אנא מלא את כל השדות');
                 return;
             }
+
+            if (connectBtn) {
+                connectBtn.disabled = true;
+            }
             
-            const response = await fetch('/sync/connect', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    tenant_id: tenantId,
-                    password: password,
-                    station_id: 'admin'
-                })
-            });
-            
-            const data = await response.json();
-            
-            if (data.ok) {
-                syncToken = data.sync_token;
-                updateInstitutionHeader(data);
-                document.getElementById('loginForm').style.display = 'none';
-                document.getElementById('progressContainer').style.display = 'block';
-                startProgressPolling();
-            } else {
-                showError('loginError', data.error || 'שגיאת התחברות');
+            try {
+                const response = await fetch('/sync/connect', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        tenant_id: tenantId,
+                        password: password,
+                        station_id: 'admin'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.ok) {
+                    syncToken = data.sync_token;
+                    updateInstitutionHeader(data);
+                    document.getElementById('loginForm').style.display = 'none';
+                    document.getElementById('progressContainer').style.display = 'block';
+                    startProgressPolling();
+                } else {
+                    showError('loginError', data.error || 'שגיאת התחברות');
+                }
+            } catch (error) {
+                showError('loginError', 'שגיאת תקשורת. נסה שוב.');
+            } finally {
+                if (connectBtn) {
+                    connectBtn.disabled = false;
+                }
             }
         }
 
