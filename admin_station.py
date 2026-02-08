@@ -10178,7 +10178,8 @@ class AdminStation:
 
             def _open_cloud_connect():
                 try:
-                    url = 'https://schoolpoints.co.il/web/signin'
+                    # Use the new enhanced connection page
+                    url = 'https://schoolpoints.co.il/sync/connect'
                     webbrowser.open(url)
                 except Exception as e:
                     try:
@@ -10481,327 +10482,26 @@ class AdminStation:
                         pass
 
             def _connect_verified():
-                # Open browser for signup/login, then verify credentials against server.
-                # Important: do NOT call _open_cloud_connect here because it may be wrapped later.
-                _ = None
+                # Use the new enhanced connection flow
+                print("[DEBUG] _connect_verified called - opening enhanced sync!")
                 try:
-                    import threading
-                    base = _get_cloud_base_url()
-
-                    try:
-                        pairing_in_progress['on'] = True
-                    except Exception:
-                        pass
-                    try:
-                        _refresh_cloud_ui()
-                    except Exception:
-                        pass
-
-                    def _pair_worker():
-                        res = self._device_pair_start_and_poll(base, poll_timeout_sec=600) or {}
-
-                        # Auto-Snapshot logic (Pairing Flow)
-                        snapshot_pushed = False
-                        if bool(res.get('ok')):
-                            try:
-                                ptid = str(res.get('tenant_id') or '').strip()
-                                pkey = str(res.get('api_key') or '').strip()
-                                ppurl = str(res.get('push_url') or '').strip()
-                                
-                                # We verify cloud connection to get status counts
-                                pok, _, pstatus = _verify_cloud_connection(ptid, pkey, ppurl)
-                                if pok and pstatus:
-                                    c_teachers = int(pstatus.get('teachers_count') or 0)
-                                    c_students = int(pstatus.get('students_count') or 0)
-                                    
-                                    if c_teachers == 0 and c_students == 0:
-                                        # Cloud is empty. Check local DB.
-                                        import sync_agent
-                                        local_db_path = getattr(self.db, 'db_path', None)
-                                        if local_db_path and os.path.exists(local_db_path):
-                                            conn_loc = sync_agent._connect(local_db_path)
-                                            try:
-                                                snap = sync_agent.build_snapshot(conn_loc)
-                                                l_teachers = len(snap.get('teachers') or [])
-                                                l_students = len(snap.get('students') or [])
-                                                
-                                                if l_teachers > 0 or l_students > 0:
-                                                    # Perform Auto-Push
-                                                    def _upd_lbl_p(txt):
-                                                        try: cloud_state_lbl.configure(text=fix_rtl_text(txt))
-                                                        except: pass
-                                                    self.root.after(0, lambda: _upd_lbl_p("הענן ריק. מעלה נתונים ראשוניים..."))
-                                                    
-                                                    snap_url = sync_agent._snapshot_url_from_push(ppurl, {'sync_snapshot_url': ''})
-                                                    push_ok = False
-                                                    try:
-                                                        push_ok = bool(sync_agent.push_snapshot2(
-                                                            snap_url,
-                                                            snap,
-                                                            api_key=pkey,
-                                                            tenant_id=ptid,
-                                                            station_id=getattr(self, 'station_id', 'admin')
-                                                        ))
-                                                    except Exception:
-                                                        push_ok = False
-                                                    if not push_ok:
-                                                        push_ok = sync_agent.push_snapshot(
-                                                            snap_url,
-                                                            snap,
-                                                            api_key=pkey,
-                                                            tenant_id=ptid,
-                                                            station_id=getattr(self, 'station_id', 'admin')
-                                                        )
-                                                    if push_ok:
-                                                        snapshot_pushed = True
-                                                        self.root.after(0, lambda: _upd_lbl_p("העלאת נתונים הושלמה!"))
-                                            finally:
-                                                conn_loc.close()
-                            except Exception as e:
-                                print(f"Auto-snapshot (pair) failed: {e}")
-
-                        def _on_done():
-                            try:
-                                pairing_in_progress['on'] = False
-                            except Exception:
-                                pass
-                            if bool(res.get('ok')):
-                                cfg2 = self.load_app_config() or {}
-                                cfg2['sync_tenant_id'] = str(res.get('tenant_id') or '').strip()
-                                cfg2['sync_api_key'] = str(res.get('api_key') or '').strip()
-                                cfg2['sync_push_url'] = str(res.get('push_url') or '').strip()
-                                try:
-                                    self.save_app_config(cfg2)
-                                except Exception:
-                                    pass
-                                try:
-                                    tenant_id_var.set(str(cfg2.get('sync_tenant_id') or ''))
-                                except Exception:
-                                    pass
-                                try:
-                                    api_key_var.set(str(cfg2.get('sync_api_key') or ''))
-                                except Exception:
-                                    pass
-                                try:
-                                    push_url_var.set(str(cfg2.get('sync_push_url') or ''))
-                                except Exception:
-                                    pass
-                                try:
-                                    self._maybe_start_sync_agent()
-                                except Exception:
-                                    pass
-                                
-                                # Auto-fetch license
-                                try:
-                                    if self.license_manager:
-                                        def _fetch_lic():
-                                            try:
-                                                tid = str(res.get('tenant_id') or '').strip()
-                                                key = str(res.get('api_key') or '').strip()
-                                                purl = str(res.get('push_url') or '').strip()
-                                                lok, lmsg = self.license_manager.fetch_and_activate_from_cloud(purl, tid, key)
-                                                if lok:
-                                                    def _refresh_lic_ui():
-                                                        if license_status_label:
-                                                            license_status_label.config(text=get_license_status_text())
-                                                        if hasattr(self, "license_header_label"):
-                                                            try:
-                                                                self.license_header_label.config(text=self.license_manager.get_startup_message() or "מצב רישיון: פעיל")
-                                                            except: pass
-                                                        messagebox.showinfo("רישום אוטומטי", f"הרישיון נמשך מהענן והופעל בהצלחה.\n{lmsg}", parent=dialog2)
-                                                    self.root.after(0, _refresh_lic_ui)
-                                            except Exception as e:
-                                                print(f"Auto-license fetch error: {e}")
-                                        
-                                        threading.Thread(target=_fetch_lic, daemon=True).start()
-                                except Exception:
-                                    pass
-
-                                try:
-                                    cloud_state_lbl.configure(text=fix_rtl_text('מחובר לענן'))
-                                except Exception:
-                                    pass
-                                try:
-                                    if snapshot_pushed:
-                                        messagebox.showinfo('חיבור לענן', 'החיבור הצליח והנתונים המקומיים סונכרנו לענן בהצלחה!', parent=dialog2)
-                                    else:
-                                        messagebox.showinfo('חיבור לענן', 'העמדה התחברה לענן בהצלחה.', parent=dialog2)
-                                except Exception:
-                                    pass
-                            else:
-                                try:
-                                    cloud_state_lbl.configure(text=fix_rtl_text('לא מחובר'))
-                                except Exception:
-                                    pass
-                                try:
-                                    err = str(res.get('error') or 'שגיאת חיבור')
-                                except Exception:
-                                    err = 'שגיאת חיבור'
-                                try:
-                                    messagebox.showerror('חיבור לענן', err, parent=dialog2)
-                                except Exception:
-                                    pass
-                            try:
-                                _refresh_cloud_ui()
-                            except Exception:
-                                pass
-
-                        try:
-                            dialog2.after(0, _on_done)
-                        except Exception:
-                            _on_done()
-
-                    try:
-                        cloud_state_lbl.configure(text=fix_rtl_text('חיבור אוטומטי... (פותח דפדפן)'))
-                    except Exception:
-                        pass
-                    threading.Thread(target=_pair_worker, daemon=True).start()
-                    return
+                    _refresh_cloud_ui()
                 except Exception:
                     pass
+                
+                # Open the enhanced connection page
+                _open_cloud_connect()
+
+            def _open_cloud_connect():
                 try:
-                    _orig_open_cloud()
-                except Exception:
-                    pass
-
-                tid = str(tenant_id_var.get() or '').strip()
-                key = str(api_key_var.get() or '').strip()
-                purl = str(push_url_var.get() or '').strip()
-
-                def _set_busy(on: bool):
+                    # Use the new enhanced connection page
+                    url = 'https://schoolpoints.co.il/sync/connect'
+                    webbrowser.open(url)
+                except Exception as e:
                     try:
-                        if on:
-                            connect_btn.configure(state='disabled')
-                            disconnect_btn.configure(state='disabled')
-                        else:
-                            pass
+                        messagebox.showerror('שגיאה', str(e), parent=dialog2)
                     except Exception:
                         pass
-
-                try:
-                    cloud_state_lbl.configure(text=fix_rtl_text('בודק מול השרת...'))
-                except Exception:
-                    pass
-                _set_busy(True)
-
-                def _worker():
-                    ok, msg, status_data = _verify_cloud_connection(tid, key, purl)
-
-                    # Auto-Snapshot logic if Cloud is empty and Local is not
-                    snapshot_pushed = False
-                    if ok and status_data:
-                        try:
-                            # Check if cloud is empty
-                            c_teachers = int(status_data.get('teachers_count') or 0)
-                            c_students = int(status_data.get('students_count') or 0)
-                            
-                            if c_teachers == 0 and c_students == 0:
-                                # Cloud is empty. Check local DB.
-                                try:
-                                    # Need a connection to local DB. 
-                                    # We are in a thread, so create new connection or use safe method.
-                                    # admin_station has self.db, but best to use sync_agent logic if available
-                                    # or just raw sqlite3 on self.base_dir/school_points.db
-                                    import sync_agent
-                                    
-                                    # Using the configured DB path logic from sync_agent might be safer 
-                                    # or just reuse what admin_station uses (self.db.conn is mostly main thread).
-                                    # Let's rely on admin_station.db_path or resolve it.
-                                    
-                                    # Quick resolve of db path similar to admin_station.__init__ logic
-                                    # actually self.db.db_path should be available if initialized
-                                    local_db_path = getattr(self.db, 'db_path', None)
-                                    if local_db_path and os.path.exists(local_db_path):
-                                        conn_loc = sync_agent._connect(local_db_path)
-                                        try:
-                                            snap = sync_agent.build_snapshot(conn_loc)
-                                            # Check if local has data
-                                            l_teachers = len(snap.get('teachers') or [])
-                                            l_students = len(snap.get('students') or [])
-                                            
-                                            if l_teachers > 0 or l_students > 0:
-                                                # Perform Auto-Push
-                                                def _upd_lbl(txt):
-                                                    try:
-                                                        cloud_state_lbl.configure(text=fix_rtl_text(txt))
-                                                    except: pass
-                                                self.root.after(0, lambda: _upd_lbl("הענן ריק. מעלה נתונים ראשוניים..."))
-                                                
-                                                # Determine snapshot URL
-                                                snap_url = sync_agent._snapshot_url_from_push(purl, {'sync_snapshot_url': ''})
-                                                
-                                                push_ok = False
-                                                try:
-                                                    push_ok = bool(sync_agent.push_snapshot2(
-                                                        snap_url,
-                                                        snap,
-                                                        api_key=key,
-                                                        tenant_id=tid,
-                                                        station_id=getattr(self, 'station_id', 'admin')
-                                                    ))
-                                                except Exception:
-                                                    push_ok = False
-                                                if not push_ok:
-                                                    push_ok = sync_agent.push_snapshot(
-                                                        snap_url,
-                                                        snap,
-                                                        api_key=key,
-                                                        tenant_id=tid,
-                                                        station_id=getattr(self, 'station_id', 'admin')
-                                                    )
-                                                if push_ok:
-                                                    snapshot_pushed = True
-                                                    self.root.after(0, lambda: _upd_lbl("העלאת נתונים הושלמה!"))
-                                        finally:
-                                            conn_loc.close()
-                                except Exception as e:
-                                    print(f"Auto-snapshot failed: {e}")
-                        except Exception as e:
-                            print(f"Auto-sync check failed: {e}")
-
-                    def _on_done():
-                        try:
-                            if ok:
-                                cfg2 = self.load_app_config() or {}
-                                cfg2['sync_tenant_id'] = tid
-                                cfg2['sync_api_key'] = key
-                                cfg2['sync_push_url'] = purl
-                                try:
-                                    self.save_app_config(cfg2)
-                                except Exception:
-                                    pass
-                                try:
-                                    cloud_state_lbl.configure(text=fix_rtl_text('מחובר לענן'))
-                                except Exception:
-                                    pass
-                                if snapshot_pushed:
-                                    try:
-                                        messagebox.showinfo('חיבור לענן', 'החיבור הצליח והנתונים המקומיים סונכרנו לענן בהצלחה!', parent=dialog2)
-                                    except: pass
-                            else:
-                                try:
-                                    cloud_state_lbl.configure(text=fix_rtl_text('לא מחובר'))
-                                except Exception:
-                                    pass
-                                try:
-                                    messagebox.showerror('התחברות לענן', str(msg or 'שגיאת התחברות'), parent=dialog2)
-                                except Exception:
-                                    pass
-                        finally:
-                            try:
-                                _refresh_cloud_ui()
-                            except Exception:
-                                pass
-                    try:
-                        dialog2.after(0, _on_done)
-                    except Exception:
-                        _on_done()
-
-                try:
-                    import threading
-                    threading.Thread(target=_worker, daemon=True).start()
-                except Exception:
-                    _worker()
 
             try:
                 _refresh_cloud_ui()

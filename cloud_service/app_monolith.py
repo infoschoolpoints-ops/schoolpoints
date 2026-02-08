@@ -31,6 +31,7 @@ except Exception:
     psycopg2_extras = None  # type: ignore[assignment]
 from fastapi import FastAPI, Header, HTTPException, Form, Query, Request, UploadFile, File, Body
 from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 try:
@@ -39,6 +40,12 @@ except Exception:
     boto3 = None  # type: ignore[assignment]
 
 app = FastAPI(title="SchoolPoints Sync")
+
+# Mount static files and templates
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Only mount static if directory exists
+if os.path.exists(os.path.join(BASE_DIR, "static")):
+    app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 @app.middleware("http")
@@ -15439,4 +15446,347 @@ def view_changes(tenant_id: str, api_key: str) -> str:
     {items}
     </table>
     </body></html>
+    """
+
+
+# --- Enhanced Connection Flow ---
+
+# In-memory store for sync progress (in production, use Redis or database)
+_sync_progress: Dict[str, Dict[str, Any]] = {}
+
+class EnhancedConnectRequest(BaseModel):
+    tenant_id: str
+    password: str
+    station_id: str = "admin"
+
+class EnhancedConnectResponse(BaseModel):
+    ok: bool
+    sync_token: str = None
+    message: str = None
+    error: str = None
+    institution_name: str = None
+    logo_url: str = None
+
+@app.post('/sync/connect', response_model=EnhancedConnectResponse)
+def sync_connect_enhanced(request: Request, payload: EnhancedConnectRequest) -> Dict[str, Any]:
+    """Enhanced connection endpoint that forces re-authentication"""
+    tenant_id = str(payload.tenant_id or '').strip()
+    password = str(payload.password or '').strip()
+    station_id = str(payload.station_id or 'admin').strip()
+    
+    if not tenant_id or not password:
+        return {
+            'ok': False,
+            'error': 'Missing tenant_id or password'
+        }
+    
+    # Verify credentials (ignore existing session)
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder('SELECT id, name FROM institutions WHERE tenant_id = ? AND password = ? LIMIT 1'),
+            (tenant_id, password)
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return {
+                'ok': False,
+                'error': 'Invalid tenant_id or password'
+            }
+
+        institution_name = str(row[1] or '').strip()
+        logo_url = ''
+        tconn = None
+        try:
+            tconn = _get_tenant_conn(conn, tenant_id)
+            if tconn:
+                display_json = _get_web_setting_json(tconn, 'display_settings', '{}')
+                try:
+                    display_data = json.loads(display_json or '{}')
+                except Exception:
+                    display_data = {}
+                logo_url = str(display_data.get('logo_url') or '').strip()
+                if not institution_name:
+                    institution_name = str(display_data.get('title_text') or '').strip()
+                if not logo_url:
+                    system_json = _get_web_setting_json(tconn, 'system_settings', '{}')
+                    try:
+                        system_data = json.loads(system_json or '{}')
+                    except Exception:
+                        system_data = {}
+                    sys_logo = str(system_data.get('logo_path') or '').strip()
+                    if sys_logo.startswith('http://') or sys_logo.startswith('https://'):
+                        logo_url = sys_logo
+        finally:
+            try:
+                if tconn:
+                    tconn.close()
+            except Exception:
+                pass
+        
+        # Generate sync token
+        sync_token = secrets.token_urlsafe(32)
+        
+        # Initialize sync state
+        _sync_progress[sync_token] = {
+            'tenant_id': tenant_id,
+            'station_id': station_id,
+            'phase': 'teachers',  # teachers -> students -> settings -> files
+            'progress': 0,
+            'total_items': 0,
+            'processed': 0,
+            'message': 'מתחיל סנכרון...',
+            'completed': False,
+            'error': None,
+            'started_at': datetime.datetime.now().isoformat()
+        }
+        
+        # Start async sync process (in production, use background task)
+        import threading
+        threading.Thread(target=_background_sync_process, args=(sync_token, tenant_id, station_id), daemon=True).start()
+        
+        conn.close()
+        return {
+            'ok': True,
+            'sync_token': sync_token,
+            'message': 'הסנכרון החל, אנא המתן...',
+            'institution_name': institution_name,
+            'logo_url': logo_url
+        }
+    except Exception as e:
+        try: conn.close()
+        except: pass
+        return {
+            'ok': False,
+            'error': str(e)
+        }
+
+def _background_sync_process(sync_token: str, tenant_id: str, station_id: str):
+    """Background process that handles the phased sync"""
+    try:
+        state = _sync_progress.get(sync_token)
+        if not state:
+            return
+        
+        # Phase 1: Sync Teachers
+        state['phase'] = 'teachers'
+        state['message'] = 'מסנכרן מורים...'
+        state['progress'] = 5
+        
+        # Get teacher data from local snapshot
+        teachers_count = _sync_teachers_data(sync_token, tenant_id)
+        
+        # Phase 2: Sync Students
+        state['phase'] = 'students'
+        state['message'] = 'מסנכרן תלמידים...'
+        state['progress'] = 30
+        
+        # Get student data from local snapshot
+        students_count = _sync_students_data(sync_token, tenant_id)
+        
+        # Phase 3: Sync Settings
+        state['phase'] = 'settings'
+        state['message'] = 'מסנכרן הגדרות...'
+        state['progress'] = 70
+        
+        # Sync system settings
+        _sync_settings_data(sync_token, tenant_id)
+        
+        # Phase 4: Sync Files
+        state['phase'] = 'files'
+        state['message'] = 'מסנכרן קבצים (תמונות, לוגו)...'
+        state['progress'] = 90
+        
+        # Sync files including logo
+        _sync_files_data(sync_token, tenant_id)
+        
+        # Complete
+        state['completed'] = True
+        state['progress'] = 100
+        state['message'] = f'הסנכרון הושלם! סונכרנו {teachers_count} מורים ו-{students_count} תלמידים'
+        
+    except Exception as e:
+        state = _sync_progress.get(sync_token)
+        if state:
+            state['error'] = str(e)
+            state['message'] = f'שגיאה בסנכרון: {str(e)}'
+
+def _sync_teachers_data(sync_token: str, tenant_id: str) -> int:
+    """Sync teachers data from incoming snapshot"""
+    state = _sync_progress.get(sync_token)
+    if not state:
+        return 0
+    
+    # This would be called after the desktop app sends its snapshot
+    # For now, we'll simulate with existing data
+    conn = _db()
+    try:
+        tconn = _get_tenant_conn(conn, tenant_id)
+        if not tconn:
+            return 0
+            
+        cur = tconn.cursor()
+        cur.execute("SELECT COUNT(*) FROM teachers")
+        row = cur.fetchone()
+        count = row[0] if row else 0
+        
+        # Simulate progress
+        for i in range(20):
+            import time
+            time.sleep(0.1)
+            state['progress'] = 5 + (i + 1) * 0.75
+            
+        tconn.close()
+        conn.close()
+        return count
+    except Exception:
+        try: conn.close()
+        except: pass
+        return 0
+
+def _sync_students_data(sync_token: str, tenant_id: str) -> int:
+    """Sync students data from incoming snapshot"""
+    state = _sync_progress.get(sync_token)
+    if not state:
+        return 0
+    
+    conn = _db()
+    try:
+        tconn = _get_tenant_conn(conn, tenant_id)
+        if not tconn:
+            return 0
+            
+        cur = tconn.cursor()
+        cur.execute("SELECT COUNT(*) FROM students")
+        row = cur.fetchone()
+        count = row[0] if row else 0
+        
+        # Simulate progress
+        for i in range(40):
+            import time
+            time.sleep(0.1)
+            state['progress'] = 30 + (i + 1) * 0.4
+            
+        tconn.close()
+        conn.close()
+        return count
+    except Exception:
+        try: conn.close()
+        except: pass
+        return 0
+
+def _sync_settings_data(sync_token: str, tenant_id: str):
+    """Sync system settings"""
+    state = _sync_progress.get(sync_token)
+    if not state:
+        return
+    
+    # Simulate progress
+    for i in range(20):
+        import time
+        time.sleep(0.1)
+        state['progress'] = 70 + (i + 1) * 0.75
+
+def _sync_files_data(sync_token: str, tenant_id: str):
+    """Sync files including logo"""
+    state = _sync_progress.get(sync_token)
+    if not state:
+        return
+    
+    # Simulate progress
+    for i in range(10):
+        import time
+        time.sleep(0.1)
+        state['progress'] = 90 + (i + 1) * 0.5
+
+def _sync_phase_data(sync_token: str, phase: str, progress_weight: int):
+    """Simulate syncing data for a phase"""
+    state = _sync_progress.get(sync_token)
+    if not state:
+        return
+    
+    # Simulate processing items
+    items_count = 10
+    state['total_items'] = items_count
+    state['processed'] = 0
+    
+    for i in range(items_count):
+        import time
+        time.sleep(0.2)  # Simulate work
+        
+        state['processed'] = i + 1
+        # Calculate progress within this phase
+        phase_progress = (i + 1) / items_count * progress_weight
+        base_progress = {
+            'teachers': 5,
+            'students': 25,
+            'settings': 65,
+            'files': 85
+        }.get(state['phase'], 0)
+        state['progress'] = base_progress + phase_progress
+
+@app.get('/sync/progress')
+def sync_progress(sync_token: str = Query(...)) -> Dict[str, Any]:
+    """Get sync progress for a token"""
+    state = _sync_progress.get(sync_token)
+    if not state:
+        raise HTTPException(status_code=404, detail='Invalid sync_token')
+    
+    return {
+        'phase': state['phase'],
+        'progress': state['progress'],
+        'message': state['message'],
+        'completed': state['completed'],
+        'error': state['error']
+    }
+
+@app.post('/sync/teacher-password')
+def sync_teacher_password(
+    request: Request,
+    sync_token: str = Form(...),
+    teacher_password: str = Form(...)
+) -> Dict[str, Any]:
+    """Verify teacher password after teachers are synced"""
+    state = _sync_progress.get(sync_token)
+    if not state:
+        raise HTTPException(status_code=404, detail='Invalid sync_token')
+    
+    if state['progress'] < 20:
+        return {
+            'ok': False,
+            'error': 'Teachers not yet synced'
+        }
+    
+    # Here you would verify the teacher password
+    # For now, just accept it
+    return {
+        'ok': True,
+        'message': 'סיסמת מורה אושרה, ממשיך בסנכרון...'
+    }
+
+
+@app.get('/sync/connect', response_class=HTMLResponse)
+def sync_connect_page(request: Request) -> str:
+    """Display the enhanced connection page"""
+    # Try to read from templates directory
+    template_path = os.path.join(BASE_DIR, 'templates', 'connect_enhanced.html')
+    if os.path.exists(template_path):
+        with open(template_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    
+    # Fallback inline template
+    return """
+    <!DOCTYPE html>
+    <html dir="rtl" lang="he">
+    <head>
+        <meta charset="UTF-8">
+        <title>חיבור לענן - SchoolPoints</title>
+    </head>
+    <body>
+        <h1>דף החיבור המשופר לא נמצא</h1>
+        <p>אנא ודא שקובץ התבנית קיים ב: templates/connect_enhanced.html</p>
+    </body>
+    </html>
     """

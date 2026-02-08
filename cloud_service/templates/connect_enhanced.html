@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>חיבור לענן - SchoolPoints</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .header-brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .header-logo {
+            width: 48px;
+            height: 48px;
+            border-radius: 10px;
+            object-fit: contain;
+            background: rgba(255, 255, 255, 0.15);
+            padding: 6px;
+            display: none;
+        }
+
+        .header-title-group {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        
+        .content {
+            padding: 30px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+        
+        .btn {
+            width: 100%;
+            padding: 14px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        .btn:hover {
+            background: #2980b9;
+        }
+        
+        .btn:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+        }
+        
+        .progress-container {
+            margin-top: 30px;
+            display: none;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 30px;
+            background: #ecf0f1;
+            border-radius: 15px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3498db, #2ecc71);
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        
+        .progress-message {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .teacher-password {
+            margin-top: 20px;
+            padding: 20px;
+            background: #e8f4f8;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        .error {
+            color: #e74c3c;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .success {
+            color: #27ae60;
+            margin-top: 10px;
+            text-align: center;
+        }
+        
+        .phase-indicator {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            font-size: 12px;
+        }
+        
+        .phase {
+            text-align: center;
+            flex: 1;
+            padding: 5px;
+            border-radius: 3px;
+            transition: all 0.3s;
+        }
+        
+        .phase.active {
+            background: #3498db;
+            color: white;
+        }
+        
+        .phase.completed {
+            background: #2ecc71;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-brand">
+                <img id="institutionLogo" class="header-logo" alt="לוגו מוסד">
+                <div class="header-title-group">
+                    <h1 id="institutionName">חיבור לענן</h1>
+                    <p id="institutionSubtitle">הזן פרטי מוסד לסנכרון נתונים</p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="content">
+            <!-- Login Form -->
+            <div id="loginForm">
+                <div class="form-group">
+                    <label for="tenantId">קוד מוסד:</label>
+                    <input type="text" id="tenantId" placeholder="הזן קוד מוסד" autocomplete="off">
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">סיסמת מוסד:</label>
+                    <input type="password" id="password" placeholder="הזן סיסמה">
+                </div>
+                
+                <button class="btn" onclick="startConnection()">התחבר וסנכרן</button>
+                
+                <div id="loginError" class="error"></div>
+            </div>
+            
+            <!-- Progress Container -->
+            <div id="progressContainer" class="progress-container">
+                <div class="phase-indicator">
+                    <div class="phase" id="phase-teachers">מורים</div>
+                    <div class="phase" id="phase-students">תלמידים</div>
+                    <div class="phase" id="phase-settings">הגדרות</div>
+                    <div class="phase" id="phase-files">קבצים</div>
+                </div>
+                
+                <div class="progress-message" id="progressMessage">מתחיל סנכרון...</div>
+                
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill">0%</div>
+                </div>
+                
+                <div id="progressError" class="error"></div>
+                <div id="progressSuccess" class="success"></div>
+            </div>
+            
+            <!-- Teacher Password -->
+            <div id="teacherPassword" class="teacher-password">
+                <h3>אישור סיסמת מורה</h3>
+                <p>המורים סונכרנו בהצלחה. הזן את סיסמת המורה שלך להמשך:</p>
+                <div class="form-group">
+                    <input type="password" id="teacherPassInput" placeholder="סיסמת מורה">
+                </div>
+                <button class="btn" onclick="submitTeacherPassword()">אשר סיסמה</button>
+                <div id="teacherError" class="error"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let syncToken = null;
+        let progressInterval = null;
+        
+        async function startConnection() {
+            const tenantId = document.getElementById('tenantId').value.trim();
+            const password = document.getElementById('password').value;
+            
+            if (!tenantId || !password) {
+                showError('loginError', 'אנא מלא את כל השדות');
+                return;
+            }
+            
+            const response = await fetch('/sync/connect', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    tenant_id: tenantId,
+                    password: password,
+                    station_id: 'admin'
+                })
+            });
+            
+            const data = await response.json();
+            
+            if (data.ok) {
+                syncToken = data.sync_token;
+                updateInstitutionHeader(data);
+                document.getElementById('loginForm').style.display = 'none';
+                document.getElementById('progressContainer').style.display = 'block';
+                startProgressPolling();
+            } else {
+                showError('loginError', data.error || 'שגיאת התחברות');
+            }
+        }
+
+        function updateInstitutionHeader(data) {
+            const name = (data && data.institution_name) ? data.institution_name.trim() : '';
+            const logo = (data && data.logo_url) ? data.logo_url.trim() : '';
+            const nameEl = document.getElementById('institutionName');
+            const subtitleEl = document.getElementById('institutionSubtitle');
+            const logoEl = document.getElementById('institutionLogo');
+
+            if (name) {
+                nameEl.textContent = name;
+                subtitleEl.textContent = 'מחבר את המוסד לענן';
+            }
+
+            if (logo) {
+                logoEl.src = logo;
+                logoEl.style.display = 'block';
+            }
+        }
+        
+        function startProgressPolling() {
+            progressInterval = setInterval(async () => {
+                if (!syncToken) return;
+                
+                const response = await fetch(`/sync/progress?sync_token=${syncToken}`);
+                const data = await response.json();
+                
+                updateProgress(data);
+                
+                if (data.completed) {
+                    clearInterval(progressInterval);
+                    showSuccess('progressSuccess', 'הסנכרון הושלם בהצלחה!');
+                    setTimeout(() => {
+                        window.close();
+                    }, 2000);
+                } else if (data.error) {
+                    clearInterval(progressInterval);
+                    showError('progressError', data.error);
+                }
+                
+                // Show teacher password prompt when teachers are synced
+                if (data.phase === 'students' && !document.getElementById('teacherPassword').style.display) {
+                    document.getElementById('teacherPassword').style.display = 'block';
+                }
+            }, 500);
+        }
+        
+        function updateProgress(data) {
+            const progress = Math.round(data.progress);
+            document.getElementById('progressFill').style.width = progress + '%';
+            document.getElementById('progressFill').textContent = progress + '%';
+            document.getElementById('progressMessage').textContent = data.message;
+            
+            // Update phase indicators
+            document.querySelectorAll('.phase').forEach(el => el.classList.remove('active', 'completed'));
+            
+            const phases = ['teachers', 'students', 'settings', 'files'];
+            const currentIndex = phases.indexOf(data.phase);
+            
+            phases.forEach((phase, index) => {
+                const element = document.getElementById(`phase-${phase}`);
+                if (index < currentIndex) {
+                    element.classList.add('completed');
+                } else if (index === currentIndex) {
+                    element.classList.add('active');
+                }
+            });
+        }
+        
+        async function submitTeacherPassword() {
+            const password = document.getElementById('teacherPassInput').value;
+            
+            if (!password) {
+                showError('teacherError', 'אנא הזן סיסמה');
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('sync_token', syncToken);
+            formData.append('teacher_password', password);
+            
+            const response = await fetch('/sync/teacher-password', {
+                method: 'POST',
+                body: formData
+            });
+            
+            const data = await response.json();
+            
+            if (data.ok) {
+                document.getElementById('teacherPassword').style.display = 'none';
+                showSuccess('progressSuccess', 'סיסמת מורה אושרה');
+            } else {
+                showError('teacherError', data.error);
+            }
+        }
+        
+        function showError(elementId, message) {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.style.display = 'block';
+            setTimeout(() => {
+                element.style.display = 'none';
+            }, 5000);
+        }
+        
+        function showSuccess(elementId, message) {
+            const element = document.getElementById(elementId);
+            element.textContent = message;
+            element.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
