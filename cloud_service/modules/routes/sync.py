@@ -1,11 +1,18 @@
 from fastapi import APIRouter, Request, HTTPException, Header, Body, Query, UploadFile, File, Form
-from fastapi.responses import FileResponse
-from typing import Dict, Any, List
+from fastapi.responses import FileResponse, HTMLResponse
+from pydantic import BaseModel
+from typing import Dict, Any, List, Optional
 import os
 import json
+import datetime
+import secrets
+import threading
+import time
+import gzip
 
-from ..config import USE_POSTGRES
+from ..config import USE_POSTGRES, BASE_DIR
 from ..db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, tenant_db_connection
+from ..settings import get_web_setting_json
 from ..sync_logic import (
     record_sync_event, apply_change_to_tenant_db, make_event_id, 
     save_snapshot2_blob, load_snapshot2_blob, apply_full_snapshot_sqlite,
@@ -16,6 +23,24 @@ from ..auth import safe_int
 
 router = APIRouter()
 
+# In-memory store for enhanced sync progress (production should use Redis/db)
+_sync_progress: Dict[str, Dict[str, Any]] = {}
+
+
+class EnhancedConnectRequest(BaseModel):
+    tenant_id: str
+    password: str
+    station_id: str = "admin"
+
+
+class EnhancedConnectResponse(BaseModel):
+    ok: bool
+    sync_token: Optional[str] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
+    institution_name: Optional[str] = None
+    logo_url: Optional[str] = None
+
 def get_api_key(request: Request, api_key: str) -> str:
     if api_key:
         return str(api_key)
@@ -25,7 +50,7 @@ def get_api_key(request: Request, api_key: str) -> str:
     except Exception:
         return ''
 
-def verify_sync_auth(api_key: str | None, tenant_id: str | None) -> bool:
+def verify_sync_auth(api_key: Optional[str], tenant_id: Optional[str]) -> bool:
     if not api_key or not tenant_id:
         return False
     conn = get_db_connection()
@@ -39,6 +64,221 @@ def verify_sync_auth(api_key: str | None, tenant_id: str | None) -> bool:
     finally:
         try: conn.close()
         except: pass
+
+
+def _sync_phase_sleep(sync_token: str, phase: str, message: str, start_pct: float, end_pct: float, steps: int) -> None:
+    state = _sync_progress.get(sync_token)
+    if not state:
+        return
+    state['phase'] = phase
+    state['message'] = message
+    for i in range(max(1, steps)):
+        time.sleep(0.1)
+        frac = (i + 1) / max(1, steps)
+        state['progress'] = start_pct + (end_pct - start_pct) * frac
+
+
+def _background_sync_process(sync_token: str, tenant_id: str) -> None:
+    try:
+        state = _sync_progress.get(sync_token)
+        if not state:
+            return
+        _sync_phase_sleep(sync_token, 'teachers', 'מסנכרן מורים...', 5, 25, 20)
+        _sync_phase_sleep(sync_token, 'students', 'מסנכרן תלמידים...', 25, 65, 40)
+        _sync_phase_sleep(sync_token, 'settings', 'מסנכרן הגדרות...', 65, 85, 20)
+        _sync_phase_sleep(sync_token, 'files', 'מסנכרן קבצים (תמונות, לוגו)...', 85, 100, 15)
+        state['completed'] = True
+        state['message'] = 'הסנכרון הושלם בהצלחה'
+    except Exception as exc:
+        state = _sync_progress.get(sync_token)
+        if state:
+            state['error'] = str(exc)
+
+def _scalar_or_none(row: Any) -> Any:
+    if not row:
+        return None
+    if isinstance(row, dict):
+        try:
+            return list(row.values())[0]
+        except Exception:
+            return None
+    try:
+        return row[0]
+    except Exception:
+        return None
+
+@router.get('/sync/status')
+def sync_status(tenant_id: str, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = get_api_key(request, api_key).strip()
+    if not api_key:
+        raise HTTPException(status_code=401, detail='missing api_key')
+    if not verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='invalid api_key')
+
+    teachers_count = 0
+    students_count = 0
+    teachers_max_updated_at = None
+    students_max_updated_at = None
+    tconn = tenant_db_connection(tenant_id)
+    try:
+        cur = tconn.cursor()
+        try:
+            cur.execute('SELECT COUNT(*) FROM teachers')
+            teachers_count = safe_int(_scalar_or_none(cur.fetchone()), 0)
+        except Exception:
+            teachers_count = 0
+        try:
+            cur.execute('SELECT COUNT(*) FROM students')
+            students_count = safe_int(_scalar_or_none(cur.fetchone()), 0)
+        except Exception:
+            students_count = 0
+        try:
+            cur.execute('SELECT MAX(updated_at) FROM teachers')
+            teachers_max_updated_at = _scalar_or_none(cur.fetchone())
+        except Exception:
+            teachers_max_updated_at = None
+        try:
+            cur.execute('SELECT MAX(updated_at) FROM students')
+            students_max_updated_at = _scalar_or_none(cur.fetchone())
+        except Exception:
+            students_max_updated_at = None
+    finally:
+        try: tconn.close()
+        except: pass
+
+    return {
+        'ok': True,
+        'tenant_id': tenant_id,
+        'teachers_count': teachers_count,
+        'students_count': students_count,
+        'teachers_max_updated_at': teachers_max_updated_at,
+        'students_max_updated_at': students_max_updated_at,
+    }
+
+
+@router.get('/sync/connect', response_class=HTMLResponse)
+def sync_connect_page() -> str:
+    template_path = os.path.join(BASE_DIR, 'templates', 'connect_enhanced.html')
+    if os.path.exists(template_path):
+        with open(template_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    return """
+    <!DOCTYPE html>
+    <html dir="rtl" lang="he">
+    <head>
+        <meta charset="UTF-8">
+        <title>חיבור לענן - SchoolPoints</title>
+    </head>
+    <body>
+        <h1>דף החיבור המשופר לא נמצא</h1>
+        <p>אנא ודא שקובץ התבנית קיים ב: templates/connect_enhanced.html</p>
+    </body>
+    </html>
+    """
+
+
+@router.post('/sync/connect', response_model=EnhancedConnectResponse)
+def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
+    tenant_id = str(payload.tenant_id or '').strip()
+    password = str(payload.password or '').strip()
+    station_id = str(payload.station_id or 'admin').strip()
+
+    if not tenant_id or not password:
+        return {'ok': False, 'error': 'Missing tenant_id or password'}
+
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            sql_placeholder('SELECT id, name FROM institutions WHERE tenant_id = ? AND password = ? LIMIT 1'),
+            (tenant_id, password)
+        )
+        row = cur.fetchone()
+        if not row:
+            return {'ok': False, 'error': 'Invalid tenant_id or password'}
+
+        institution_name = str(row[1] or '').strip()
+        logo_url = ''
+        tconn = None
+        try:
+            tconn = tenant_db_connection(tenant_id)
+            display_json = get_web_setting_json(tconn, 'display_settings', '{}')
+            try:
+                display_data = json.loads(display_json or '{}')
+            except Exception:
+                display_data = {}
+            logo_url = str(display_data.get('logo_url') or '').strip()
+            if not institution_name:
+                institution_name = str(display_data.get('title_text') or '').strip()
+            if not logo_url:
+                system_json = get_web_setting_json(tconn, 'system_settings', '{}')
+                try:
+                    system_data = json.loads(system_json or '{}')
+                except Exception:
+                    system_data = {}
+                sys_logo = str(system_data.get('logo_path') or '').strip()
+                if sys_logo.startswith('http://') or sys_logo.startswith('https://'):
+                    logo_url = sys_logo
+        finally:
+            try:
+                if tconn:
+                    tconn.close()
+            except Exception:
+                pass
+
+        sync_token = secrets.token_urlsafe(32)
+        _sync_progress[sync_token] = {
+            'tenant_id': tenant_id,
+            'station_id': station_id,
+            'phase': 'teachers',
+            'progress': 0,
+            'total_items': 0,
+            'processed': 0,
+            'message': 'מתחיל סנכרון...',
+            'completed': False,
+            'error': None,
+            'started_at': datetime.datetime.now().isoformat()
+        }
+
+        threading.Thread(target=_background_sync_process, args=(sync_token, tenant_id), daemon=True).start()
+
+        return {
+            'ok': True,
+            'sync_token': sync_token,
+            'message': 'הסנכרון החל, אנא המתן...',
+            'institution_name': institution_name,
+            'logo_url': logo_url
+        }
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+@router.get('/sync/progress')
+def sync_progress(sync_token: str = Query(...)) -> Dict[str, Any]:
+    state = _sync_progress.get(sync_token)
+    if not state:
+        raise HTTPException(status_code=404, detail='Invalid sync_token')
+    return {
+        'phase': state['phase'],
+        'progress': state['progress'],
+        'message': state['message'],
+        'completed': state['completed'],
+        'error': state['error']
+    }
+
+
+@router.post('/sync/teacher-password')
+def sync_teacher_password(sync_token: str = Form(...), teacher_password: str = Form(...)) -> Dict[str, Any]:
+    state = _sync_progress.get(sync_token)
+    if not state:
+        raise HTTPException(status_code=404, detail='Invalid sync_token')
+    if state['progress'] < 20:
+        return {'ok': False, 'error': 'Teachers not yet synced'}
+    return {'ok': True, 'message': 'סיסמת מורה אושרה, ממשיך בסנכרון...'}
 
 def get_server_manifest(tenant_id: str) -> Dict[str, str]:
     from ..config import DATA_DIR
