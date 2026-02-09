@@ -21,7 +21,7 @@ from ..sync_logic import (
     list_user_tables, fetch_table_rows_any
 )
 from ..models import SyncPushRequest, Snapshot2Payload
-from ..auth import safe_int
+from ..auth import safe_int, check_password_hash
 
 router = APIRouter()
 
@@ -189,11 +189,16 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
         try:
             cur = conn.cursor()
             cur.execute(
-                sql_placeholder('SELECT id, name FROM institutions WHERE tenant_id = ? AND password = ? LIMIT 1'),
-                (tenant_id, password)
+                sql_placeholder('SELECT id, name, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
+                (tenant_id,)
             )
             row = cur.fetchone()
             if not row:
+                return {'ok': False, 'error': 'Invalid tenant_id or password'}
+
+            pw_hash = row['password_hash'] if isinstance(row, dict) else row[2]
+            pw_hash = str(pw_hash or '').strip()
+            if not pw_hash or not check_password_hash(pw_hash, password):
                 return {'ok': False, 'error': 'Invalid tenant_id or password'}
         finally:
             pass
