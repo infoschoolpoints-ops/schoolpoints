@@ -203,7 +203,7 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
         finally:
             pass
 
-        institution_name = str(row[1] or '').strip()
+        institution_name = str(row['name'] if isinstance(row, dict) else row[1] or '').strip()
         logo_url = ''
         tconn = None
         try:
