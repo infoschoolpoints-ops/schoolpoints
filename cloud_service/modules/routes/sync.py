@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, Header, Body, Query, UploadFile, File, Form
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
 import os
@@ -315,13 +315,48 @@ def sync_connect_status(station_id: str = Query(...)) -> Dict[str, Any]:
 
 
 @router.post('/sync/teacher-password')
-def sync_teacher_password(sync_token: str = Form(...), teacher_password: str = Form(...)) -> Dict[str, Any]:
+def sync_teacher_password(sync_token: str = Form(...), teacher_password: str = Form(...)) -> JSONResponse:
     state = _sync_progress.get(sync_token)
     if not state:
         raise HTTPException(status_code=404, detail='Invalid sync_token')
     if state['progress'] < 20:
-        return {'ok': False, 'error': 'Teachers not yet synced'}
-    return {'ok': True, 'message': 'סיסמת מורה אושרה, ממשיך בסנכרון...'}
+        return JSONResponse({'ok': False, 'error': 'Teachers not yet synced'})
+    tenant_id = str(state.get('tenant_id') or '').strip()
+    card_number = str(teacher_password or '').strip()
+    if not tenant_id or not card_number:
+        return JSONResponse({'ok': False, 'error': 'חסרים פרטים'})
+
+    teacher_id = None
+    tconn = tenant_db_connection(tenant_id)
+    try:
+        cur = tconn.cursor()
+        cur.execute(
+            sql_placeholder(
+                'SELECT id FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1'
+            ),
+            (card_number, card_number, card_number)
+        )
+        row = cur.fetchone()
+        if row:
+            teacher_id = row['id'] if isinstance(row, dict) else row[0]
+    finally:
+        try:
+            tconn.close()
+        except Exception:
+            pass
+
+    if not teacher_id:
+        return JSONResponse({'ok': False, 'error': 'מורה לא נמצא'})
+
+    state['teacher_verified'] = True
+    response = JSONResponse({
+        'ok': True,
+        'message': 'סיסמת מורה אושרה, ממשיך ללוח הניהול...',
+        'redirect_url': '/web/admin'
+    })
+    response.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    response.set_cookie('web_teacher', str(teacher_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
+    return response
 
 def get_server_manifest(tenant_id: str) -> Dict[str, str]:
     from ..config import DATA_DIR

@@ -383,10 +383,7 @@
                 
                 if (data.completed) {
                     clearInterval(progressInterval);
-                    showSuccess('progressSuccess', 'הסנכרון הושלם בהצלחה!');
-                    setTimeout(() => {
-                        window.close();
-                    }, 2000);
+                    showSuccess('progressSuccess', 'הסנכרון הושלם בהצלחה! אפשר להמשיך ללוח הניהול.');
                 } else if (data.error) {
                     clearInterval(progressInterval);
                     showError('progressError', data.error);
@@ -442,7 +439,11 @@
             
             if (data.ok) {
                 document.getElementById('teacherPassword').style.display = 'none';
-                showSuccess('progressSuccess', 'סיסמת מורה אושרה');
+                showSuccess('progressSuccess', 'סיסמת מורה אושרה, מעביר ללוח הניהול...');
+                const redirectUrl = data.redirect_url || '/web/admin';
+                setTimeout(() => {
+                    window.location.href = redirectUrl;
+                }, 600);
             } else {
                 showError('teacherError', data.error);
             }

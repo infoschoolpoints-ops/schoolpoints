@@ -10181,7 +10181,7 @@ class AdminStation:
                     # Use the new enhanced connection page
                     base = _get_cloud_base_url()
                     station_id = _get_station_id()
-                    url = f"{base}/sync/connect?station_id={urllib.parse.quote(station_id)}"
+                    url = f"{base}/sync/connect?station_id={urllib.parse.quote(station_id)}&v={int(time.time())}"
                     webbrowser.open(url)
                 except Exception as e:
                     try:
@@ -10575,7 +10575,7 @@ class AdminStation:
                     # Use the new enhanced connection page
                     base = _get_cloud_base_url()
                     station_id = _get_station_id()
-                    url = f"{base}/sync/connect?station_id={urllib.parse.quote(station_id)}"
+                    url = f"{base}/sync/connect?station_id={urllib.parse.quote(station_id)}&v={int(time.time())}"
                     webbrowser.open(url)
                 except Exception as e:
                     try:
