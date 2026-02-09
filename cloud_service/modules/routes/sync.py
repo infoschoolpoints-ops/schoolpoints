@@ -27,6 +27,7 @@ router = APIRouter()
 
 # In-memory store for enhanced sync progress (production should use Redis/db)
 _sync_progress: Dict[str, Dict[str, Any]] = {}
+_connect_ready: Dict[str, Dict[str, Any]] = {}
 
 
 class EnhancedConnectRequest(BaseModel):
@@ -175,7 +176,7 @@ def sync_connect_page(request: Request) -> str:
 
 
 @router.post('/sync/connect', response_model=EnhancedConnectResponse)
-def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
+def sync_connect_enhanced(payload: EnhancedConnectRequest, request: Request) -> Dict[str, Any]:
     try:
         tenant_id = str(payload.tenant_id or '').strip()
         password = str(payload.password or '').strip()
@@ -189,7 +190,7 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
         try:
             cur = conn.cursor()
             cur.execute(
-                sql_placeholder('SELECT id, name, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
+                sql_placeholder('SELECT id, name, password_hash, api_key FROM institutions WHERE tenant_id = ? LIMIT 1'),
                 (tenant_id,)
             )
             row = cur.fetchone()
@@ -200,6 +201,8 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
             pw_hash = str(pw_hash or '').strip()
             if not pw_hash or not check_password_hash(pw_hash, password):
                 return {'ok': False, 'error': 'Invalid tenant_id or password'}
+            api_key = row['api_key'] if isinstance(row, dict) else row[3]
+            api_key = str(api_key or '').strip()
         finally:
             pass
 
@@ -232,6 +235,16 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
                     tconn.close()
             except Exception:
                 pass
+
+        base_url = str(request.base_url).rstrip('/')
+        push_url = base_url + '/sync/push'
+        _connect_ready[station_id] = {
+            'tenant_id': tenant_id,
+            'api_key': api_key,
+            'push_url': push_url,
+            'station_id': station_id,
+            'created_at': datetime.datetime.now().isoformat()
+        }
 
         sync_token = secrets.token_urlsafe(32)
         _sync_progress[sync_token] = {
@@ -279,6 +292,25 @@ def sync_progress(sync_token: str = Query(...)) -> Dict[str, Any]:
         'message': state['message'],
         'completed': state['completed'],
         'error': state['error']
+    }
+
+
+@router.get('/sync/connect/status')
+def sync_connect_status(station_id: str = Query(...)) -> Dict[str, Any]:
+    sid = str(station_id or '').strip()
+    if not sid:
+        raise HTTPException(status_code=400, detail='missing station_id')
+    data = _connect_ready.get(sid)
+    if not data:
+        return {'ok': False, 'ready': False}
+    return {
+        'ok': True,
+        'ready': True,
+        'tenant_id': data.get('tenant_id'),
+        'api_key': data.get('api_key'),
+        'push_url': data.get('push_url'),
+        'station_id': data.get('station_id'),
+        'created_at': data.get('created_at')
     }
 
 

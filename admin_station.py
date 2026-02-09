@@ -10179,13 +10179,16 @@ class AdminStation:
             def _open_cloud_connect():
                 try:
                     # Use the new enhanced connection page
-                    url = 'https://schoolpoints.co.il/sync/connect'
+                    base = _get_cloud_base_url()
+                    station_id = _get_station_id()
+                    url = f"{base}/sync/connect?station_id={urllib.parse.quote(station_id)}"
                     webbrowser.open(url)
                 except Exception as e:
                     try:
                         messagebox.showerror('שגיאה', str(e), parent=dialog2)
                     except Exception:
                         pass
+                _poll_connect_ready()
 
             def _get_cloud_base_url() -> str:
                 try:
@@ -10199,6 +10202,24 @@ class AdminStation:
                 if not base:
                     base = 'https://schoolpoints.co.il'
                 return str(base).strip().rstrip('/')
+
+            def _get_station_id() -> str:
+                try:
+                    cfg0 = self.load_app_config() or {}
+                except Exception:
+                    cfg0 = {}
+                try:
+                    sid0 = str(cfg0.get('sync_station_id') or '').strip()
+                except Exception:
+                    sid0 = ''
+                if not sid0:
+                    try:
+                        sid0 = str(socket.gethostname() or '').strip()
+                    except Exception:
+                        sid0 = 'admin'
+                if not sid0:
+                    sid0 = 'admin'
+                return sid0
 
             def _is_cloud_connected() -> bool:
                 try:
@@ -10273,6 +10294,63 @@ class AdminStation:
                     return False, msg or 'שגיאת התחברות', {}
                 except Exception as e:
                     return False, str(e), {}
+
+            def _poll_connect_ready() -> None:
+                try:
+                    import urllib.request
+                    import urllib.parse
+                    import urllib.error
+                except Exception:
+                    return
+                base = _get_cloud_base_url()
+                station_id = _get_station_id()
+                status_url = base.rstrip('/') + '/sync/connect/status?station_id=' + urllib.parse.quote(station_id)
+
+                def _run():
+                    for _ in range(0, 120):
+                        try:
+                            with urllib.request.urlopen(status_url, timeout=6) as resp:
+                                raw = resp.read().decode('utf-8', errors='ignore')
+                            try:
+                                data = json.loads(raw or '{}')
+                            except Exception:
+                                data = {}
+                            if isinstance(data, dict) and data.get('ok') and data.get('ready'):
+                                tenant_id = str(data.get('tenant_id') or '').strip()
+                                api_key = str(data.get('api_key') or '').strip()
+                                push_url = str(data.get('push_url') or '').strip()
+                                if tenant_id and api_key and push_url:
+                                    try:
+                                        cfg1 = self.load_app_config() or {}
+                                    except Exception:
+                                        cfg1 = {}
+                                    try:
+                                        cfg1['sync_tenant_id'] = tenant_id
+                                        cfg1['sync_api_key'] = api_key
+                                        cfg1['sync_push_url'] = push_url
+                                        cfg1['sync_station_id'] = station_id
+                                        self.save_app_config(cfg1)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        cloud_state_lbl.configure(text=fix_rtl_text('חובר לענן. מבצע אתחול נתונים...'))
+                                    except Exception:
+                                        pass
+                                    _auto_cloud_init_push(tenant_id, api_key, push_url)
+                                    try:
+                                        _refresh_cloud_ui()
+                                    except Exception:
+                                        pass
+                                    return
+                        except Exception:
+                            pass
+                        time.sleep(2)
+
+                try:
+                    t = threading.Thread(target=_run, daemon=True)
+                    t.start()
+                except Exception:
+                    pass
 
             connect_row = tk.Frame(frame2, bg='#ecf0f1')
             connect_row.pack(fill=tk.X, pady=(6, 0))

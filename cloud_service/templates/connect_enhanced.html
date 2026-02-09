@@ -285,10 +285,21 @@
             }
         });
         
+        function getStationId() {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                const sid = params.get('station_id');
+                return sid ? sid.trim() : 'admin';
+            } catch (error) {
+                return 'admin';
+            }
+        }
+
         async function startConnection() {
             const tenantId = document.getElementById('tenantId').value.trim();
             const password = document.getElementById('password').value;
             const connectBtn = document.getElementById('connectBtn');
+            const stationId = getStationId();
             
             if (!tenantId || !password) {
                 showError('loginError', 'אנא מלא את כל השדות');
@@ -308,7 +319,7 @@
                     body: JSON.stringify({
                         tenant_id: tenantId,
                         password: password,
-                        station_id: 'admin'
+                        station_id: stationId
                     })
                 });
                 let data = null;
