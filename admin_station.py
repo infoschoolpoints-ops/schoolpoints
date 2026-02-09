@@ -10573,13 +10573,16 @@ class AdminStation:
             def _open_cloud_connect():
                 try:
                     # Use the new enhanced connection page
-                    url = 'https://schoolpoints.co.il/sync/connect'
+                    base = _get_cloud_base_url()
+                    station_id = _get_station_id()
+                    url = f"{base}/sync/connect?station_id={urllib.parse.quote(station_id)}"
                     webbrowser.open(url)
                 except Exception as e:
                     try:
                         messagebox.showerror('שגיאה', str(e), parent=dialog2)
                     except Exception:
                         pass
+                _poll_connect_ready()
 
             try:
                 _refresh_cloud_ui()
