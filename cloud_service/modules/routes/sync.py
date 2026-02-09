@@ -257,8 +257,9 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest) -> Dict[str, Any]:
             'logo_url': logo_url
         }
     except Exception as exc:
+        tb = traceback.format_exc()
         traceback.print_exc()
-        return {'ok': False, 'error': f'Internal error: {exc}'}
+        return {'ok': False, 'error': f'Internal error: {exc} | {tb}'}
     finally:
         try:
             if conn:
