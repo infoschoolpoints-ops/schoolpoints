@@ -5594,8 +5594,9 @@ def _record_sync_event(
     action_type: str,
     payload: Dict[str, Any] | None,
     created_at: str | None = None,
+    local_id: int | None = None,
 ) -> str:
-    ev_id = _make_event_id(station_id, None, created_at)
+    ev_id = _make_event_id(station_id, local_id, created_at)
     payload_json = None
     try:
         payload_json = json.dumps(payload or {}, ensure_ascii=False)
@@ -5628,18 +5629,21 @@ def _record_sync_event(
             pass
 
         # sync stream
+        insert_sql = '''
+            INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        if USE_POSTGRES:
+            insert_sql = insert_sql.rstrip() + ' ON CONFLICT (tenant_id, event_id) DO NOTHING'
+        else:
+            insert_sql = insert_sql.replace('INSERT INTO', 'INSERT OR IGNORE INTO', 1)
         cur.execute(
-            _sql_placeholder(
-                '''
-                INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                '''
-            ),
+            _sql_placeholder(insert_sql),
             (
                 str(tenant_id or '').strip(),
                 str(ev_id),
                 str(station_id or '').strip(),
-                None,
+                (int(local_id) if local_id is not None else None),
                 str(entity_type or '').strip(),
                 (str(entity_id).strip() if entity_id is not None else None),
                 str(action_type or '').strip(),
@@ -6028,18 +6032,21 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
 
             event_id = _make_event_id(payload.station_id, ch.id, ch.created_at)
             try:
+                insert_sql = '''
+                    INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+                if USE_POSTGRES:
+                    insert_sql = insert_sql.rstrip() + ' ON CONFLICT (tenant_id, event_id) DO NOTHING'
+                else:
+                    insert_sql = insert_sql.replace('INSERT INTO', 'INSERT OR IGNORE INTO', 1)
                 cur.execute(
-                    _sql_placeholder(
-                        '''
-                        INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        '''
-                    ),
+                    _sql_placeholder(insert_sql),
                     (
                         payload.tenant_id,
                         event_id,
                         payload.station_id,
-                        int(ch.id or 0),
+                        (int(ch.id) if ch.id is not None else None),
                         ch.entity_type,
                         ch.entity_id,
                         ch.action_type,
@@ -6047,6 +6054,9 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
                         ch.created_at,
                     )
                 )
+                if getattr(cur, 'rowcount', 1) == 0:
+                    skipped += 1
+                    continue
             except _integrity_errors():
                 skipped += 1
                 continue

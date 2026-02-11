@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, Header, Body, Query, UploadFile, File, Form
+from fastapi import APIRouter, Request, HTTPException, Header, Body, Query, UploadFile, File, Form, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
@@ -20,7 +20,7 @@ from ..sync_logic import (
     save_snapshot2_blob, load_snapshot2_blob, apply_full_snapshot_sqlite,
     list_user_tables, fetch_table_rows_any
 )
-from ..models import SyncPushRequest, Snapshot2Payload
+from ..models import SyncPushRequest, SnapshotPayload, Snapshot2Payload
 from ..auth import safe_int, check_password_hash
 
 router = APIRouter()
@@ -464,7 +464,8 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
                 entity_id=ch.entity_id,
                 action_type=ch.action_type,
                 payload=json.loads(ch.payload_json or '{}') if ch.payload_json else {},
-                created_at=ch.created_at
+                created_at=ch.created_at,
+                local_id=ch.id
             )
             
             # 2. Apply to tenant DB
@@ -553,6 +554,44 @@ def sync_pull(
         try: conn.close()
         except: pass
 
+@router.post('/sync/snapshot')
+def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Header(default='')) -> Dict[str, Any]:
+    if not payload.tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+
+    api_key = get_api_key(request, api_key).strip()
+    if not verify_sync_auth(api_key, payload.tenant_id):
+        raise HTTPException(status_code=401, detail='invalid api_key')
+
+    tconn = tenant_db_connection(payload.tenant_id)
+    try:
+        snap = {
+            'teachers': payload.teachers or [],
+            'students': payload.students or [],
+            'static_messages': payload.static_messages or [],
+            'threshold_messages': payload.threshold_messages or [],
+            'news_items': payload.news_items or [],
+            'ads_items': payload.ads_items or [],
+            'student_messages': payload.student_messages or [],
+        }
+        applied_counts = apply_full_snapshot_sqlite(tconn, snap)
+    finally:
+        try: tconn.close()
+        except: pass
+
+    return {
+        'ok': True,
+        'tenant_id': payload.tenant_id,
+        'station_id': payload.station_id,
+        'teachers': int(applied_counts.get('teachers') or 0),
+        'students': int(applied_counts.get('students') or 0),
+        'static_messages': int(applied_counts.get('static_messages') or 0),
+        'threshold_messages': int(applied_counts.get('threshold_messages') or 0),
+        'news_items': int(applied_counts.get('news_items') or 0),
+        'ads_items': int(applied_counts.get('ads_items') or 0),
+        'student_messages': int(applied_counts.get('student_messages') or 0),
+    }
+
 @router.post('/sync/snapshot2')
 def sync_snapshot2(payload: Snapshot2Payload, request: Request, api_key: str = Header(default='')) -> Dict[str, Any]:
     if not payload.tenant_id:
@@ -562,29 +601,12 @@ def sync_snapshot2(payload: Snapshot2Payload, request: Request, api_key: str = H
     if not verify_sync_auth(api_key, payload.tenant_id):
         raise HTTPException(status_code=401, detail='invalid api_key')
 
-    # 1. Apply to tenant DB
+    # 1. Apply to tenant DB (filter columns for SQLite/Postgres)
     tconn = tenant_db_connection(payload.tenant_id)
     applied_counts = {}
     try:
-        if USE_POSTGRES:
-            # Postgres: specialized handling
-            # Assuming payload.snapshot is dict {table: [rows]}
-            snap = payload.snapshot
-            for table, rows in snap.items():
-                if not isinstance(rows, list): continue
-                # We reuse the logic from modules/sync_logic or similar
-                # But sync_logic has apply_full_snapshot_sqlite. 
-                # Ideally we make apply_full_snapshot generic.
-                # For now let's implement basic here or use helper if adaptable.
-                from ..sync_logic import _replace_rows
-                try:
-                    _replace_rows(tconn, table, rows)
-                    applied_counts[table] = len(rows)
-                except Exception as e:
-                    print(f"Error applying table {table}: {e}")
-        else:
-            # SQLite
-            applied_counts = apply_full_snapshot_sqlite(tconn, payload.snapshot)
+        snap = payload.snapshot if isinstance(payload.snapshot, dict) else {}
+        applied_counts = apply_full_snapshot_sqlite(tconn, snap)
     finally:
         try: tconn.close()
         except: pass
@@ -598,6 +620,67 @@ def sync_snapshot2(payload: Snapshot2Payload, request: Request, api_key: str = H
         print(f"Failed to save snapshot blob: {e}")
 
     return {'ok': True, 'applied': applied_counts}
+
+@router.get('/sync/snapshot')
+def sync_snapshot_get(
+    request: Request,
+    tenant_id: str = Query(default=''),
+    api_key: str = Header(default=''),
+) -> Dict[str, Any]:
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = get_api_key(request, api_key).strip()
+    if not verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='invalid api_key')
+
+    last_event_id = 0
+    last_change_id = 0
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                sql_placeholder('SELECT MAX(id) FROM sync_events WHERE tenant_id = ?'),
+                (tenant_id,)
+            )
+            last_event_id = safe_int(_scalar_or_none(cur.fetchone()), 0)
+        except Exception:
+            last_event_id = 0
+        try:
+            cur.execute('SELECT MAX(id) FROM changes')
+            last_change_id = safe_int(_scalar_or_none(cur.fetchone()), 0)
+        except Exception:
+            last_change_id = 0
+    finally:
+        try: conn.close()
+        except: pass
+
+    tconn = tenant_db_connection(tenant_id)
+    try:
+        tables = list_user_tables(tconn)
+        exclude = {
+            'change_log',
+            'applied_events',
+            'purchase_holds',
+            'sync_state',
+            'sqlite_sequence',
+        }
+        data: Dict[str, Any] = {}
+        for t in tables:
+            if t in exclude:
+                continue
+            data[t] = fetch_table_rows_any(tconn, t)
+        return {
+            'ok': True,
+            'tenant_id': tenant_id,
+            'snapshot': data,
+            'last_event_id': int(last_event_id),
+            'last_change_id': int(last_change_id),
+        }
+    finally:
+        try: tconn.close()
+        except: pass
 
 @router.get('/sync/snapshot2')
 def sync_snapshot2_get(request: Request, tenant_id: str, api_key: str):
@@ -679,6 +762,16 @@ async def sync_files_upload_ep(
         return {'ok': True}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
+
+@router.get('/sync/files/list')
+def sync_files_list_ep(request: Request) -> Dict[str, Any]:
+    api_key = request.headers.get('api-key')
+    tenant_id = request.headers.get('x-tenant-id')
+
+    if not verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='Invalid auth')
+
+    return {'manifest': get_server_manifest(tenant_id)}
 
 @router.get('/sync/files/download')
 def sync_files_download_ep(request: Request, path: str = Query(...)):

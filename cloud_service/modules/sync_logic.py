@@ -4,7 +4,7 @@ import secrets
 import logging
 from typing import Dict, Any, List, Optional
 
-from .db import get_db_connection, sql_placeholder, table_columns, tenant_db_connection
+from .db import get_db_connection, sql_placeholder, table_columns, tenant_db_connection, integrity_errors
 from .utils import time_to_minutes
 from .config import USE_POSTGRES
 
@@ -38,8 +38,9 @@ def record_sync_event(
     action_type: str,
     payload: Optional[Dict[str, Any]],
     created_at: Optional[str] = None,
+    local_id: Optional[int] = None,
 ) -> str:
-    ev_id = make_event_id(station_id, None, created_at)
+    ev_id = make_event_id(station_id, local_id, created_at)
     payload_json = None
     try:
         payload_json = json.dumps(payload or {}, ensure_ascii=False)
@@ -72,18 +73,21 @@ def record_sync_event(
             pass
 
         # sync stream
+        insert_sql = '''
+            INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        if USE_POSTGRES:
+            insert_sql = insert_sql.rstrip() + ' ON CONFLICT (tenant_id, event_id) DO NOTHING'
+        else:
+            insert_sql = insert_sql.replace('INSERT INTO', 'INSERT OR IGNORE INTO', 1)
         cur.execute(
-            sql_placeholder(
-                '''
-                INSERT INTO sync_events (tenant_id, event_id, station_id, change_local_id, entity_type, entity_id, action_type, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                '''
-            ),
+            sql_placeholder(insert_sql),
             (
                 str(tenant_id or '').strip(),
                 str(ev_id),
                 str(station_id or '').strip(),
-                None,
+                (int(local_id) if local_id is not None else None),
                 str(entity_type or '').strip(),
                 (str(entity_id).strip() if entity_id is not None else None),
                 str(action_type or '').strip(),
