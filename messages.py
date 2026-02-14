@@ -331,6 +331,12 @@ class MessagesDB:
         
         conn.commit()
         conn.close()
+        # אפס דגל triggers כדי שייווצרו גם על טבלאות ההודעות
+        try:
+            from database import Database
+            Database._sync_triggers_ensured = False
+        except Exception:
+            pass
     
     # ===================== הודעות סטטיות =====================
     

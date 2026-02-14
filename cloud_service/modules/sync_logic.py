@@ -288,6 +288,7 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
         'cashier_responsible': ('cashier_responsibles', 'student_id'),
         'activity_claim': ('activity_claims', 'id'),
         'service_reservation': ('scheduled_service_reservations', 'id'),
+        'purchase': ('purchases_log', 'id'),
         'refund': ('refunds_log', 'id'),
     }
 
