@@ -8,15 +8,231 @@ import shutil
 import re
 import uuid
 import time
+import socket
+import threading
+import queue
+import urllib.request
+import urllib.error
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
 
 
+class _RemoteSyncWorker:
+    """Worker singleton: thread אחד קבוע לכל URL שאוסף כתיבות ושולח באצווה.
+    מונע פיצוץ threads כשיש 50 עמדות × 10 פעולות/דקה.
+    """
+    _instances = {}   # url → _RemoteSyncWorker
+    _lock = threading.Lock()
+
+    @classmethod
+    def get(cls, url: str, api_key: str) -> '_RemoteSyncWorker':
+        with cls._lock:
+            if url not in cls._instances:
+                cls._instances[url] = cls(url, api_key)
+            return cls._instances[url]
+
+    def __init__(self, url: str, api_key: str):
+        self._url = url
+        self._api_key = api_key
+        self._queue = queue.Queue()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, stmts: list):
+        """הוספת כתיבות לתור (לא חוסם)."""
+        if stmts:
+            self._queue.put(stmts)
+
+    def _run(self):
+        """Worker loop: מרוקן את התור ושולח באצווה."""
+        while True:
+            try:
+                # חכה לפריט ראשון (blocking)
+                batch = self._queue.get(timeout=60)
+            except queue.Empty:
+                continue
+            # אסוף עוד פריטים שהצטברו (non-blocking)
+            while not self._queue.empty():
+                try:
+                    more = self._queue.get_nowait()
+                    batch.extend(more)
+                except queue.Empty:
+                    break
+            # שלח הכל כ-HTTP אחד
+            self._send(batch)
+
+    def _send(self, stmts: list):
+        try:
+            payload = json.dumps({'statements': stmts}, ensure_ascii=False, default=str).encode('utf-8')
+            req = urllib.request.Request(
+                self._url + '/db/execute_many',
+                data=payload,
+                headers={
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'api-key': self._api_key,
+                },
+                method='POST'
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                resp.read()
+        except Exception as e:
+            try:
+                print(f"[DB-SYNC] Failed to send {len(stmts)} write(s) to master: {e}")
+            except Exception:
+                pass
+
+
+class _RemoteWriteCursor:
+    """Cursor wrapper: כתיבות ישירות ל-DB מקומי + רישום לסנכרון ברקע לשרת."""
+
+    _WRITE_PREFIXES = ('INSERT', 'UPDATE', 'DELETE', 'REPLACE')
+    _TXN_KEYWORDS = ('BEGIN', 'COMMIT', 'ROLLBACK', 'END', 'SAVEPOINT', 'RELEASE')
+    _emergency_mode = False
+    _emergency_printed = False
+
+    def __init__(self, real_cursor, http_url: str, api_key: str, pending_writes: list):
+        self._cur = real_cursor
+        self._url = http_url
+        self._api_key = api_key
+        self._pending = pending_writes  # shared list with Connection
+        self.lastrowid = 0
+        self.rowcount = 0
+        self.description = None
+
+    def _is_write(self, sql: str) -> bool:
+        s = sql.strip().upper()
+        return any(s.startswith(p) for p in self._WRITE_PREFIXES)
+
+    def _is_txn_control(self, sql: str) -> bool:
+        s = sql.strip().upper()
+        return any(s.startswith(p) for p in self._TXN_KEYWORDS)
+
+    def _norm_params(self, params):
+        if params is None:
+            return []
+        if hasattr(params, '__iter__') and not isinstance(params, (str, bytes)):
+            return [v.isoformat() if hasattr(v, 'isoformat') else v for v in params]
+        return params
+
+    def execute(self, sql, params=None):
+        params = self._norm_params(params)
+        # הכל נכתב ישירות ל-DB מקומי (מהיר!)
+        self._cur.execute(sql, params)
+        self.lastrowid = self._cur.lastrowid
+        self.rowcount = self._cur.rowcount
+        self.description = self._cur.description
+        # כתיבות נרשמות גם לסנכרון ברקע לשרת הראשי
+        if self._is_write(sql):
+            self._pending.append({'sql': sql, 'params': list(params) if not isinstance(params, list) else params})
+        return self
+
+    def executemany(self, sql, seq_of_params):
+        params_list = list(seq_of_params)
+        self._cur.executemany(sql, params_list)
+        self.lastrowid = self._cur.lastrowid
+        self.rowcount = self._cur.rowcount
+        if self._is_write(sql):
+            for p in params_list:
+                self._pending.append({'sql': sql, 'params': list(self._norm_params(p))})
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    def fetchmany(self, size=None):
+        if size is not None:
+            return self._cur.fetchmany(size)
+        return self._cur.fetchmany()
+
+    def close(self):
+        try:
+            self._cur.close()
+        except Exception:
+            pass
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    def __next__(self):
+        return next(self._cur)
+
+
+class _RemoteWriteConnection:
+    """Connection wrapper: DB מקומי מהיר + סנכרון כתיבות ברקע לשרת הראשי.
+    
+    כל הפעולות (קריאה+כתיבה) מתבצעות ישירות על DB מקומי (SSD).
+    ב-commit(), הכתיבות נכנסות ל-worker queue – thread אחד שולח באצווה.
+    """
+
+    def __init__(self, real_conn, http_url: str, api_key: str):
+        self._conn = real_conn
+        self._url = http_url
+        self._api_key = api_key
+        self.row_factory = real_conn.row_factory
+        self._pending_writes = []
+        self._worker = _RemoteSyncWorker.get(http_url, api_key)
+
+    def cursor(self):
+        return _RemoteWriteCursor(self._conn.cursor(), self._url, self._api_key, self._pending_writes)
+
+    def execute(self, sql, params=None):
+        cur = self.cursor()
+        return cur.execute(sql, params)
+
+    def executemany(self, sql, seq_of_params):
+        cur = self.cursor()
+        return cur.executemany(sql, seq_of_params)
+
+    def commit(self):
+        # כתיבות נכנסות ל-worker queue (לא חוסם, thread אחד קבוע שולח באצווה)
+        if self._pending_writes:
+            self._worker.enqueue(list(self._pending_writes))
+            self._pending_writes.clear()
+        # commit מקומי – אם נכשל, השגיאה תעלה לקוד הקורא
+        self._conn.commit()
+
+    def rollback(self):
+        self._pending_writes.clear()
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
+
+    def close(self):
+        # ניקוי כתיבות שלא עברו commit – לא שולחים לשרת (עקביות עם rollback מקומי)
+        self._pending_writes.clear()
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+
 class Database:
     _db_path_printed = False
+    _db_status_printed = False
+    _db_copied_from_network = False  # True after first DB copy from network in this process
+    _journal_mode_applied = set()
+    _local_host_cache = {}      # host→bool cache (class-level, computed once)
+    _local_names_resolved = False
+    _local_names = set()
 
     def __init__(self, db_path: str = None):
         """אתחול מסד נתונים"""
+        self.emergency_mode = False
+        self.emergency_reason = ''
+        self._remote_write_url = None  # URL של שרת ראשי לכתיבה מרחוק
+        self._remote_write_api_key = 'local'
+        default_user_db = None
         # ברירת מחדל: איתור קובץ ה-DB לפי הגדרות רשת/קובץ, ואם אין – תיקיית נתונים למשתמש
         if db_path is None:
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,30 +240,38 @@ class Database:
             # קריאת הגדרות מ-config.json "חי" (אם קיים) במיקום כתיב, עם נפילה חזרה לקובץ המובנה
             config_db_path = None
             shared_folder = None
+            local_sync_enabled = None
+            local_sync_key = 'local'
+            local_sync_tenant_id = 'local'
+            local_sync_client = False
+            local_sync_shared_folder = None
 
             config_file = None
-            for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
+            for env_name in ("LOCALAPPDATA", "APPDATA", "PROGRAMDATA"):
                 root = os.environ.get(env_name)
-                if not root:
+                if not root or not os.path.isdir(root):
                     continue
                 try:
-                    if os.path.isdir(root) and os.access(root, os.W_OK):
-                        cfg_dir = os.path.join(root, "SchoolPoints")
-                        try:
-                            os.makedirs(cfg_dir, exist_ok=True)
-                        except Exception:
-                            pass
-                        candidate = os.path.join(cfg_dir, "config.json")
-                        # אם אין קובץ חי אבל יש קובץ ברירת-מחדל בתיקיית הקוד – ננסה להעתיקו
-                        if not os.path.exists(candidate):
-                            base_cfg = os.path.join(base_dir, "config.json")
-                            if os.path.exists(base_cfg):
-                                try:
-                                    shutil.copy2(base_cfg, candidate)
-                                except Exception:
-                                    pass
-                        config_file = candidate
-                        break
+                    cfg_dir = os.path.join(root, "SchoolPoints")
+                    # בדיקת כתיבה אמיתית (os.access לא אמין ב-Windows)
+                    try:
+                        os.makedirs(cfg_dir, exist_ok=True)
+                        _test = os.path.join(cfg_dir, '.write_test')
+                        with open(_test, 'w') as _f:
+                            _f.write('ok')
+                        os.remove(_test)
+                    except Exception:
+                        continue
+                    candidate = os.path.join(cfg_dir, "config.json")
+                    if not os.path.exists(candidate):
+                        base_cfg = os.path.join(base_dir, "config.json")
+                        if os.path.exists(base_cfg):
+                            try:
+                                shutil.copy2(base_cfg, candidate)
+                            except Exception:
+                                pass
+                    config_file = candidate
+                    break
                 except Exception:
                     continue
 
@@ -57,17 +281,71 @@ class Database:
                 if os.path.exists(fallback):
                     config_file = fallback
 
+            cfg = {}
             if config_file and os.path.exists(config_file):
                 try:
                     with open(config_file, 'r', encoding='utf-8') as f:
-                        cfg = json.load(f)
-                    # נתיב DB ישיר
-                    config_db_path = cfg.get('db_path')
-                    # או תיקיית רשת משותפת (db ו-Excel יחד)
-                    if not config_db_path:
-                        shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+                        cfg = json.load(f) or {}
                 except Exception as e:
                     print(f"שגיאה בקריאת config.json: {e}")
+
+            # אם מוגדרת תיקיית רשת — נסה לקרוא shared config (כמו admin_station)
+            _local_shared = None
+            if isinstance(cfg, dict):
+                _local_shared = cfg.get('shared_folder') or cfg.get('network_root')
+            if _local_shared and os.path.isdir(str(_local_shared)):
+                _shared_cfg_path = os.path.join(str(_local_shared), 'config.json')
+                if os.path.exists(_shared_cfg_path):
+                    try:
+                        with open(_shared_cfg_path, 'r', encoding='utf-8') as f:
+                            _shared_cfg = json.load(f) or {}
+                        if isinstance(_shared_cfg, dict) and _shared_cfg:
+                            # שמור db_path מקומי אם קיים
+                            _local_db_path = cfg.get('db_path') if isinstance(cfg, dict) else None
+                            cfg = _shared_cfg
+                            if _local_db_path:
+                                cfg['db_path'] = _local_db_path
+                    except Exception:
+                        pass
+
+            if isinstance(cfg, dict) and cfg:
+                try:
+                    config_db_path = cfg.get('db_path')
+                    if not config_db_path:
+                        shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+                    try:
+                        if config_db_path and self._is_unc_path_value(str(config_db_path)):
+                            config_db_path = self._local_path_from_unc_if_local(str(config_db_path))
+                    except Exception:
+                        pass
+                    try:
+                        flag = str(cfg.get('local_sync_enabled') or '').strip().lower()
+                        if flag in ('1', 'true', 'on', 'yes'):
+                            local_sync_enabled = True
+                        elif flag in ('0', 'false', 'off', 'no'):
+                            local_sync_enabled = False
+                    except Exception:
+                        local_sync_enabled = None
+                    try:
+                        local_sync_key = str(cfg.get('local_sync_key') or local_sync_key).strip() or local_sync_key
+                    except Exception:
+                        pass
+                    try:
+                        local_sync_tenant_id = str(cfg.get('local_sync_tenant_id') or local_sync_tenant_id).strip() or local_sync_tenant_id
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"שגיאה בקריאת config.json: {e}")
+
+            # אם יש shared_folder ב-UNC, לא נקבל db_path מקומי (C:\...) כדי לא להפיץ נתיב מקומי לכל העמדות
+            try:
+                if config_db_path and self._is_local_path(str(config_db_path)):
+                    if shared_folder and self._is_unc_path_value(str(shared_folder)):
+                        host = self._unc_host(str(shared_folder))
+                        if host and not self._is_local_host(host):
+                            config_db_path = None
+            except Exception:
+                pass
 
             # בדיקה אם יש נתיב DB משותף מוגדר
             custom_db_path = None
@@ -82,6 +360,11 @@ class Database:
                                 break
                 except Exception:
                     pass
+            try:
+                if custom_db_path and self._is_unc_path_value(str(custom_db_path)):
+                    custom_db_path = self._local_path_from_unc_if_local(str(custom_db_path))
+            except Exception:
+                pass
 
             # נתיב ברירת מחדל ל-DB עבור משתמש הנוכחי (LOCALAPPDATA / APPDATA / PROGRAMDATA)
             user_root = (
@@ -92,6 +375,12 @@ class Database:
             )
             default_user_db = os.path.join(user_root, 'SchoolPoints', 'school_points.db')
 
+            if local_sync_enabled is None and shared_folder:
+                try:
+                    local_sync_enabled = self._is_unc_path_value(shared_folder)
+                except Exception:
+                    local_sync_enabled = False
+
             # השתמש ב-DB משותף אם הוגדר, אחרת מקומי למשתמש
             if config_db_path:
                 self.db_path = config_db_path
@@ -99,11 +388,83 @@ class Database:
                     print(f"[DB] Config DB: {config_db_path}")
                     Database._db_path_printed = True
             elif shared_folder:
-                # זמנית: השתמש בקובץ מקומי במקום שיתוף רשת כדי לעקוף נעילה
-                self.db_path = os.path.join(base_dir, 'school_points_local.db')
-                if not Database._db_path_printed:
-                    print(f"[DB] Using local DB (override): {self.db_path}")
-                    Database._db_path_printed = True
+                try:
+                    _t0 = time.time()
+                    shared_folder = self._local_path_from_unc_if_local(shared_folder)
+                    print(f"[DB-INIT] _local_path_from_unc_if_local -> {shared_folder} ({time.time()-_t0:.2f}s)")
+                except Exception:
+                    pass
+                _t0 = time.time()
+                _use_local = local_sync_enabled and self._should_use_local_db(shared_folder, default_user_db)
+                print(f"[DB-INIT] local_sync_enabled={local_sync_enabled} _should_use_local_db={_use_local} ({time.time()-_t0:.2f}s)")
+                if _use_local:
+                    # *** עמדה משנית – DB מקומי בלבד (ביצועים מקסימליים) ***
+                    # מעתיקים את ה-DB מהתיקייה המשותפת ל-LOCALAPPDATA בהפעלה,
+                    # ועובדים 100% מקומי. כתיבות נשלחות ברקע לשרת הראשי.
+                    local_sync_client = True
+                    local_sync_shared_folder = shared_folder
+                    remote_db = os.path.join(shared_folder, 'school_points.db')
+                    local_db = str(default_user_db or '').strip()
+                    try:
+                        os.makedirs(os.path.dirname(local_db), exist_ok=True)
+                    except Exception:
+                        pass
+                    # העתקת DB מהרשת למקומי – פעם אחת בהפעלה כדי להבטיח נתונים עדכניים
+                    _copy_ok = False
+                    if not Database._db_copied_from_network:
+                        try:
+                            if os.path.exists(remote_db):
+                                shutil.copy2(remote_db, local_db)
+                                _copy_ok = True
+                                Database._db_copied_from_network = True
+                                try:
+                                    print(f"[DB] העתקת DB מרשת למקומי: {remote_db} -> {local_db}")
+                                except Exception:
+                                    pass
+                            else:
+                                print(f"[DB] *** קובץ DB לא נמצא ברשת: {remote_db} ***")
+                        except Exception as _cp_err:
+                            try:
+                                print(f"[DB] *** כשלון בהעתקת DB מהרשת: {_cp_err} ***")
+                            except Exception:
+                                pass
+                    else:
+                        _copy_ok = True  # already copied earlier in this process
+                    if not _copy_ok:
+                        _has_local = os.path.exists(local_db) and os.path.getsize(local_db) > 1024
+                        if _has_local:
+                            # העתקה נכשלה אבל יש DB מקומי ישן – משתמשים בו
+                            print(f"[DB] שימוש ב-DB מקומי קיים (העתקה מרשת נכשלה)")
+                        elif os.path.exists(remote_db):
+                            # נפילה: נשתמש ב-DB ישירות מהרשת (איטי אך פונקציונלי)
+                            local_db = remote_db
+                            try:
+                                print(f"[DB] Fallback: שימוש ישיר ב-DB ברשת: {remote_db}")
+                            except Exception:
+                                pass
+                    self.db_path = local_db
+                    # הגדרת URL לכתיבה מרחוק (גם אם השרת לא זמין כרגע)
+                    try:
+                        host = self._unc_host(str(shared_folder or '').strip())
+                        port = 8765
+                        try:
+                            port = int(cfg.get('local_sync_port') or 8765)
+                        except Exception:
+                            port = 8765
+                        if host:
+                            self._remote_write_url = f"http://{host}:{port}"
+                            self._remote_write_api_key = str(local_sync_key or 'local')
+                            print(f"[DB] Remote write via: {self._remote_write_url}")
+                    except Exception:
+                        pass
+                    if not Database._db_path_printed:
+                        print(f"[DB] Local DB (sync client): {self.db_path}")
+                        Database._db_path_printed = True
+                else:
+                    self.db_path = os.path.join(shared_folder, 'school_points.db')
+                    if not Database._db_path_printed:
+                        print(f"[DB] Shared DB: {self.db_path}")
+                        Database._db_path_printed = True
             elif custom_db_path:
                 self.db_path = custom_db_path
                 if not Database._db_path_printed:
@@ -127,9 +488,173 @@ class Database:
                         Database._db_path_printed = True
         else:
             self.db_path = db_path
+        try:
+            if not Database._db_status_printed:
+                role = 'standalone'
+                source = 'local'
+                shared = str(shared_folder or '').strip() if db_path is None else ''
+                if shared and self._is_unc_path_value(shared):
+                    host = self._unc_host(shared)
+                    if host and self._is_local_host(host):
+                        role = 'master'
+                    elif host:
+                        role = 'client'
+                # Special case: if using shared DB directly with local sync enabled, treat as master
+                if role == 'standalone' and shared and local_sync_enabled and self._is_unc_path_value(str(self.db_path or '')):
+                    host = self._unc_host(shared)
+                    if host and self._is_local_host(host):
+                        role = 'master'
+                        source = 'shared-master'
+                if self._is_unc_path_value(str(self.db_path or '')):
+                    source = 'shared'
+                if shared and local_sync_enabled:
+                    if role == 'client' and self._is_local_path(str(self.db_path or '')):
+                        source = 'local-sync client'
+                    elif role == 'client':
+                        source = 'shared-fallback'
+                    elif role == 'master' and self._is_local_path(str(self.db_path or '')):
+                        source = 'local-master'
+                print(f"[DB-STATUS] role={role} source={source}")
+                Database._db_status_printed = True
+        except Exception:
+            pass
         self._last_backup_ts = 0.0
-        self.create_tables()
+        attempt = 0
+        readonly_fallback_done = False
+        readonly_repair_done = False
+        create_start = time.time()
+        max_create_wait = 12.0
+        while True:
+            try:
+                self.create_tables()
+                break
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if ('readonly' in msg or 'read-only' in msg) and not readonly_fallback_done and db_path is None and default_user_db:
+                    if not readonly_repair_done:
+                        readonly_repair_done = True
+                        try:
+                            src_db = str(self.db_path or '').strip()
+                            if src_db and os.path.exists(src_db):
+                                try:
+                                    os.chmod(src_db, 0o666)
+                                except Exception:
+                                    pass
+                                try:
+                                    if self._can_write_db(src_db):
+                                        continue
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            src_db = str(self.db_path or '').strip()
+                            if src_db and self._is_unc_path_value(src_db):
+                                local_src = self._local_path_from_unc_if_local(src_db)
+                                if local_src and local_src != src_db:
+                                    self.db_path = local_src
+                                    try:
+                                        if self._can_write_db(local_src):
+                                            continue
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    readonly_fallback_done = True
+                    try:
+                        src_db = str(self.db_path or '').strip()
+                        dst_db = str(default_user_db or '').strip()
+                        if src_db and dst_db and os.path.abspath(src_db) != os.path.abspath(dst_db):
+                            try:
+                                os.makedirs(os.path.dirname(dst_db), exist_ok=True)
+                            except Exception:
+                                pass
+                            if os.path.exists(src_db):
+                                try:
+                                    shutil.copy2(src_db, dst_db)
+                                except Exception:
+                                    pass
+                        if dst_db:
+                            self.db_path = dst_db
+                    except Exception:
+                        pass
+                    try:
+                        if shared_folder and self._is_unc_path_value(str(shared_folder)):
+                            local_sync_client = True
+                            local_sync_shared_folder = shared_folder
+                    except Exception:
+                        pass
+                    self.emergency_mode = True
+                    self.emergency_reason = 'readonly'
+                    continue
+                # DB לא נגיש (עמדה ראשית כבויה / רשת לא זמינה)
+                if ('unable to open' in msg or 'disk i/o' in msg or 'no such file' in msg) and not readonly_fallback_done and db_path is None and default_user_db:
+                    readonly_fallback_done = True
+                    try:
+                        dst_db = str(default_user_db or '').strip()
+                        if dst_db:
+                            try:
+                                os.makedirs(os.path.dirname(dst_db), exist_ok=True)
+                            except Exception:
+                                pass
+                            self.db_path = dst_db
+                            try:
+                                print(f"[DB] *** עמדה ראשית לא נגישה – עובר ל-DB מקומי: {dst_db} ***")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                    self.emergency_mode = True
+                    self.emergency_reason = 'unreachable'
+                    continue
+                if 'locked' in msg or 'busy' in msg:
+                    try:
+                        waited = float(time.time() - create_start)
+                    except Exception:
+                        waited = 0.0
+                    if waited >= max_create_wait:
+                        try:
+                            if self.db_path and os.path.exists(self.db_path) and os.path.getsize(self.db_path) > 1024:
+                                try:
+                                    print('[DB] create_tables skipped (db locked)')
+                                except Exception:
+                                    pass
+                                break
+                        except Exception:
+                            pass
+                    time.sleep(0.6 + 0.4 * min(attempt, 20))
+                    attempt += 1
+                    continue
+                raise
+        try:
+            if local_sync_client and local_sync_shared_folder:
+                # הערה: bootstrap לא נדרש יותר כי כולם מתחברים ישירות ל־DB המשותף
+                pass
+        except Exception:
+            pass
     
+    def _get_raw_connection(self):
+        """חיבור ישיר ל-DB ללא proxy (לשימוש פנימי כמו create_tables)"""
+        db_dir = os.path.dirname(self.db_path) or '.'
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except Exception:
+            pass
+        attempt = 0
+        while True:
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=30)
+                conn.row_factory = sqlite3.Row
+                self._apply_pragmas(conn)
+                return conn
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if 'locked' in msg or 'busy' in msg:
+                    time.sleep(0.6 + 0.4 * min(attempt, 20))
+                    attempt += 1
+                    continue
+                raise
+
     def get_connection(self):
         """יצירת חיבור למסד הנתונים"""
         # ודא שהתיקייה של ה-DB קיימת (למשל בתיקיית נתוני משתמש)
@@ -142,29 +667,60 @@ class Database:
 
         self._maybe_backup_db()
 
-        last_err = None
-        for attempt in range(3):
+        attempt = 0
+        corrupt_attempts = 0
+        while True:
             try:
-                conn = sqlite3.connect(self.db_path, timeout=10)
+                conn = sqlite3.connect(self.db_path, timeout=30)
                 conn.row_factory = sqlite3.Row  # מאפשר גישה לעמודות לפי שם
                 self._apply_pragmas(conn)
+                # עמדה משנית: עטוף ב-proxy שמפנה כתיבות דרך HTTP
+                if self._remote_write_url:
+                    return _RemoteWriteConnection(conn, self._remote_write_url, self._remote_write_api_key)
                 return conn
             except sqlite3.DatabaseError as e:
-                last_err = e
                 if 'malformed' in str(e).lower():
+                    corrupt_attempts += 1
                     self._handle_corrupt_db(e)
-                    continue
+                    if corrupt_attempts <= 2:
+                        continue
                 raise
             except sqlite3.OperationalError as e:
-                last_err = e
                 msg = str(e).lower()
-                if attempt < 2 and ('locked' in msg or 'busy' in msg):
-                    time.sleep(0.4 + 0.3 * attempt)
+                if 'locked' in msg or 'busy' in msg:
+                    time.sleep(0.6 + 0.4 * min(attempt, 20))
+                    attempt += 1
                     continue
+                # DB לא נגיש בזמן ריצה – ניסיון אחד עם DB מקומי
+                if ('unable to open' in msg or 'disk i/o' in msg) and self._is_unc_path():
+                    try:
+                        user_root = (
+                            os.environ.get('LOCALAPPDATA')
+                            or os.environ.get('APPDATA')
+                            or os.environ.get('PROGRAMDATA')
+                            or os.path.dirname(os.path.abspath(__file__))
+                        )
+                        fallback_db = os.path.join(user_root, 'SchoolPoints', 'school_points.db')
+                        try:
+                            os.makedirs(os.path.dirname(fallback_db), exist_ok=True)
+                        except Exception:
+                            pass
+                        if os.path.exists(fallback_db):
+                            conn = sqlite3.connect(fallback_db, timeout=30)
+                            conn.row_factory = sqlite3.Row
+                            self._apply_pragmas(conn)
+                            self.emergency_mode = True
+                            self.emergency_reason = 'unreachable'
+                            try:
+                                print(f"[DB] *** DB משותף לא נגיש – קריאה מ-DB מקומי: {fallback_db} ***")
+                            except Exception:
+                                pass
+                            if self._remote_write_url:
+                                return _RemoteWriteConnection(conn, self._remote_write_url, self._remote_write_api_key)
+                            return conn
+                    except Exception:
+                        pass
                 raise
-        if last_err:
-            raise last_err
-        raise sqlite3.DatabaseError('failed to open database')
 
     def _cleanup_expired_holds(self, cursor) -> None:
         try:
@@ -179,22 +735,273 @@ class Database:
             return False
         return p.startswith('\\') or p.startswith('//')
 
+    def _is_db_empty_for_bootstrap(self) -> bool:
+        conn = None
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+            cur.execute('SELECT COUNT(*) FROM teachers')
+            t = int(cur.fetchone()[0] or 0)
+            cur.execute('SELECT COUNT(*) FROM students')
+            s = int(cur.fetchone()[0] or 0)
+            return (t == 0 and s == 0)
+        except Exception:
+            return True
+        finally:
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+
+    def _bootstrap_local_sync_client(self, shared_folder: str, api_key: str, tenant_id: str) -> None:
+        try:
+            if not self._is_db_empty_for_bootstrap():
+                return
+        except Exception:
+            return
+
+        try:
+            host = self._unc_host(str(shared_folder or '').strip())
+        except Exception:
+            host = ''
+        if not host:
+            return
+
+        snapshot_url = f"http://{host}:8765/sync/snapshot"
+
+        try:
+            import sync_agent
+        except Exception:
+            sync_agent = None
+
+        if sync_agent is not None:
+            try:
+                resp = sync_agent.pull_snapshot(snapshot_url, api_key=str(api_key or ''), tenant_id=str(tenant_id or ''))
+                if isinstance(resp, dict) and resp.get('ok'):
+                    conn = self.get_connection()
+                    try:
+                        sync_agent.apply_snapshot(conn, resp)
+                        try:
+                            sync_agent._ensure_sync_state(conn)
+                            sync_agent._set_sync_state(conn, 'bootstrap_snapshot_done', '1')
+                        except Exception:
+                            pass
+                    finally:
+                        conn.close()
+                    return
+            except Exception:
+                pass
+
+        # Fallback: copy shared DB to local if snapshot failed
+        try:
+            shared_db = os.path.join(str(shared_folder), 'school_points.db')
+            if os.path.exists(shared_db):
+                shutil.copy2(shared_db, self.db_path)
+        except Exception:
+            pass
+        return
+
+    def _is_unc_path_value(self, path: str) -> bool:
+        try:
+            p = str(path or '')
+        except Exception:
+            return False
+        return p.startswith('\\') or p.startswith('//')
+
+    def _should_use_local_db(self, shared_folder: str, default_user_db: str) -> bool:
+        try:
+            folder = str(shared_folder or '').strip()
+        except Exception:
+            return False
+        if not folder:
+            return False
+        if not (folder.startswith('\\') or folder.startswith('//')):
+            return False
+        host = self._unc_host(folder)
+        if not host:
+            return False
+        return not self._is_local_host(host)
+
+    def _unc_host(self, path: str) -> str:
+        p = str(path or '').replace('/', '\\')
+        if not p.startswith('\\'):
+            return ''
+        try:
+            rest = p[2:]
+            host = rest.split('\\', 1)[0].strip()
+            return host
+        except Exception:
+            return ''
+
+    def _is_local_host(self, host: str) -> bool:
+        h = str(host or '').strip().lower()
+        if not h:
+            return False
+        # 1) Cache hit
+        if h in Database._local_host_cache:
+            return Database._local_host_cache[h]
+        # 2) Fast: hostname / COMPUTERNAME match (no DNS)
+        fast_names = set()
+        try:
+            fast_names.add(str(socket.gethostname() or '').strip().lower())
+        except Exception:
+            pass
+        try:
+            fast_names.add(str(os.environ.get('COMPUTERNAME') or '').strip().lower())
+        except Exception:
+            pass
+        fast_names.discard('')
+        fast_names.update(('localhost', '127.0.0.1', '::1'))
+        if h in fast_names:
+            Database._local_host_cache[h] = True
+            return True
+        # 3) Slow DNS resolution (only once, with 2s timeout)
+        if not Database._local_names_resolved:
+            Database._local_names_resolved = True
+            Database._local_names = set(fast_names)
+            old_timeout = socket.getdefaulttimeout()
+            try:
+                socket.setdefaulttimeout(2.0)
+                try:
+                    fqdn = str(socket.getfqdn() or '').strip().lower()
+                    if fqdn:
+                        Database._local_names.add(fqdn)
+                        if '.' in fqdn:
+                            Database._local_names.add(fqdn.split('.')[0])
+                except Exception:
+                    pass
+                for name in list(fast_names):
+                    try:
+                        _, _, ips = socket.gethostbyname_ex(name)
+                        for ip in ips or []:
+                            Database._local_names.add(str(ip).strip().lower())
+                    except Exception:
+                        pass
+                try:
+                    for info in socket.getaddrinfo(socket.gethostname(), None):
+                        ip = info[4][0] if info and info[4] else ''
+                        if ip:
+                            Database._local_names.add(str(ip).strip().lower())
+                except Exception:
+                    pass
+            finally:
+                socket.setdefaulttimeout(old_timeout)
+        result = h in Database._local_names
+        Database._local_host_cache[h] = result
+        return result
+
+    def _local_path_from_unc_if_local(self, path: str) -> str:
+        try:
+            p = str(path or '').replace('/', '\\')
+        except Exception:
+            return path
+        if not p.startswith('\\'):
+            return path
+        host = self._unc_host(p)
+        if not host or not self._is_local_host(host):
+            return path
+        try:
+            rest = p[2 + len(host):].lstrip('\\')
+            parts = rest.split('\\') if rest else []
+            if not parts:
+                return path
+            drive = parts[0]
+            if len(drive) == 1 and drive.isalpha():
+                return drive.upper() + ':\\' + '\\'.join(parts[1:])
+        except Exception:
+            return path
+        return path
+
+    def _can_write_db(self, path: str) -> bool:
+        try:
+            p = str(path or '').strip()
+        except Exception:
+            return False
+        if not p or not os.path.exists(p):
+            return False
+        try:
+            conn = sqlite3.connect(p, timeout=2)
+            try:
+                conn.execute('BEGIN IMMEDIATE')
+                conn.commit()
+            finally:
+                conn.close()
+            return True
+        except sqlite3.OperationalError as e:
+            msg = str(e).lower()
+            if 'readonly' in msg or 'read-only' in msg:
+                return False
+            if 'locked' in msg or 'busy' in msg:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _is_local_path(self, path: str) -> bool:
+        try:
+            p = str(path or '')
+        except Exception:
+            return False
+        if len(p) >= 3 and p[1] == ':' and p[2] in ('\\', '/'):
+            return True
+        return False
+
+    def _is_local_sync_available(self, shared_folder: str) -> bool:
+        host = self._unc_host(str(shared_folder or '').strip())
+        if not host:
+            return False
+        if self._is_local_host(host):
+            return True
+        url = f"http://{host}:8765/sync/status"
+        try:
+            req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=0.6) as resp:
+                _ = resp.read()
+            return True
+        except Exception:
+            return False
+
     def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
         try:
             conn.execute('PRAGMA foreign_keys = ON')
         except Exception:
             pass
         try:
-            conn.execute('PRAGMA busy_timeout = 5000')
+            conn.execute('PRAGMA busy_timeout = 30000')
         except Exception:
             pass
         try:
-            if self._is_unc_path():
-                conn.execute('PRAGMA journal_mode = DELETE')
-                conn.execute('PRAGMA synchronous = FULL')
+            try:
+                is_unc = self._is_unc_path()
+            except Exception:
+                is_unc = False
+            try:
+                db_key = os.path.abspath(str(self.db_path or '')).lower()
+            except Exception:
+                db_key = str(self.db_path or '')
+            try:
+                should_set_mode = bool(db_key) and db_key not in Database._journal_mode_applied
+            except Exception:
+                should_set_mode = True
+
+            if should_set_mode:
+                if is_unc:
+                    conn.execute('PRAGMA journal_mode = DELETE')
+                    conn.execute('PRAGMA synchronous = FULL')
+                else:
+                    conn.execute('PRAGMA journal_mode = WAL')
+                    conn.execute('PRAGMA synchronous = NORMAL')
+                try:
+                    if db_key:
+                        Database._journal_mode_applied.add(db_key)
+                except Exception:
+                    pass
             else:
-                conn.execute('PRAGMA journal_mode = WAL')
-                conn.execute('PRAGMA synchronous = NORMAL')
+                if is_unc:
+                    conn.execute('PRAGMA synchronous = FULL')
+                else:
+                    conn.execute('PRAGMA synchronous = NORMAL')
         except Exception:
             pass
 
@@ -642,7 +1449,7 @@ class Database:
     
     def create_tables(self):
         """יצירת טבלאות במסד הנתונים"""
-        conn = self.get_connection()
+        conn = self._get_raw_connection()
         cursor = conn.cursor()
         
         # טבלת תלמידים
@@ -797,10 +1604,30 @@ class Database:
                 entity_id TEXT,
                 action_type TEXT NOT NULL,
                 payload_json TEXT,
+                event_id TEXT,
+                station_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 synced_at TIMESTAMP
             )
         ''')
+        try:
+            cursor.execute('ALTER TABLE change_log ADD COLUMN event_id TEXT')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE change_log ADD COLUMN station_id TEXT')
+        except Exception:
+            pass
+
+        try:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS applied_events (
+                    event_id TEXT PRIMARY KEY,
+                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+        except Exception:
+            pass
 
         try:
             cursor.execute("""
@@ -1517,7 +2344,79 @@ class Database:
         ''')
         
         conn.commit()
+
+        # יצירת triggers אוטומטיים לסנכרון change_log
+        self._create_sync_triggers(conn)
+
         conn.close()
+
+    def _create_sync_triggers(self, conn):
+        """יוצר SQLite triggers שרושמים אוטומטית כל שינוי ב-change_log.
+        זה מבטיח שכל פעולה בכל טבלה תירשם לסנכרון, בלי צורך לקרוא ל-_log_change ידנית."""
+        cursor = conn.cursor()
+
+        # רשימת טבלאות שצריכות סנכרון + שם entity_type + שדה id
+        tables = [
+            ('students', 'student', 'id'),
+            ('teachers', 'teacher', 'id'),
+            ('products', 'product', 'id'),
+            ('product_variants', 'product_variant', 'id'),
+            ('product_categories', 'product_category', 'id'),
+            ('settings', 'setting', 'key'),
+            ('static_messages', 'static_message', 'id'),
+            ('threshold_messages', 'threshold_message', 'id'),
+            ('news_items', 'news_item', 'id'),
+            ('ads_items', 'ads_item', 'id'),
+            ('student_messages', 'student_message', 'id'),
+            ('time_bonus_schedules', 'time_bonus', 'id'),
+            ('teacher_bonus', 'teacher_bonus', 'teacher_id'),
+            ('activities', 'activity', 'id'),
+            ('activity_schedules', 'activity_schedule', 'id'),
+            ('scheduled_services', 'scheduled_service', 'id'),
+            ('scheduled_service_dates', 'scheduled_service_date', 'id'),
+            ('public_closures', 'public_closure', 'id'),
+            ('teacher_classes', 'teacher_class', 'id'),
+            ('student_tier_state', 'student_tier', 'student_id'),
+            ('time_bonus_given', 'time_bonus_given', 'id'),
+            ('card_blocks', 'card_block', 'id'),
+            ('cashier_responsibles', 'cashier_responsible', 'student_id'),
+            ('activity_claims', 'activity_claim', 'id'),
+            ('scheduled_service_reservations', 'service_reservation', 'id'),
+            ('purchases_log', 'purchase', 'id'),
+            ('refunds_log', 'refund', 'id'),
+        ]
+
+        for table, entity_type, id_col in tables:
+            # בדוק שהטבלה קיימת
+            try:
+                cursor.execute(f"SELECT 1 FROM {table} LIMIT 0")
+            except Exception:
+                continue
+
+            for op, action, ref in [('INSERT', 'create', 'NEW'), ('UPDATE', 'update', 'NEW'), ('DELETE', 'delete', 'OLD')]:
+                trigger_name = f"_sync_log_{table}_{op.lower()}"
+                try:
+                    cursor.execute(f"DROP TRIGGER IF EXISTS {trigger_name}")
+                    cursor.execute(f'''
+                        CREATE TRIGGER IF NOT EXISTS {trigger_name}
+                        AFTER {op} ON {table}
+                        FOR EACH ROW
+                        WHEN (SELECT COUNT(*) FROM change_log WHERE entity_type = '{entity_type}'
+                              AND entity_id = CAST({ref}.{id_col} AS TEXT)
+                              AND action_type = '{action}'
+                              AND created_at > datetime('now', '-1 second')) = 0
+                        BEGIN
+                            INSERT INTO change_log (entity_type, entity_id, action_type, payload_json)
+                            VALUES ('{entity_type}', CAST({ref}.{id_col} AS TEXT), '{action}', '{{}}');
+                        END
+                    ''')
+                except Exception:
+                    pass
+
+        try:
+            conn.commit()
+        except Exception:
+            pass
 
     def get_max_points_config(self) -> Dict[str, Any]:
         import json
@@ -1792,6 +2691,13 @@ class Database:
               card_number, points))
         
         student_id = cursor.lastrowid
+        try:
+            self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='create',
+                             payload={'serial_number': serial_number, 'first_name': first_name, 'last_name': last_name,
+                                      'id_number': id_number, 'class_name': class_name, 'photo_number': photo_number,
+                                      'card_number': card_number, 'points': points})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         
@@ -1819,6 +2725,13 @@ class Database:
                 WHERE id = ?
             ''', (last_name, first_name, id_number or None, class_name or None,
                   card_number or None, photo_number or None, serial_number, student_id))
+            try:
+                self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
+                                 payload={'serial_number': serial_number, 'first_name': first_name, 'last_name': last_name,
+                                          'id_number': id_number, 'class_name': class_name, 'photo_number': photo_number,
+                                          'card_number': card_number})
+            except Exception:
+                pass
 
             conn.commit()
             conn.close()
@@ -3683,6 +4596,12 @@ class Database:
                 )
             )
             pid = cursor.lastrowid
+            try:
+                self._log_change(cursor, entity_type='product', entity_id=str(pid), action_type='create',
+                                 payload={'name': name, 'price_points': price_points, 'stock_qty': stock_qty,
+                                          'deduct_points': deduct_points, 'is_active': is_active})
+            except Exception:
+                pass
             conn.commit()
             return int(pid or 0)
         finally:
@@ -3738,6 +4657,12 @@ class Database:
                     int(product_id or 0)
                 )
             )
+            try:
+                self._log_change(cursor, entity_type='product', entity_id=str(product_id), action_type='update',
+                                 payload={'name': name, 'price_points': price_points, 'stock_qty': stock_qty,
+                                          'deduct_points': deduct_points, 'is_active': is_active})
+            except Exception:
+                pass
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -3881,6 +4806,11 @@ class Database:
                 )
             )
             vid = cursor.lastrowid
+            try:
+                self._log_change(cursor, entity_type='product', entity_id=str(product_id), action_type='update',
+                                 payload={'variant_added': int(vid or 0), 'variant_name': variant_name})
+            except Exception:
+                pass
             conn.commit()
             return int(vid or 0)
         finally:
@@ -3917,6 +4847,11 @@ class Database:
                     int(variant_id or 0)
                 )
             )
+            try:
+                self._log_change(cursor, entity_type='product', entity_id=str(variant_id), action_type='update',
+                                 payload={'variant_updated': int(variant_id), 'variant_name': variant_name})
+            except Exception:
+                pass
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -3927,6 +4862,11 @@ class Database:
         cursor = conn.cursor()
         try:
             cursor.execute('DELETE FROM product_variants WHERE id = ?', (int(variant_id or 0),))
+            try:
+                self._log_change(cursor, entity_type='product', entity_id=str(variant_id), action_type='update',
+                                 payload={'variant_deleted': int(variant_id)})
+            except Exception:
+                pass
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -3991,6 +4931,11 @@ class Database:
                 )
             )
             aid = cursor.lastrowid
+            try:
+                self._log_change(cursor, entity_type='setting', entity_id='activity_'+str(aid), action_type='update',
+                                 payload={'key': 'activity_'+str(aid), 'value': json.dumps({'id': aid, 'name': name, 'points': points, 'is_active': is_active}, ensure_ascii=False)})
+            except Exception:
+                pass
             conn.commit()
             return int(aid or 0)
         finally:
@@ -4011,6 +4956,11 @@ class Database:
                     int(activity_id or 0),
                 )
             )
+            try:
+                self._log_change(cursor, entity_type='setting', entity_id='activity_'+str(activity_id), action_type='update',
+                                 payload={'key': 'activity_'+str(activity_id), 'value': json.dumps({'id': activity_id, 'name': name, 'points': points, 'is_active': is_active}, ensure_ascii=False)})
+            except Exception:
+                pass
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -4308,6 +5258,10 @@ class Database:
         cursor = conn.cursor()
         try:
             cursor.execute('DELETE FROM products WHERE id = ?', (int(product_id or 0),))
+            try:
+                self._log_change(cursor, entity_type='product', entity_id=str(product_id), action_type='delete', payload={})
+            except Exception:
+                pass
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -4612,15 +5566,26 @@ class Database:
         except Exception:
             payload_json = '{}'
         try:
+            event_id = uuid.uuid4().hex
+            station_id = str(socket.gethostname() or '').strip()
             cursor.execute(
                 '''
-                INSERT INTO change_log (entity_type, entity_id, action_type, payload_json)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO change_log (entity_type, entity_id, action_type, payload_json, event_id, station_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ''',
-                (str(entity_type or ''), str(entity_id or ''), str(action_type or ''), payload_json)
+                (str(entity_type or ''), str(entity_id or ''), str(action_type or ''), payload_json, event_id, station_id)
             )
         except Exception:
-            pass
+            try:
+                cursor.execute(
+                    '''
+                    INSERT INTO change_log (entity_type, entity_id, action_type, payload_json)
+                    VALUES (?, ?, ?, ?)
+                    ''',
+                    (str(entity_type or ''), str(entity_id or ''), str(action_type or ''), payload_json)
+                )
+            except Exception:
+                pass
     
     def get_recent_validations_count(self, student_id: int, minutes: int = 1) -> int:
         """ספירת תיקופים של תלמיד בדקות האחרונות"""
@@ -5395,6 +6360,72 @@ class Database:
             new_points = max(0, student['points'] - points_to_subtract)  # לא לרדת מתחת ל-0
             return self.update_student_points(student_id, new_points, reason, added_by)
         return False
+
+    def bulk_update_points(self, student_ids: list, *, operation: str, value: int,
+                           reason: str = "", added_by: str = "") -> dict:
+        """עדכון נקודות לרשימת תלמידים בטרנזקציה אחת (מהיר מאוד).
+        operation: 'add' | 'subtract' | 'set'
+        מחזיר {'updated': int, 'changes': list}
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        updated = 0
+        changes = []
+        try:
+            conn.execute('BEGIN IMMEDIATE')
+            for sid in student_ids:
+                try:
+                    sid = int(sid or 0)
+                    if sid <= 0:
+                        continue
+                    cursor.execute('SELECT id, points FROM students WHERE id = ?', (sid,))
+                    row = cursor.fetchone()
+                    if not row:
+                        continue
+                    old_points = int(row['points'] or 0)
+                    if operation == 'add':
+                        new_points = old_points + int(value)
+                    elif operation == 'subtract':
+                        new_points = max(0, old_points - abs(int(value)))
+                    elif operation == 'set':
+                        new_points = max(0, int(value))
+                    else:
+                        continue
+                    if new_points == old_points:
+                        continue
+                    cursor.execute(
+                        'UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                        (int(new_points), sid)
+                    )
+                    points_diff = int(new_points - old_points)
+                    cursor.execute(
+                        'INSERT INTO points_history (student_id, points_added, reason, added_by) VALUES (?, ?, ?, ?)',
+                        (sid, points_diff, str(reason or '').strip(), str(added_by or '').strip())
+                    )
+                    try:
+                        cursor.execute(
+                            'INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                            (sid, old_points, int(new_points), points_diff, str(reason or '').strip(), str(added_by or '').strip(), 'עדכון מהיר')
+                        )
+                    except Exception:
+                        pass
+                    changes.append({'student_id': sid, 'old_points': old_points, 'new_points': int(new_points)})
+                    updated += 1
+                except Exception:
+                    pass
+            conn.commit()
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                print(f"[DB] bulk_update_points error: {e}")
+            except Exception:
+                pass
+        finally:
+            conn.close()
+        return {'updated': updated, 'changes': changes}
     
     def update_card_number(self, student_id: int, card_number: str) -> bool:
         """עדכון מספר כרטיס לתלמיד"""
@@ -5407,6 +6438,11 @@ class Database:
                 SET card_number = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (card_number, student_id))
+            try:
+                self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
+                                 payload={'card_number': card_number})
+            except Exception:
+                pass
             
             conn.commit()
             conn.close()
@@ -5426,6 +6462,11 @@ class Database:
                 SET photo_number = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (photo_number if photo_number else None, student_id))
+            try:
+                self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
+                                 payload={'photo_number': photo_number})
+            except Exception:
+                pass
             
             conn.commit()
             conn.close()
@@ -5445,6 +6486,11 @@ class Database:
                 SET serial_number = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (serial_number, student_id))
+            try:
+                self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
+                                 payload={'serial_number': serial_number})
+            except Exception:
+                pass
             
             conn.commit()
             conn.close()
@@ -5465,6 +6511,11 @@ class Database:
                 SET private_message = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (message if message else None, student_id))
+            try:
+                self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
+                                 payload={'private_message': message})
+            except Exception:
+                pass
             
             conn.commit()
             conn.close()
@@ -5515,6 +6566,10 @@ class Database:
             cursor.execute('DELETE FROM points_history WHERE student_id = ?', (student_id,))
             cursor.execute('DELETE FROM swipe_log WHERE student_id = ?', (student_id,))
             cursor.execute('DELETE FROM students WHERE id = ?', (student_id,))
+            try:
+                self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='delete', payload={})
+            except Exception:
+                pass
             conn.commit()
             conn.close()
             return True
@@ -5905,6 +6960,11 @@ class Database:
         ''', (name, group_name, start_time, end_time, bonus_points, sound_key, int(is_general or 0), classes, days_of_week, int(is_shown_public or 0)))
         
         bonus_id = cursor.lastrowid
+        try:
+            self._log_change(cursor, entity_type='setting', entity_id='time_bonus_'+str(bonus_id), action_type='update',
+                             payload={'key': 'time_bonus_'+str(bonus_id), 'value': json.dumps({'id': bonus_id, 'name': name, 'start_time': start_time, 'end_time': end_time, 'bonus_points': bonus_points, 'group_name': group_name, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'is_shown_public': is_shown_public, 'sound_key': sound_key, 'is_active': 1}, ensure_ascii=False)})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         
@@ -5946,6 +7006,11 @@ class Database:
                 WHERE id = ?
             ''', (name, group_name, start_time, end_time, bonus_points,
                   sound_key, int(is_general or 0), classes, days_of_week, int(is_shown_public or 0), int(is_active or 0), bonus_id))
+            try:
+                self._log_change(cursor, entity_type='setting', entity_id='time_bonus_'+str(bonus_id), action_type='update',
+                                 payload={'key': 'time_bonus_'+str(bonus_id), 'value': json.dumps({'id': bonus_id, 'name': name, 'start_time': start_time, 'end_time': end_time, 'bonus_points': bonus_points, 'group_name': group_name, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'is_shown_public': is_shown_public, 'sound_key': sound_key, 'is_active': is_active}, ensure_ascii=False)})
+            except Exception:
+                pass
             
             conn.commit()
             conn.close()
@@ -5975,6 +7040,11 @@ class Database:
         
         try:
             cursor.execute('DELETE FROM time_bonus_schedules WHERE id = ?', (bonus_id,))
+            try:
+                self._log_change(cursor, entity_type='setting', entity_id='time_bonus_'+str(bonus_id), action_type='update',
+                                 payload={'key': 'time_bonus_'+str(bonus_id), 'value': json.dumps({'id': bonus_id, 'deleted': True}, ensure_ascii=False)})
+            except Exception:
+                pass
             conn.commit()
             conn.close()
             return True
@@ -6794,6 +7864,14 @@ class Database:
             ))
             
             teacher_id = cursor.lastrowid
+            try:
+                self._log_change(cursor, entity_type='teacher', entity_id=str(teacher_id), action_type='create',
+                                 payload={'name': name, 'card_number': card_number, 'card_number2': card_number2,
+                                          'card_number3': card_number3, 'is_admin': 1 if is_admin else 0,
+                                          'can_edit_student_card': 1 if can_edit_student_card else 0,
+                                          'can_edit_student_photo': 1 if can_edit_student_photo else 0})
+            except Exception:
+                pass
             conn.commit()
             conn.close()
             return teacher_id
@@ -6886,6 +7964,17 @@ class Database:
                     'UPDATE teachers SET can_edit_student_photo = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                     (1 if can_edit_student_photo else 0, teacher_id)
                 )
+            try:
+                self._log_change(cursor, entity_type='teacher', entity_id=str(teacher_id), action_type='update',
+                                 payload={'name': name if name is not None else teacher.get('name',''),
+                                          'card_number': card_number if card_number is not None else teacher.get('card_number',''),
+                                          'card_number2': card_number2 if card_number2 is not None else teacher.get('card_number2',''),
+                                          'card_number3': card_number3 if card_number3 is not None else teacher.get('card_number3',''),
+                                          'is_admin': (1 if is_admin else 0) if is_admin is not None else teacher.get('is_admin',0),
+                                          'can_edit_student_card': (1 if can_edit_student_card else 0) if can_edit_student_card is not None else teacher.get('can_edit_student_card',1),
+                                          'can_edit_student_photo': (1 if can_edit_student_photo else 0) if can_edit_student_photo is not None else teacher.get('can_edit_student_photo',1)})
+            except Exception:
+                pass
             
             conn.commit()
             conn.close()
@@ -6902,6 +7991,10 @@ class Database:
         
         try:
             cursor.execute('DELETE FROM teachers WHERE id = ?', (teacher_id,))
+            try:
+                self._log_change(cursor, entity_type='teacher', entity_id=str(teacher_id), action_type='delete', payload={})
+            except Exception:
+                pass
             conn.commit()
             conn.close()
             return True
@@ -7060,6 +8153,11 @@ class Database:
                 INSERT INTO teacher_bonus (teacher_id, bonus_points, updated_at)
                 VALUES (?, ?, CURRENT_TIMESTAMP)
             ''', (teacher_id, bonus_points))
+            try:
+                self._log_change(cursor, entity_type='teacher', entity_id=str(teacher_id), action_type='update',
+                                 payload={'bonus_points': bonus_points})
+            except Exception:
+                pass
             conn.commit()
             conn.close()
             return True

@@ -422,16 +422,32 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
     if not api_key:
         raise HTTPException(status_code=401, detail="missing api_key")
 
-    if (not str(payload.tenant_id).isdigit()) or str(payload.tenant_id).startswith('0'):
+    if not str(payload.tenant_id).strip():
         raise HTTPException(status_code=400, detail="invalid tenant_id")
 
     if not verify_sync_auth(api_key, payload.tenant_id):
-         # Auto create logic?
-         # For modularity, let's skip auto-create here or assume it's handled elsewhere
-         # or strictly fail. The original code had auto-create if env var set.
-         # We will strict fail for now to be safe, or re-implement if needed.
-         # Actually, better to keep it robust.
-         raise HTTPException(status_code=401, detail="invalid api_key")
+         # Auto-create tenant if env var set
+         auto_created = False
+         if os.getenv('AUTO_CREATE_TENANT', '').strip() == '1':
+             try:
+                 aconn = get_db_connection()
+                 try:
+                     acur = aconn.cursor()
+                     acur.execute(
+                         sql_placeholder('INSERT INTO institutions (tenant_id, name, api_key) VALUES (?, ?, ?)'),
+                         (str(payload.tenant_id).strip(), str(payload.tenant_id).strip(), api_key)
+                     )
+                     aconn.commit()
+                     auto_created = True
+                 except Exception:
+                     pass
+                 finally:
+                     try: aconn.close()
+                     except: pass
+             except Exception:
+                 pass
+         if not auto_created and not verify_sync_auth(api_key, payload.tenant_id):
+             raise HTTPException(status_code=401, detail="invalid api_key")
 
     applied = 0
     skipped = 0

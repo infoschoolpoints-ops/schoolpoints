@@ -6,6 +6,7 @@ Sync Agent (שלב A)
 """
 import json
 import os
+import sys
 import time
 import sqlite3
 import urllib.request
@@ -14,6 +15,8 @@ import urllib.parse
 import argparse
 import hashlib
 import atexit
+import uuid
+import socket
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -35,6 +38,7 @@ DEFAULT_PULL_LIMIT = 500
 
 
 _LOCK_FD: Optional[int] = None
+_JOURNAL_MODE_APPLIED: set[str] = set()
 
 
 def _lock_dir(base_dir: str) -> str:
@@ -63,22 +67,60 @@ def _acquire_db_lock(base_dir: str, db_path: str) -> bool:
         return True
     lock_path = _lock_path_for_db(base_dir, db_path)
     try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-    except FileExistsError:
-        try:
-            existing = ''
+        for attempt in range(2):
             try:
-                with open(lock_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    existing = (f.read() or '').strip()
-            except Exception:
+                fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                break
+            except FileExistsError:
                 existing = ''
-            msg = f"[LOCK] Another sync_agent seems to be running for this DB (lock exists: {lock_path})"
-            if existing:
-                msg += f" | {existing}"
-            print(msg)
-        except Exception:
-            pass
-        return False
+                try:
+                    with open(lock_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        existing = (f.read() or '').strip()
+                except Exception:
+                    existing = ''
+                pid = None
+                try:
+                    for part in str(existing).split():
+                        if part.startswith('pid='):
+                            pid = int(part.split('=', 1)[1])
+                            break
+                except Exception:
+                    pid = None
+                stale = False
+                if pid:
+                    try:
+                        # os.kill(pid, 0) on Windows can kill processes in the same
+                        # console group (sends CTRL_C_EVENT). Use OpenProcess instead.
+                        if sys.platform == 'win32':
+                            import ctypes
+                            _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                            _h = ctypes.windll.kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+                            if _h:
+                                ctypes.windll.kernel32.CloseHandle(_h)
+                                stale = False
+                            else:
+                                stale = True
+                        else:
+                            os.kill(int(pid), 0)
+                            stale = False
+                    except Exception:
+                        stale = True
+                if stale:
+                    try:
+                        os.remove(lock_path)
+                        continue
+                    except Exception:
+                        pass
+                try:
+                    msg = f"[LOCK] Another sync_agent seems to be running for this DB (lock exists: {lock_path})"
+                    if existing:
+                        msg += f" | {existing}"
+                    print(msg)
+                except Exception:
+                    pass
+                return False
+        else:
+            return False
     except Exception as exc:
         try:
             print(f"[LOCK] Failed to create lockfile: {lock_path} ({exc})")
@@ -138,22 +180,102 @@ def _is_unc_path(path: str) -> bool:
     return p.startswith('\\') or p.startswith('//')
 
 
+def _unc_host(path: str) -> str:
+    p = str(path or '').replace('/', '\\')
+    if not p.startswith('\\'):
+        return ''
+    try:
+        rest = p[2:]
+        return rest.split('\\', 1)[0].strip()
+    except Exception:
+        return ''
+
+
+def _local_sync_enabled_from_cfg(cfg: Dict[str, Any]) -> bool:
+    try:
+        if 'local_sync_enabled' in cfg:
+            flag = str(cfg.get('local_sync_enabled') or '').strip().lower()
+            if flag in ('1', 'true', 'on', 'yes'):
+                return True
+            if flag in ('0', 'false', 'off', 'no'):
+                return False
+    except Exception:
+        pass
+    try:
+        shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+    except Exception:
+        shared_folder = None
+    return _is_unc_path(str(shared_folder or '').strip())
+
+
+def _is_local_host(host: str) -> bool:
+    h = str(host or '').strip().lower()
+    if not h:
+        return False
+    local_names = {
+        str(socket.gethostname() or '').strip().lower(),
+        str(os.environ.get('COMPUTERNAME') or '').strip().lower(),
+    }
+    return h in local_names
+
+
+def _local_sync_url_from_cfg(cfg: Dict[str, Any]) -> str:
+    try:
+        url = str(cfg.get('local_sync_url') or '').strip()
+    except Exception:
+        url = ''
+    if url:
+        return url.rstrip('/')
+    try:
+        shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+    except Exception:
+        shared_folder = None
+    host = _unc_host(str(shared_folder or '').strip())
+    if host:
+        return f"http://{host}:8765"
+    return ''
+
+
 def _apply_pragmas(conn: sqlite3.Connection, *, db_path: str) -> None:
     try:
         conn.execute('PRAGMA foreign_keys = ON')
     except Exception:
         pass
     try:
-        conn.execute('PRAGMA busy_timeout = 5000')
+        conn.execute('PRAGMA busy_timeout = 30000')
     except Exception:
         pass
     try:
-        if _is_unc_path(db_path):
-            conn.execute('PRAGMA journal_mode = DELETE')
-            conn.execute('PRAGMA synchronous = FULL')
+        try:
+            is_unc = _is_unc_path(db_path)
+        except Exception:
+            is_unc = False
+        try:
+            db_key = os.path.abspath(str(db_path or '')).lower()
+        except Exception:
+            db_key = str(db_path or '')
+        try:
+            should_set_mode = bool(db_key) and db_key not in _JOURNAL_MODE_APPLIED
+        except Exception:
+            should_set_mode = True
+
+        if should_set_mode:
+            if is_unc:
+                conn.execute('PRAGMA journal_mode = DELETE')
+                conn.execute('PRAGMA synchronous = FULL')
+            else:
+                conn.execute('PRAGMA journal_mode = WAL')
+                conn.execute('PRAGMA synchronous = NORMAL')
+            try:
+                if db_key:
+                    _JOURNAL_MODE_APPLIED.add(db_key)
+            except Exception:
+                pass
         else:
-            conn.execute('PRAGMA journal_mode = WAL')
-            conn.execute('PRAGMA synchronous = NORMAL')
+            if is_unc:
+                conn.execute('PRAGMA synchronous = FULL')
+            else:
+                conn.execute('PRAGMA synchronous = NORMAL')
     except Exception:
         pass
 
@@ -182,6 +304,46 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
         return [c for c in cols if c]
     except Exception:
         return []
+
+
+def _upsert_row(conn: sqlite3.Connection, table: str, pk_col: str, row: Dict[str, Any]) -> bool:
+    """Insert or replace a single row in a table, matching existing columns."""
+    cols = _table_columns(conn, table)
+    if not cols:
+        return False
+    allowed = set(cols)
+    # סנן רק עמודות שקיימות בטבלה
+    insert_cols = [k for k in row.keys() if k in allowed]
+    if not insert_cols:
+        return False
+    # ודא שה-pk נמצא
+    if pk_col not in insert_cols:
+        insert_cols.append(pk_col)
+
+    placeholders = ','.join(['?'] * len(insert_cols))
+    col_names = ','.join(insert_cols)
+    # בנה UPDATE clause עבור ON CONFLICT
+    update_cols = [c for c in insert_cols if c != pk_col]
+    if update_cols:
+        update_clause = ', '.join([f"{c} = excluded.{c}" for c in update_cols])
+        sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders}) ON CONFLICT({pk_col}) DO UPDATE SET {update_clause}"
+    else:
+        sql = f"INSERT OR IGNORE INTO {table} ({col_names}) VALUES ({placeholders})"
+
+    values = [row.get(c) for c in insert_cols]
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, values)
+        return True
+    except Exception:
+        # Fallback: try delete + insert
+        try:
+            cur = conn.cursor()
+            cur.execute(f"DELETE FROM {table} WHERE {pk_col} = ?", (row.get(pk_col),))
+            cur.execute(f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})", values)
+            return True
+        except Exception:
+            return False
 
 
 def _replace_rows_local(conn: sqlite3.Connection, table: str, rows: List[Dict[str, Any]]) -> int:
@@ -574,11 +736,25 @@ def _ensure_change_log(conn: sqlite3.Connection) -> None:
                 entity_id TEXT,
                 action_type TEXT NOT NULL,
                 payload_json TEXT,
+                event_id TEXT,
+                station_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 synced_at TIMESTAMP
             )
             '''
         )
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        cur = conn.cursor()
+        cur.execute('ALTER TABLE change_log ADD COLUMN event_id TEXT')
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        cur = conn.cursor()
+        cur.execute('ALTER TABLE change_log ADD COLUMN station_id TEXT')
         conn.commit()
     except Exception:
         pass
@@ -589,7 +765,7 @@ def fetch_pending_changes(conn: sqlite3.Connection, limit: int = DEFAULT_BATCH_S
     try:
         cur.execute(
             """
-            SELECT id, entity_type, entity_id, action_type, payload_json, created_at
+            SELECT id, entity_type, entity_id, action_type, payload_json, event_id, station_id, created_at
             FROM change_log
             WHERE synced_at IS NULL
             ORDER BY id ASC
@@ -598,7 +774,21 @@ def fetch_pending_changes(conn: sqlite3.Connection, limit: int = DEFAULT_BATCH_S
             (int(limit),)
         )
         rows = cur.fetchall() or []
-        return [dict(r) for r in rows]
+        out: List[Dict[str, Any]] = []
+        for r in rows:
+            item = dict(r)
+            if not item.get('event_id'):
+                try:
+                    new_eid = uuid.uuid4().hex
+                    item['event_id'] = new_eid
+                    cur.execute('UPDATE change_log SET event_id = ? WHERE id = ?', (new_eid, int(item.get('id') or 0)))
+                    conn.commit()
+                except Exception:
+                    pass
+            if not item.get('station_id'):
+                item['station_id'] = str(socket.gethostname() or '').strip()
+            out.append(item)
+        return out
     except sqlite3.OperationalError:
         _ensure_change_log(conn)
         return []
@@ -752,11 +942,25 @@ def build_snapshot(conn: sqlite3.Connection) -> Dict[str, Any]:
 def push_snapshot(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str = '', tenant_id: str = '', station_id: str = '') -> bool:
     if not snapshot_url:
         return False
+    teachers = snapshot.get('teachers') if isinstance(snapshot, dict) else None
+    students = snapshot.get('students') if isinstance(snapshot, dict) else None
+    if not teachers and isinstance(snapshot, dict):
+        snap_obj = snapshot.get('snapshot')
+        if isinstance(snap_obj, dict):
+            snap_teachers = snap_obj.get('teachers')
+            if isinstance(snap_teachers, list):
+                teachers = snap_teachers
+    if not students and isinstance(snapshot, dict):
+        snap_obj = snapshot.get('snapshot')
+        if isinstance(snap_obj, dict):
+            snap_students = snap_obj.get('students')
+            if isinstance(snap_students, list):
+                students = snap_students
     payload = json.dumps({
         'tenant_id': str(tenant_id or ''),
         'station_id': str(station_id or ''),
-        'teachers': snapshot.get('teachers') or [],
-        'students': snapshot.get('students') or [],
+        'teachers': teachers or [],
+        'students': students or [],
     }, ensure_ascii=False).encode('utf-8')
     req = urllib.request.Request(
         snapshot_url,
@@ -796,24 +1000,27 @@ def push_snapshot2(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str 
     snap_obj = snapshot.get('snapshot') if isinstance(snapshot, dict) else None
     if not isinstance(snap_obj, dict):
         snap_obj = {}
-    payload_raw = json.dumps({
+    else:
+        snap_obj = dict(snap_obj)
+    if isinstance(snapshot, dict):
+        teachers = snapshot.get('teachers')
+        if isinstance(teachers, list):
+            if teachers or 'teachers' not in snap_obj:
+                snap_obj['teachers'] = teachers
+        students = snapshot.get('students')
+        if isinstance(students, list):
+            if students or 'students' not in snap_obj:
+                snap_obj['students'] = students
+    payload = json.dumps({
         'tenant_id': str(tenant_id or ''),
         'station_id': str(station_id or ''),
         'snapshot': snap_obj,
     }, ensure_ascii=False).encode('utf-8')
-    try:
-        import gzip as _gz
-        payload = _gz.compress(payload_raw, compresslevel=6)
-        content_encoding = 'gzip'
-    except Exception:
-        payload = payload_raw
-        content_encoding = ''
     req = urllib.request.Request(
         url2,
         data=payload,
         headers={
             'Content-Type': 'application/json',
-            **({'Content-Encoding': content_encoding} if content_encoding else {}),
             'api-key': str(api_key or ''),
             'x-api-key': str(api_key or ''),
         }
@@ -827,6 +1034,30 @@ def push_snapshot2(snapshot_url: str, snapshot: Dict[str, Any], *, api_key: str 
             body_text = ''
         if body_text.strip():
             print(f"[SNAPSHOT2] Server response: {body_text.strip()}")
+        data = None
+        if body_text.strip():
+            try:
+                data = json.loads(body_text)
+            except Exception:
+                data = None
+        applied = data.get('applied') if isinstance(data, dict) else None
+        if isinstance(snapshot, dict) and isinstance(applied, dict):
+            expect_teachers = isinstance(snapshot.get('teachers'), list) and len(snapshot.get('teachers') or []) > 0
+            expect_students = isinstance(snapshot.get('students'), list) and len(snapshot.get('students') or []) > 0
+            try:
+                applied_teachers = int(applied.get('teachers') or 0)
+            except Exception:
+                applied_teachers = 0
+            try:
+                applied_students = int(applied.get('students') or 0)
+            except Exception:
+                applied_students = 0
+            if expect_teachers and applied_teachers <= 0:
+                print('[SNAPSHOT2] Teachers not applied; falling back to /sync/snapshot')
+                return False
+            if expect_students and applied_students <= 0:
+                print('[SNAPSHOT2] Students not applied; falling back to /sync/snapshot')
+                return False
         return True
     except urllib.error.HTTPError as exc:
         try:
@@ -937,10 +1168,31 @@ def _parse_dt_maybe(ts: str | None) -> Optional[datetime]:
         return None
 
 
+def _disable_sync_triggers(conn: sqlite3.Connection) -> None:
+    """מבטל triggers של סנכרון כדי למנוע לולאה אינסופית בזמן apply."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '_sync_log_%'")
+        for row in cur.fetchall():
+            try:
+                cur.execute(f"DROP TRIGGER IF EXISTS {row[0]}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _enable_sync_triggers(conn: sqlite3.Connection) -> None:
+    """מפעיל מחדש triggers של סנכרון. ה-triggers ייווצרו מחדש בפעם הבאה שנפתח Database()."""
+    pass  # ה-triggers ייווצרו מחדש ע"י create_tables בהפעלה הבאה
+
+
 def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> int:
     if not items:
         return 0
     _ensure_applied_events(conn)
+    # בטל triggers כדי שהחלת שינויים לא תיצור רשומות חדשות ב-change_log
+    _disable_sync_triggers(conn)
     applied = 0
     cur = conn.cursor()
     for ev in items:
@@ -1279,29 +1531,52 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                         pass
                 applied += 1
             
-            # Handle message entities
+            # Handle all table-mapped entities (messages, bonuses, activities, etc.)
             table_map = {
                 'static_message': 'static_messages',
                 'threshold_message': 'threshold_messages',
                 'news_item': 'news_items',
                 'ads_item': 'ads_items',
                 'student_message': 'student_messages',
-                'time_bonus_given': 'time_bonus_given'
+                'time_bonus_given': 'time_bonus_given',
+                'time_bonus': 'time_bonus_schedules',
+                'teacher_bonus': 'teacher_bonus',
+                'activity': 'activities',
+                'activity_schedule': 'activity_schedules',
+                'product_variant': 'product_variants',
+                'product_category': 'product_categories',
+                'scheduled_service': 'scheduled_services',
+                'scheduled_service_date': 'scheduled_service_dates',
+                'public_closure': 'public_closures',
+                'teacher_class': 'teacher_classes',
+                'student_tier': 'student_tier_state',
+                'time_bonus_given': 'time_bonus_given',
+                'card_block': 'card_blocks',
+                'cashier_responsible': 'cashier_responsibles',
+                'activity_claim': 'activity_claims',
+                'service_reservation': 'scheduled_service_reservations',
+                'purchase': 'purchases_log',
+                'refund': 'refunds_log',
             }
             
             if entity_type in table_map:
                 table = table_map[entity_type]
-                eid = int(entity_id or '0')
+                # טבלאות עם primary key שונה מ-id
+                _pk_map = {'teacher_bonus': 'teacher_id', 'student_tier': 'student_id', 'cashier_responsible': 'student_id'}
+                pk_col = _pk_map.get(entity_type, 'id')
+                try:
+                    eid = int(entity_id or '0')
+                except (ValueError, TypeError):
+                    eid = entity_id
                 if action_type == 'delete':
-                    cur.execute(f"DELETE FROM {table} WHERE id = ?", (eid,))
+                    cur.execute(f"DELETE FROM {table} WHERE {pk_col} = ?", (eid,))
                     applied += 1
                 elif action_type in ('create', 'update'):
-                    # We use _replace_rows_local for convenience if payload matches columns
-                    # Payload usually contains all fields from the API save
-                    # We construct a single row list
                     row = dict(payload)
-                    row['id'] = eid # Ensure ID is set
-                    _replace_rows_local(conn, table, [row])
+                    row[pk_col] = eid
+                    if pk_col == 'id':
+                        row['id'] = eid
+                    _upsert_row(conn, table, pk_col, row)
                     applied += 1
 
             if event_id:
@@ -1375,10 +1650,43 @@ def _print_pending(db_path: str, *, limit: int = 20, include_synced: bool = Fals
 def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: Optional[str] = None) -> None:
     base_dir = os.path.dirname(os.path.abspath(__file__))
     cfg = _load_config(base_dir)
+    local_sync_enabled = _local_sync_enabled_from_cfg(cfg)
+    local_sync_url = _local_sync_url_from_cfg(cfg) if local_sync_enabled else ''
+    try:
+        local_sync_role = str(cfg.get('local_sync_role') or '').strip().lower()
+    except Exception:
+        local_sync_role = ''
+    if not local_sync_role and local_sync_url:
+        try:
+            shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+        except Exception:
+            shared_folder = None
+        host = _unc_host(str(shared_folder or '').strip())
+        if host and _is_local_host(host):
+            local_sync_role = 'master'
+        else:
+            local_sync_role = 'client'
+
     db_path = db_path or _resolve_db_path(base_dir, cfg)
     push_url = push_url or str(cfg.get('sync_push_url') or DEFAULT_PUSH_URL).strip()
     api_key = str(cfg.get('sync_api_key') or '').strip()
     tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
+
+    # Local Sync client override (Single-Writer): push/pull to local master server
+    if local_sync_enabled and local_sync_url and local_sync_role == 'client':
+        push_url = local_sync_url.rstrip('/') + '/sync/push'
+        try:
+            api_key = str(cfg.get('local_sync_key') or 'local').strip()
+        except Exception:
+            api_key = 'local'
+        try:
+            tenant_id = str(cfg.get('local_sync_tenant_id') or 'local').strip()
+        except Exception:
+            tenant_id = 'local'
+    # Master with local sync: keep cloud credentials for cloud sync
+    elif local_sync_enabled and local_sync_role == 'master':
+        # push_url, api_key, tenant_id already set from cloud config above
+        print(f"[SYNC] Master mode: cloud sync with tenant_id={tenant_id}")
     station_id = str(cfg.get('sync_station_id') or '').strip()
     pull_url = _pull_url_from_push(push_url, cfg)
 
@@ -1396,11 +1704,28 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         conn0 = _connect(str(db_path))
         try:
             _ensure_sync_state(conn0)
+            _ensure_change_log(conn0)
+            # For local sync client: set pull_since_id_local to current max change_log id
+            # This is needed because DB was copied fresh from master and already contains all changes
+            if local_sync_enabled and local_sync_role == 'client':
+                try:
+                    cur0 = conn0.cursor()
+                    cur0.execute('SELECT MAX(id) FROM change_log')
+                    r0 = cur0.fetchone()
+                    max_local_id = int((r0[0] if r0 else 0) or 0)
+                    old_since = _get_sync_state(conn0, 'pull_since_id_local', '0')
+                    old_since_i = int(str(old_since or '0').strip() or '0')
+                    if max_local_id > 0 and max_local_id != old_since_i:
+                        _set_sync_state(conn0, 'pull_since_id_local', str(max_local_id))
+                        print(f"[BOOTSTRAP] Local sync client: set pull_since_id_local={max_local_id} (was {old_since_i})")
+                except Exception as e:
+                    print(f"[BOOTSTRAP] Error setting local since_id: {e}")
+
             done = str(_get_sync_state(conn0, 'bootstrap_snapshot_done', '0') or '0').strip()
             should_run = force_bootstrap or (done != '1')
             if should_run and tenant_id and api_key and snapshot_url:
                 if force_bootstrap or _is_db_empty_for_bootstrap(conn0):
-                    print(f"[BOOTSTRAP] Pulling full snapshot from cloud...")
+                    print(f"[BOOTSTRAP] Pulling full snapshot...")
                     resp = pull_snapshot(snapshot_url, api_key=api_key, tenant_id=tenant_id)
                     if isinstance(resp, dict) and resp.get('ok'):
                         try:
@@ -1420,9 +1745,10 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         pass
 
     last_file_sync = 0.0
+    # בעמדה ראשית (master) עם local sync, cloud pull/push פועל רגיל עם cloud credentials
     pull_enabled = bool(pull_url and api_key and tenant_id)
     try:
-        print(f"[CFG] tenant_id={tenant_id or '-'} station_id={station_id or '-'} push_url={'set' if bool(push_url) else '-'} pull_url={'set' if bool(pull_url) else '-'} pull_enabled={1 if pull_enabled else 0}")
+        print(f"[CFG] tenant_id={tenant_id or '-'} station_id={station_id or '-'} push_url={'set' if bool(push_url) else '-'} pull_url={'set' if bool(pull_url) else '-'} pull_enabled={1 if pull_enabled else 0} role={local_sync_role}")
     except Exception:
         pass
     backoff = 0
@@ -1448,7 +1774,9 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         try:
             _ensure_change_log(conn)
             _ensure_sync_state(conn)
-            since_id_s = _get_sync_state(conn, 'pull_since_id', '0')
+            # Use separate since_id key for local sync vs cloud sync
+            since_id_key = 'pull_since_id_local' if (local_sync_enabled and local_sync_role == 'client') else 'pull_since_id'
+            since_id_s = _get_sync_state(conn, since_id_key, '0')
             try:
                 since_id = int(str(since_id_s or '0').strip() or '0')
             except Exception:
@@ -1471,10 +1799,20 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                         next_since_i = since_id
                     items_count = (len(items) if isinstance(items, list) else 0)
                     if next_since_i != since_id:
-                        _set_sync_state(conn, 'pull_since_id', str(next_since_i))
-                        print(f"[PULL] OK items={items_count} applied={applied} since_id={since_id} -> {next_since_i}")
+                        _set_sync_state(conn, since_id_key, str(next_since_i))
+                        print(f"[PULL] OK items={items_count} applied={applied} since_id={since_id} -> {next_since_i} (key={since_id_key})")
                     else:
-                        print(f"[PULL] OK items={items_count} applied={applied} since_id={since_id}")
+                        print(f"[PULL] OK items={items_count} applied={applied} since_id={since_id} (key={since_id_key})")
+                    # עדכון interval דינמי מהשרת
+                    try:
+                        ri = int(resp.get('recommended_interval') or 0)
+                        if ri > 0:
+                            interval_sec = ri
+                            ns = int(resp.get('stations') or 0)
+                            if ns > 0:
+                                print(f"[SYNC] Dynamic interval={ri}s (stations={ns})")
+                    except Exception:
+                        pass
                 else:
                     pull_ok = False
             else:
@@ -1513,7 +1851,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument('--show-pending', action='store_true', help='Print pending changes in change_log and exit')
     p.add_argument('--show-all-changes', action='store_true', help='Print recent changes (including synced) and exit')
     p.add_argument('--limit', default=20, type=int, help='Limit for --show-pending/--show-all-changes (default: 20)')
-    p.add_argument('--interval-sec', default=60, type=int, help='Sync loop interval in seconds (default: 60)')
+    p.add_argument('--interval-sec', default=15, type=int, help='Sync loop interval in seconds (default: 15)')
     p.add_argument('--db-path', default=None, help='Override DB path')
     p.add_argument('--push-url', default=None, help='Override push URL (/sync/push)')
     p.add_argument('--snapshot-url', default=None, help='Override snapshot URL (/sync/snapshot)')
@@ -1530,7 +1868,7 @@ if __name__ == '__main__':
     station_id = str(cfg.get('sync_station_id') or '').strip()
 
     if not _acquire_db_lock(base_dir, str(db_path)):
-        raise SystemExit(2)
+        sys.exit(0)
 
     if args.show_pending:
         _print_pending(db_path, limit=int(args.limit or 20), include_synced=False)
@@ -1548,7 +1886,13 @@ if __name__ == '__main__':
         finally:
             conn.close()
         print(f"[SNAPSHOT] Teachers: {len(snap.get('teachers') or [])} | Students: {len(snap.get('students') or [])}")
-        ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+        ok = False
+        try:
+            ok = push_snapshot2(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+        except Exception:
+            ok = False
+        if not ok:
+            ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
         print('[SNAPSHOT] OK' if ok else '[SNAPSHOT] FAILED')
     elif args.once:
         push_url = args.push_url or str(cfg.get('sync_push_url') or DEFAULT_PUSH_URL).strip()

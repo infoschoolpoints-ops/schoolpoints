@@ -75,7 +75,7 @@ LRE = '\u202a'  # Left-to-Right Embedding
 
 UNIVERSAL_MASTER_CODE = "05276247440527624744"
 
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.6.1"
 
 _DEBUG_LOG_ENABLED = False
 _DEBUG_LOG_PATH = None
@@ -322,27 +322,27 @@ def _get_color_settings_file(base_dir: str) -> str:
     except Exception:
         pass
 
-    # ניסיון שני: קובץ הגדרות במיקום נתוני משתמש (PROGRAMDATA/LOCALAPPDATA/APPDATA)
-    for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
+    # ניסיון שני: קובץ הגדרות במיקום נתוני משתמש (LOCALAPPDATA/APPDATA/PROGRAMDATA)
+    for env_name in ("LOCALAPPDATA", "APPDATA", "PROGRAMDATA"):
         root = os.environ.get(env_name)
-        if not root:
+        if not root or not os.path.isdir(root):
             continue
         try:
-            if os.path.isdir(root) and os.access(root, os.W_OK):
-                cfg_dir = os.path.join(root, "SchoolPoints")
-                try:
-                    os.makedirs(cfg_dir, exist_ok=True)
-                except Exception:
-                    pass
-                target = os.path.join(cfg_dir, "color_settings.json")
-                if not os.path.exists(target):
-                    default = os.path.join(base_dir, "color_settings.json")
-                    if os.path.exists(default):
-                        try:
-                            shutil.copy2(default, target)
-                        except Exception:
-                            pass
-                return target
+            cfg_dir = os.path.join(root, "SchoolPoints")
+            os.makedirs(cfg_dir, exist_ok=True)
+            _wt = os.path.join(cfg_dir, '.write_test')
+            with open(_wt, 'w') as _wf:
+                _wf.write('ok')
+            os.remove(_wt)
+            target = os.path.join(cfg_dir, "color_settings.json")
+            if not os.path.exists(target):
+                default = os.path.join(base_dir, "color_settings.json")
+                if os.path.exists(default):
+                    try:
+                        shutil.copy2(default, target)
+                    except Exception:
+                        pass
+            return target
         except Exception:
             continue
 
@@ -586,6 +586,11 @@ class PublicStation:
         except Exception:
             pass
 
+        try:
+            self._maybe_start_local_sync_server()
+        except Exception:
+            pass
+
         # הפעלת סנכרון רקע אוטומטי (Hybrid/Cloud בלבד)
         self._sync_agent_thread = None
         self._sync_agent_started = False
@@ -673,7 +678,7 @@ class PublicStation:
             self.event_sounds = {}
         self.restart_token_seen = str(cfg_restart.get('restart_public_stations_token', "")) if cfg_restart else ""
         self._restart_requested = False
-        _debug_log('load_app_config הסתיים')
+        _debug_log(f'load_app_config הסתיים, restart_token_seen={self.restart_token_seen!r}')
 
         # ניסיון לאתר קובץ פונט גרפי לשימוש פנימי (ללא גישה לכוננים חיצוניים שעשויים להתקע)
         # עדיפות לפונט Gan CLM Bold שהונח בתיקיית התוכנה, עם נפילה חזרה ל-Agas אם קיים.
@@ -4866,22 +4871,21 @@ class PublicStation:
     
     def _get_config_file_path(self) -> str:
         """החזרת נתיב קובץ ההגדרות ה"חי" מחוץ ל-Program Files במידת האפשר."""
-        for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
+        for env_name in ("LOCALAPPDATA", "APPDATA", "PROGRAMDATA"):
             root = os.environ.get(env_name)
-            if not root:
+            if not root or not os.path.isdir(root):
                 continue
             try:
-                if os.path.isdir(root) and os.access(root, os.W_OK):
-                    cfg_dir = os.path.join(root, "SchoolPoints")
-                    try:
-                        os.makedirs(cfg_dir, exist_ok=True)
-                    except Exception:
-                        pass
-                    return os.path.join(cfg_dir, "config.json")
+                cfg_dir = os.path.join(root, "SchoolPoints")
+                os.makedirs(cfg_dir, exist_ok=True)
+                _test = os.path.join(cfg_dir, '.write_test')
+                with open(_test, 'w') as _f:
+                    _f.write('ok')
+                os.remove(_test)
+                return os.path.join(cfg_dir, "config.json")
             except Exception:
                 continue
 
-        # מוצא אחרון – עשוי להיות לקריאה בלבד בהתקנה, אבל בסביבת פיתוח זה תקין
         return os.path.join(self.base_dir, 'config.json')
 
     def load_app_config(self):
@@ -4961,8 +4965,50 @@ class PublicStation:
             mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
         except Exception:
             mode = 'local'
+        sync_agent_mod = None
+        try:
+            import sync_agent
+            sync_agent_mod = sync_agent
+            local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(cfg)
+        except Exception:
+            try:
+                local_sync_enabled = str(cfg.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
+            except Exception:
+                local_sync_enabled = False
 
-        if mode not in ('hybrid', 'cloud'):
+        local_sync_url = ''
+        if local_sync_enabled and sync_agent_mod is not None:
+            try:
+                local_sync_url = sync_agent_mod._local_sync_url_from_cfg(cfg)
+            except Exception:
+                local_sync_url = ''
+
+        local_sync_role = ''
+        try:
+            local_sync_role = str(cfg.get('local_sync_role') or '').strip().lower()
+        except Exception:
+            local_sync_role = ''
+        if not local_sync_role and local_sync_enabled and sync_agent_mod is not None:
+            try:
+                shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+            except Exception:
+                shared_folder = None
+            try:
+                host = sync_agent_mod._unc_host(str(shared_folder or '').strip())
+                if host and sync_agent_mod._is_local_host(host):
+                    local_sync_role = 'master'
+                elif host:
+                    local_sync_role = 'client'
+            except Exception:
+                pass
+
+        if local_sync_enabled and not local_sync_url and mode not in ('hybrid', 'cloud'):
+            return
+
+        if mode == 'local' and local_sync_enabled and local_sync_role != 'client':
+            return
+
+        if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
             return
 
         try:
@@ -4978,20 +5024,26 @@ class PublicStation:
         except Exception:
             push_url = ''
 
-        if not (tenant_id and api_key and push_url):
-            return
+        if not local_sync_enabled:
+            if not (tenant_id and api_key and push_url):
+                return
 
         try:
-            interval_sec = int(cfg.get('sync_interval_sec') or 60)
+            interval_sec = int(cfg.get('sync_interval_sec') or 15)
         except Exception:
-            interval_sec = 60
-        interval_sec = max(10, int(interval_sec or 60))
+            interval_sec = 15
+        interval_sec = max(10, int(interval_sec or 15))
 
         def _run_sync_loop():
             try:
+                _debug_log(f'sync_agent thread started, interval={interval_sec}')
                 import sync_agent
                 sync_agent.main_loop(interval_sec=interval_sec)
-            except Exception:
+                _debug_log('sync_agent main_loop returned normally')
+            except SystemExit as se:
+                _debug_log(f'sync_agent SystemExit: {se}')
+            except Exception as e:
+                _debug_log(f'sync_agent exception: {type(e).__name__}: {e}')
                 pass
 
         try:
@@ -5008,6 +5060,98 @@ class PublicStation:
             except Exception:
                 pass
             return
+
+    def _is_local_sync_server_running(self, port: int) -> bool:
+        try:
+            url = f"http://127.0.0.1:{int(port)}/sync/status"
+            req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=0.5) as resp:
+                data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
+                return bool(data.get('ok'))
+        except Exception:
+            return False
+
+    def _maybe_start_local_sync_server(self) -> None:
+        try:
+            if bool(getattr(self, '_local_sync_server_started', False)):
+                return
+        except Exception:
+            pass
+
+        try:
+            cfg = self.load_app_config() or {}
+        except Exception:
+            cfg = {}
+
+        try:
+            import sync_agent
+            local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(cfg)
+        except Exception:
+            try:
+                local_sync_enabled = str(cfg.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
+            except Exception:
+                local_sync_enabled = False
+        if not local_sync_enabled:
+            return
+
+        try:
+            role = str(cfg.get('local_sync_role') or '').strip().lower()
+        except Exception:
+            role = ''
+
+        if role and role != 'master':
+            return
+
+        try:
+            shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+        except Exception:
+            shared_folder = None
+        host = None
+        try:
+            import sync_agent
+            host = sync_agent._unc_host(str(shared_folder or '').strip())
+            if role != 'master' and host and not sync_agent._is_local_host(host):
+                return
+        except Exception:
+            host = None
+
+        try:
+            port = int(cfg.get('local_sync_port') or 8765)
+        except Exception:
+            port = 8765
+
+        if self._is_local_sync_server_running(port):
+            try:
+                self._local_sync_server_started = True
+            except Exception:
+                pass
+            return
+
+        try:
+            api_key = str(cfg.get('local_sync_key') or 'local').strip()
+        except Exception:
+            api_key = 'local'
+        try:
+            tenant_id = str(cfg.get('local_sync_tenant_id') or 'local').strip()
+        except Exception:
+            tenant_id = 'local'
+
+        try:
+            import local_sync_server
+            t = local_sync_server.start_in_thread(
+                host='0.0.0.0',
+                port=port,
+                db_path=self.db.db_path if hasattr(self, 'db') else None,
+                api_key=api_key,
+                tenant_id=tenant_id
+            )
+            try:
+                self._local_sync_server_thread = t
+                self._local_sync_server_started = True
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def save_app_config(self, config: dict) -> bool:
         """שמירת הגדרות יישום לקובץ הגדרות חיצוני במיקום כתיב."""
@@ -5037,7 +5181,12 @@ class PublicStation:
                     pass
                 try:
                     with open(shared_config_path, 'w', encoding='utf-8') as f:
-                        json.dump(local_cfg, f, ensure_ascii=False, indent=4)
+                        shared_cfg = dict(local_cfg) if isinstance(local_cfg, dict) else {}
+                        try:
+                            shared_cfg.pop('db_path', None)
+                        except Exception:
+                            pass
+                        json.dump(shared_cfg, f, ensure_ascii=False, indent=4)
                 except Exception:
                     # כשל בשמירת הקובץ המשותף לא צריך להפיל את האפליקציה
                     pass
@@ -6844,6 +6993,7 @@ class PublicStation:
         else:
             token = ""
         if token and token != self.restart_token_seen:
+            _debug_log(f'restart_check: token CHANGED old={self.restart_token_seen!r} new={token!r}')
             self.restart_token_seen = token
             self._restart_requested = True
             try:
@@ -8597,8 +8747,50 @@ class PublicStation:
             print(f"שגיאה בהצגת הודעת אנטי-ספאם: {e}")
 
 
+def _is_in_job_object():
+    """בדיקה אם התהליך הנוכחי נמצא בתוך Windows Job Object."""
+    try:
+        if sys.platform != 'win32':
+            return False
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        result = ctypes.c_int(0)
+        kernel32.IsProcessInJob(kernel32.GetCurrentProcess(), None, ctypes.byref(result))
+        return bool(result.value)
+    except Exception:
+        return False
+
+
+def _relaunch_outside_job():
+    """הפעלה מחדש של התהליך מחוץ ל-Job Object באמצעות CREATE_BREAKAWAY_FROM_JOB."""
+    try:
+        import subprocess
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        script = os.path.abspath(__file__)
+        proc = subprocess.Popen(
+            [sys.executable, script],
+            cwd=os.path.dirname(script),
+            creationflags=CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP,
+        )
+        return True
+    except OSError:
+        # CREATE_BREAKAWAY_FROM_JOB may fail if the job doesn't allow breakaway
+        return False
+    except Exception:
+        return False
+
+
 def main():
     """הפעלה רגילה של העמדה הציבורית, כולל בדיקת רישיון בתוך המחלקה."""
+
+    # אם התהליך נמצא בתוך Job Object (למשל כשהופעל דרך py.exe launcher),
+    # נפעיל מחדש מחוץ ל-Job כדי למנוע הריגה כשתהליך אחר באותו Job יוצא.
+    if os.environ.get('_SP_NO_JOB_RELAUNCH') != '1' and _is_in_job_object():
+        os.environ['_SP_NO_JOB_RELAUNCH'] = '1'
+        if _relaunch_outside_job():
+            return  # התהליך החדש הופעל, נצא מהנוכחי
+        # אם ה-relaunch נכשל, נמשיך לרוץ רגיל
 
     try:
         _debug_log('entered main()')
@@ -8642,6 +8834,18 @@ def main():
             )
         except Exception:
             pass
+        # DEBUG: wrap root.destroy to log caller
+        import traceback as _tb_mod
+        _orig_root_destroy = root.destroy
+        def _logged_destroy(*a, **kw):
+            try:
+                stack = ''.join(_tb_mod.format_stack())
+                _debug_log(f'root.destroy() CALLED\n{stack}')
+            except Exception:
+                pass
+            return _orig_root_destroy(*a, **kw)
+        root.destroy = _logged_destroy
+
         try:
             app = PublicStation(root)
         except Exception as e:
@@ -8669,7 +8873,9 @@ def main():
             return
 
         root.mainloop()
+        _debug_log(f'mainloop returned, _restart_requested={getattr(app, "_restart_requested", "N/A")}, _init_failed={getattr(app, "_init_failed", "N/A")}')
         if not getattr(app, "_restart_requested", False):
+            _debug_log('breaking out of main loop (no restart requested)')
             break
 
 

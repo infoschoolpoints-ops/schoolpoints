@@ -3,12 +3,18 @@
 """
 import sqlite3
 import os
+import json
+import urllib.request
+import urllib.error
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
 class MessagesDB:
+    _journal_mode_applied = set()
     def __init__(self, db_path: str = None):
+        self._remote_write_url = None
+        self._remote_write_api_key = 'local'
         # ברירת מחדל: קובץ ה-DB בתיקייה של הפרויקט (תומך ב-UNC)
         if db_path is None:
             base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -34,8 +40,69 @@ class MessagesDB:
                 self.db_path = os.path.join(base_dir, 'school_points.db')
         else:
             self.db_path = db_path
+        # זיהוי עמדה משנית - הפניית כתיבות דרך HTTP
+        try:
+            self._detect_remote_write()
+        except Exception:
+            pass
         self.init_tables()
     
+    def _detect_remote_write(self):
+        """זיהוי אם זו עמדה משנית שצריכה לכתוב דרך HTTP"""
+        try:
+            from database import Database
+            # אם Database כבר זיהה remote write, נשתמש באותו URL
+            dummy = Database.__new__(Database)
+            dummy._remote_write_url = None
+            dummy._remote_write_api_key = 'local'
+            # קרא config
+            import socket as _sock
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            cfg = {}
+            for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
+                root = os.environ.get(env_name)
+                if not root:
+                    continue
+                cfg_path = os.path.join(root, "SchoolPoints", "config.json")
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, 'r', encoding='utf-8') as f:
+                        cfg = json.loads(f.read())
+                    break
+            if not cfg:
+                cfg_path = os.path.join(base_dir, 'config.json')
+                if os.path.exists(cfg_path):
+                    with open(cfg_path, 'r', encoding='utf-8') as f:
+                        cfg = json.loads(f.read())
+            local_sync_enabled = str(cfg.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
+            if not local_sync_enabled:
+                return
+            shared_folder = str(cfg.get('shared_folder') or cfg.get('network_root') or '').strip()
+            if not shared_folder:
+                return
+            # חלץ host מ-UNC
+            p = shared_folder.replace('/', '\\')
+            if not p.startswith('\\\\'):
+                return
+            host = p[2:].split('\\', 1)[0].strip()
+            if not host:
+                return
+            # בדוק אם זה מקומי
+            local_names = {
+                str(_sock.gethostname() or '').strip().lower(),
+                str(os.environ.get('COMPUTERNAME') or '').strip().lower(),
+                'localhost', '127.0.0.1', '::1'
+            }
+            if host.lower() in local_names:
+                return  # עמדה ראשית - לא צריך proxy
+            try:
+                port = int(cfg.get('local_sync_port') or 8765)
+            except Exception:
+                port = 8765
+            self._remote_write_url = f"http://{host}:{port}"
+            self._remote_write_api_key = str(cfg.get('local_sync_key') or 'local').strip()
+        except Exception:
+            pass
+
     def get_connection(self):
         """יצירת חיבור למסד הנתונים"""
         db_dir = os.path.dirname(self.db_path) or '.'
@@ -45,9 +112,16 @@ class MessagesDB:
             # אם לא הצלחנו ליצור תיקייה – ניתן ל-sqlite לטפל בשגיאה
             pass
 
-        conn = sqlite3.connect(self.db_path, timeout=10)
+        conn = sqlite3.connect(self.db_path, timeout=15)
         conn.row_factory = sqlite3.Row
         self._apply_pragmas(conn)
+        # עמדה משנית: עטוף ב-proxy שמפנה כתיבות דרך HTTP
+        if self._remote_write_url:
+            try:
+                from database import _RemoteWriteConnection
+                return _RemoteWriteConnection(conn, self._remote_write_url, self._remote_write_api_key)
+            except Exception:
+                pass
         return conn
 
     def _is_unc_path(self) -> bool:
@@ -63,22 +137,73 @@ class MessagesDB:
         except Exception:
             pass
         try:
-            conn.execute('PRAGMA busy_timeout = 5000')
+            conn.execute('PRAGMA busy_timeout = 30000')
         except Exception:
             pass
         try:
-            if self._is_unc_path():
-                conn.execute('PRAGMA journal_mode = DELETE')
-                conn.execute('PRAGMA synchronous = FULL')
+            try:
+                is_unc = self._is_unc_path()
+            except Exception:
+                is_unc = False
+            try:
+                db_key = os.path.abspath(str(self.db_path or '')).lower()
+            except Exception:
+                db_key = str(self.db_path or '')
+            try:
+                should_set_mode = bool(db_key) and db_key not in MessagesDB._journal_mode_applied
+            except Exception:
+                should_set_mode = True
+
+            if should_set_mode:
+                if is_unc:
+                    conn.execute('PRAGMA journal_mode = DELETE')
+                    conn.execute('PRAGMA synchronous = FULL')
+                else:
+                    conn.execute('PRAGMA journal_mode = WAL')
+                    conn.execute('PRAGMA synchronous = NORMAL')
+                try:
+                    if db_key:
+                        MessagesDB._journal_mode_applied.add(db_key)
+                except Exception:
+                    pass
             else:
-                conn.execute('PRAGMA journal_mode = WAL')
-                conn.execute('PRAGMA synchronous = NORMAL')
+                if is_unc:
+                    conn.execute('PRAGMA synchronous = FULL')
+                else:
+                    conn.execute('PRAGMA synchronous = NORMAL')
         except Exception:
             pass
     
+    def _log_change(self, cursor, *, entity_type: str, entity_id: str, action_type: str, payload=None):
+        """רישום שינוי ב-change_log לסנכרון"""
+        try:
+            payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        except Exception:
+            payload_json = '{}'
+        try:
+            cursor.execute(
+                '''INSERT INTO change_log (entity_type, entity_id, action_type, payload_json)
+                   VALUES (?, ?, ?, ?)''',
+                (entity_type, entity_id, action_type, payload_json)
+            )
+        except Exception:
+            pass
+
+    def _get_raw_connection(self):
+        """חיבור ישיר ל-DB ללא proxy (לשימוש פנימי כמו init_tables)"""
+        db_dir = os.path.dirname(self.db_path) or '.'
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except Exception:
+            pass
+        conn = sqlite3.connect(self.db_path, timeout=15)
+        conn.row_factory = sqlite3.Row
+        self._apply_pragmas(conn)
+        return conn
+
     def init_tables(self):
         """יצירת טבלאות הודעות"""
-        conn = self.get_connection()
+        conn = self._get_raw_connection()
         cursor = conn.cursor()
         
         # טבלת הודעות סטטיות (public static messages)
@@ -217,6 +342,11 @@ class MessagesDB:
             INSERT INTO static_messages (message, show_always) VALUES (?, ?)
         ''', (message, 1 if show_always else 0))
         message_id = cursor.lastrowid
+        try:
+            self._log_change(cursor, entity_type='static_message', entity_id=str(message_id), action_type='create',
+                             payload={'id': message_id, 'message': message, 'show_always': 1 if show_always else 0, 'is_active': 1})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return message_id
@@ -249,6 +379,11 @@ class MessagesDB:
             UPDATE static_messages SET message = ? WHERE id = ?
         ''', (message, message_id))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='static_message', entity_id=str(message_id), action_type='update',
+                             payload={'id': message_id, 'message': message})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -259,6 +394,10 @@ class MessagesDB:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM static_messages WHERE id = ?', (message_id,))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='static_message', entity_id=str(message_id), action_type='delete', payload={})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -273,6 +412,14 @@ class MessagesDB:
             WHERE id = ?
         ''', (message_id,))
         success = cursor.rowcount > 0
+        try:
+            cursor.execute('SELECT * FROM static_messages WHERE id = ?', (message_id,))
+            row = cursor.fetchone()
+            if row:
+                self._log_change(cursor, entity_type='static_message', entity_id=str(message_id), action_type='update',
+                                 payload=dict(row))
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -288,6 +435,11 @@ class MessagesDB:
             VALUES (?, ?, ?)
         ''', (min_points, max_points, message))
         message_id = cursor.lastrowid
+        try:
+            self._log_change(cursor, entity_type='threshold_message', entity_id=str(message_id), action_type='create',
+                             payload={'id': message_id, 'min_points': min_points, 'max_points': max_points, 'message': message, 'is_active': 1})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return message_id
@@ -331,6 +483,11 @@ class MessagesDB:
             WHERE id = ?
         ''', (min_points, max_points, message, message_id))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='threshold_message', entity_id=str(message_id), action_type='update',
+                             payload={'id': message_id, 'min_points': min_points, 'max_points': max_points, 'message': message})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -341,6 +498,10 @@ class MessagesDB:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM threshold_messages WHERE id = ?', (message_id,))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='threshold_message', entity_id=str(message_id), action_type='delete', payload={})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -355,6 +516,14 @@ class MessagesDB:
             WHERE id = ?
         ''', (message_id,))
         success = cursor.rowcount > 0
+        try:
+            cursor.execute('SELECT * FROM threshold_messages WHERE id = ?', (message_id,))
+            row = cursor.fetchone()
+            if row:
+                self._log_change(cursor, entity_type='threshold_message', entity_id=str(message_id), action_type='update',
+                                 payload=dict(row))
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -384,6 +553,11 @@ class MessagesDB:
                 INSERT INTO news_items (text, start_date, end_date) VALUES (?, ?, ?)
             ''', (text, start_date, end_date))
         news_id = cursor.lastrowid
+        try:
+            self._log_change(cursor, entity_type='news_item', entity_id=str(news_id), action_type='create',
+                             payload={'id': news_id, 'text': text, 'start_date': start_date, 'end_date': end_date, 'is_active': 1})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return news_id
@@ -443,6 +617,11 @@ class MessagesDB:
             WHERE id = ?
         ''', (text, start_date, end_date, news_id))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='news_item', entity_id=str(news_id), action_type='update',
+                             payload={'id': news_id, 'text': text, 'start_date': start_date, 'end_date': end_date})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -453,6 +632,10 @@ class MessagesDB:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM news_items WHERE id = ?', (news_id,))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='news_item', entity_id=str(news_id), action_type='delete', payload={})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -467,6 +650,14 @@ class MessagesDB:
             WHERE id = ?
         ''', (news_id,))
         success = cursor.rowcount > 0
+        try:
+            cursor.execute('SELECT * FROM news_items WHERE id = ?', (news_id,))
+            row = cursor.fetchone()
+            if row:
+                self._log_change(cursor, entity_type='news_item', entity_id=str(news_id), action_type='update',
+                                 payload=dict(row))
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -560,6 +751,11 @@ class MessagesDB:
                 (text, image_path, start_date, end_date)
             )
         ads_id = cursor.lastrowid
+        try:
+            self._log_change(cursor, entity_type='ads_item', entity_id=str(ads_id), action_type='create',
+                             payload={'id': ads_id, 'text': text, 'start_date': start_date, 'end_date': end_date, 'image_path': image_path, 'is_active': 1})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return ads_id
@@ -611,6 +807,11 @@ class MessagesDB:
             (text, image_path, start_date, end_date, ads_id)
         )
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='ads_item', entity_id=str(ads_id), action_type='update',
+                             payload={'id': ads_id, 'text': text, 'start_date': start_date, 'end_date': end_date, 'image_path': image_path})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -620,6 +821,10 @@ class MessagesDB:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM ads_items WHERE id = ?', (ads_id,))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='ads_item', entity_id=str(ads_id), action_type='delete', payload={})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -636,6 +841,14 @@ class MessagesDB:
             (ads_id,)
         )
         success = cursor.rowcount > 0
+        try:
+            cursor.execute('SELECT * FROM ads_items WHERE id = ?', (ads_id,))
+            row = cursor.fetchone()
+            if row:
+                self._log_change(cursor, entity_type='ads_item', entity_id=str(ads_id), action_type='update',
+                                 payload=dict(row))
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -706,6 +919,11 @@ class MessagesDB:
             VALUES (?, ?)
         ''', (student_id, message))
         message_id = cursor.lastrowid
+        try:
+            self._log_change(cursor, entity_type='student_message', entity_id=str(message_id), action_type='create',
+                             payload={'id': message_id, 'student_id': student_id, 'message': message, 'is_active': 1})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return message_id
@@ -746,6 +964,11 @@ class MessagesDB:
             UPDATE student_messages SET message = ? WHERE id = ?
         ''', (message, message_id))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='student_message', entity_id=str(message_id), action_type='update',
+                             payload={'id': message_id, 'message': message})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -756,6 +979,10 @@ class MessagesDB:
         cursor = conn.cursor()
         cursor.execute('DELETE FROM student_messages WHERE id = ?', (message_id,))
         success = cursor.rowcount > 0
+        try:
+            self._log_change(cursor, entity_type='student_message', entity_id=str(message_id), action_type='delete', payload={})
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success
@@ -770,6 +997,14 @@ class MessagesDB:
             WHERE id = ?
         ''', (message_id,))
         success = cursor.rowcount > 0
+        try:
+            cursor.execute('SELECT * FROM student_messages WHERE id = ?', (message_id,))
+            row = cursor.fetchone()
+            if row:
+                self._log_change(cursor, entity_type='student_message', entity_id=str(message_id), action_type='update',
+                                 payload=dict(row))
+        except Exception:
+            pass
         conn.commit()
         conn.close()
         return success

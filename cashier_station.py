@@ -27,7 +27,7 @@ from thermal_printer import ThermalPrinterCached, HebrewDate
 
 UNIVERSAL_MASTER_CODE = "05276247440527624744"
 
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.6.1"
 
 
 def _enable_windows_dpi_awareness():
@@ -208,8 +208,16 @@ class CashierStation:
             mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
         except Exception:
             mode = 'local'
+        try:
+            import sync_agent
+            local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(cfg)
+        except Exception:
+            try:
+                local_sync_enabled = str(cfg.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
+            except Exception:
+                local_sync_enabled = False
 
-        if mode not in ('hybrid', 'cloud'):
+        if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
             return
 
         try:
@@ -225,14 +233,15 @@ class CashierStation:
         except Exception:
             push_url = ''
 
-        if not (tenant_id and api_key and push_url):
-            return
+        if not local_sync_enabled:
+            if not (tenant_id and api_key and push_url):
+                return
 
         try:
-            interval_sec = int(cfg.get('sync_interval_sec') or 60)
+            interval_sec = int(cfg.get('sync_interval_sec') or 15)
         except Exception:
-            interval_sec = 60
-        interval_sec = max(10, int(interval_sec or 60))
+            interval_sec = 15
+        interval_sec = max(10, int(interval_sec or 15))
 
         def _run_sync_loop():
             try:
@@ -1198,18 +1207,18 @@ class CashierStation:
 
     def _get_config_file_path(self) -> str:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
+        for env_name in ("LOCALAPPDATA", "APPDATA", "PROGRAMDATA"):
             root = os.environ.get(env_name)
-            if not root:
+            if not root or not os.path.isdir(root):
                 continue
             try:
-                if os.path.isdir(root) and os.access(root, os.W_OK):
-                    cfg_dir = os.path.join(root, "SchoolPoints")
-                    try:
-                        os.makedirs(cfg_dir, exist_ok=True)
-                    except Exception:
-                        pass
-                    return os.path.join(cfg_dir, "config.json")
+                cfg_dir = os.path.join(root, "SchoolPoints")
+                os.makedirs(cfg_dir, exist_ok=True)
+                _test = os.path.join(cfg_dir, '.write_test')
+                with open(_test, 'w') as _f:
+                    _f.write('ok')
+                os.remove(_test)
+                return os.path.join(cfg_dir, "config.json")
             except Exception:
                 continue
         return os.path.join(base_dir, 'config.json')
@@ -2708,6 +2717,11 @@ class CashierStation:
         except Exception:
             y0 = None
 
+        # Use a flag to prevent multiple simultaneous renders
+        if getattr(self, '_rendering_grid', False):
+            return
+        self._rendering_grid = True
+
         try:
             self._tile_by_pid = {}
         except Exception:
@@ -3002,12 +3016,34 @@ class CashierStation:
             except Exception:
                 pass
 
-        # Restore scroll position after render
-        if y0 is not None:
+        # Restore scroll position smoothly
+        if y0 and y0 != (0.0, 1.0):
             try:
-                self.products_canvas.yview_moveto(float(y0[0]))
+                self.root.after(50, lambda: self._restore_scroll_position(y0))
             except Exception:
                 pass
+        
+        # Clear rendering flag after a short delay
+        self.root.after(100, lambda: setattr(self, '_rendering_grid', False))
+
+    def _restore_scroll_position(self, yview):
+        """Restore scroll position smoothly"""
+        try:
+            self.products_canvas.yview_moveto(yview[0])
+        except Exception:
+            pass
+
+    def _refresh_single_tile(self, tile, product_id):
+        """Refresh a single product tile without re-rendering the entire grid"""
+        try:
+            if hasattr(tile, '_refresh_controls'):
+                tile._refresh_controls()
+                # Update the quantity variable
+                if hasattr(tile, '_qty_var'):
+                    qty = self._get_total_qty_for_product(product_id)
+                    tile._qty_var.set(str(qty))
+        except Exception:
+            pass
 
     def _get_product_img(self, product_id: int):
         if product_id in self._product_img_cache:
@@ -3166,7 +3202,6 @@ class CashierStation:
             self.root.after(0, lambda _pid=int(pid): self._refresh_tile_controls(_pid))
         except Exception:
             pass
-        # Some UI paths (dialogs/grabs) delay visual updates; refresh THIS tile again on idle.
         try:
             self.root.after_idle(lambda _pid=int(pid): self._refresh_tile_controls(_pid))
         except Exception:
@@ -5669,43 +5704,40 @@ class CashierStation:
                         pid = int(it.get('product_id') or 0)
                     except Exception:
                         pid = 0
+                    if pid <= 0:
+                        continue
+                    p = self._product_by_id.get(pid) or {}
+                    pname = (str(p.get('display_name') or '').strip() or str(p.get('name') or '').strip() or f"מוצר {pid}")
+                    
                     try:
                         vid = int(it.get('variant_id') or 0)
                     except Exception:
                         vid = 0
-                    try:
-                        qty = int(it.get('qty') or 0)
-                    except Exception:
-                        qty = 0
-                    if not pid or qty <= 0:
-                        continue
-
-                    p = self._product_by_id.get(pid) or {}
-                    pname = (str(p.get('display_name') or '').strip() or str(p.get('name') or '').strip() or f"מוצר {pid}")
-                    pname = self._strip_asterisk_annotations(pname)
                     v = self._get_variant_for_cart_key(pid, vid)
-                    vname = self._strip_asterisk_annotations(str(v.get('variant_name') or '').strip())
+                    vname = str(v.get('variant_name') or '').strip()
+                    
                     try:
                         price = int(v.get('price_points', p.get('price_points', 0)) or 0)
                     except Exception:
                         price = 0
-                    if int(vid or 0) > 0 and vname and vname != 'ברירת מחדל':
-                        label = f"{pname} - {vname}".strip()
-                    else:
-                        label = pname
-
-                    slot_txt = ''
+                    
+                    try:
+                        qty = int(it.get('qty') or 1)
+                    except Exception:
+                        qty = 1
+                    
+                    label = pname if (not vid or not vname or vname == 'ברירת מחדל') else f"{pname} {vname}".strip()
+                    
+                    # Check if this is a scheduled service (challenge)
+                    sr = by_idx.get(int(items.index(it)))
+                    sdate = ''
+                    stt = ''
                     dur_mins = 0
-                    sr = by_idx.get(int(it.get('purchase_item_index') or -1))
-                    if not sr:
-                        try:
-                            sr = by_idx.get(int((items or []).index(it)))
-                        except Exception:
-                            sr = None
+                    slot_txt = ''
                     if sr:
-                        sdate = str(sr.get('service_date') or '').strip()
-                        stt = str(sr.get('slot_start_time') or '').strip()
                         try:
+                            sdate = str(sr.get('service_date') or '').strip()
+                            stt = str(sr.get('slot_start_time') or '').strip()
                             dur_mins = int(sr.get('duration_minutes', 0) or 0)
                         except Exception:
                             dur_mins = 0
@@ -5714,7 +5746,7 @@ class CashierStation:
                         elif stt:
                             slot_txt = stt
 
-                    # Print voucher to thermal printer instead of PDF
+                    # Print voucher for ALL items (both products and challenges)
                     try:
                         self._print_item_voucher_to_thermal(
                             student_id=int(student_id or 0),
@@ -6185,6 +6217,38 @@ class CashierStation:
         customer_display_baud_cb = ttk.Combobox(frame, textvariable=customer_display_baud_var, values=baud_rates, state='readonly', width=44, justify='right')
         customer_display_baud_cb.grid(row=7, column=1, sticky='ew', padx=(10, 10), pady=8)
         tk.Label(frame, text='(ברירת מחדל: 9600)', font=('Arial', 10), bg='#ecf0f1', fg='#7f8c8d', anchor='e').grid(row=8, column=1, sticky='e', pady=(0, 10))
+
+        # Separator
+        tk.Label(frame, text='', bg='#ecf0f1').grid(row=9, column=0, columnspan=3, pady=10)
+        tk.Label(frame, text='ניהול מוסד', font=('Arial', 12, 'bold'), bg='#ecf0f1', fg='#2c3e50', anchor='e').grid(row=10, column=0, columnspan=3, sticky='ew', pady=(10, 5))
+        
+        # Disconnect institution button
+        def _disconnect_institution():
+            if messagebox.askyesno('אישור ניתוק', 
+                'האם אתה בטוח שברצונך לנתק את העמדה מהמוסד הנוכחי?\n\n'
+                'לאחר הניתוק, התוכנה תיסגר ובפתיחה הבאה תופיע מסך הגדרות ראשוניות לחיבור למוסד אחר.',
+                parent=dlg):
+                # Clear configuration
+                new_cfg = {}
+                try:
+                    os.remove(os.path.join(os.environ.get('PROGRAMDATA', r'C:\ProgramData'), 'SchoolPoints', 'config.json'))
+                except:
+                    pass
+                try:
+                    os.remove(os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local')), 'SchoolPoints', 'config.json'))
+                except:
+                    pass
+                try:
+                    os.remove(os.path.join(os.environ.get('APPDATA', os.path.expanduser('~\\AppData\\Roaming')), 'SchoolPoints', 'config.json'))
+                except:
+                    pass
+                
+                messagebox.showinfo('ניתוק בוצע', 'העמדה נותקה בהצלחה.\nהתוכנה תיסגר כעת.')
+                dlg.destroy()
+                self.root.quit()
+        
+        tk.Button(frame, text='🔓 נתק והכן לחיבור מוסד אחר', command=_disconnect_institution, 
+                font=('Arial', 11, 'bold'), bg='#e74c3c', fg='white', padx=20, pady=8).grid(row=11, column=0, columnspan=3, pady=(10, 20))
 
         frame.grid_columnconfigure(1, weight=1)
 

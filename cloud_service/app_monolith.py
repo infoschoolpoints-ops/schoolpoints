@@ -5744,6 +5744,119 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
                 pass
         return
 
+    # --- Generic handler for all other entity types ---
+    _GENERIC_TABLE_MAP = {
+        'student': ('students', 'id'),
+        'teacher': ('teachers', 'id'),
+        'product': ('products', 'id'),
+        'product_variant': ('product_variants', 'id'),
+        'product_category': ('product_categories', 'id'),
+        'static_message': ('static_messages', 'id'),
+        'threshold_message': ('threshold_messages', 'id'),
+        'news_item': ('news_items', 'id'),
+        'ads_item': ('ads_items', 'id'),
+        'student_message': ('student_messages', 'id'),
+        'time_bonus': ('time_bonus_schedules', 'id'),
+        'time_bonus_given': ('time_bonus_given', 'id'),
+        'teacher_bonus': ('teacher_bonus', 'teacher_id'),
+        'activity': ('activities', 'id'),
+        'activity_schedule': ('activity_schedules', 'id'),
+        'scheduled_service': ('scheduled_services', 'id'),
+        'scheduled_service_date': ('scheduled_service_dates', 'id'),
+        'public_closure': ('public_closures', 'id'),
+        'teacher_class': ('teacher_classes', 'id'),
+        'student_tier': ('student_tier_state', 'student_id'),
+        'card_block': ('card_blocks', 'id'),
+        'cashier_responsible': ('cashier_responsibles', 'student_id'),
+        'activity_claim': ('activity_claims', 'id'),
+        'service_reservation': ('scheduled_service_reservations', 'id'),
+        'purchase': ('purchases_log', 'id'),
+        'refund': ('refunds_log', 'id'),
+    }
+
+    if et in _GENERIC_TABLE_MAP:
+        table, pk_col = _GENERIC_TABLE_MAP[et]
+        try:
+            eid = int(ch.entity_id or 0)
+        except (ValueError, TypeError):
+            eid = ch.entity_id
+
+        if at == 'delete':
+            try:
+                cur = tconn.cursor()
+                cur.execute(_sql_placeholder(f"DELETE FROM {table} WHERE {pk_col} = ?"), (eid,))
+                tconn.commit()
+            except Exception:
+                pass
+            return
+
+        if at in ('create', 'update'):
+            if not payload:
+                return
+            _generic_upsert_monolith(tconn, table, pk_col, eid, payload)
+            return
+
+
+def _generic_upsert_monolith(conn, table: str, pk_col: str, pk_val, payload: Dict[str, Any]) -> None:
+    """Generic upsert for app_monolith tenant DB."""
+    if USE_POSTGRES:
+        cols = _table_columns_postgres(conn, table)
+    else:
+        cols = []
+        try:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            cols = [str(r[1]) for r in cur.fetchall()]
+        except Exception:
+            pass
+    if not cols:
+        return
+    allowed = set(cols)
+    row = {k: v for k, v in payload.items() if k in allowed}
+    row[pk_col] = pk_val
+
+    insert_cols = [k for k in row.keys() if k in allowed]
+    if not insert_cols:
+        return
+    if pk_col not in insert_cols:
+        insert_cols.append(pk_col)
+
+    col_names = ','.join(insert_cols)
+    update_cols = [c for c in insert_cols if c != pk_col]
+    values = [row.get(c) for c in insert_cols]
+
+    cur = conn.cursor()
+    if update_cols:
+        if USE_POSTGRES:
+            pg_placeholders = ','.join(['%s' for _ in insert_cols])
+            update_clause = ', '.join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+            sql = f'INSERT INTO {table} ({col_names}) VALUES ({pg_placeholders}) ON CONFLICT ({pk_col}) DO UPDATE SET {update_clause}'
+        else:
+            placeholders = ','.join(['?' for _ in insert_cols])
+            update_clause = ', '.join([f"{c} = excluded.{c}" for c in update_cols])
+            sql = _sql_placeholder(f'INSERT INTO {table} ({col_names}) VALUES ({placeholders}) ON CONFLICT({pk_col}) DO UPDATE SET {update_clause}')
+        try:
+            cur.execute(sql, values)
+            conn.commit()
+            return
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    # Fallback: delete + insert
+    try:
+        placeholders = ','.join(['%s' if USE_POSTGRES else '?' for _ in insert_cols])
+        cur.execute(_sql_placeholder(f"DELETE FROM {table} WHERE {pk_col} = ?"), (pk_val,))
+        cur.execute(_sql_placeholder(f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"), values)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
 
 def _replace_rows_postgres(conn, table: str, rows: List[Dict[str, Any]]) -> int:
     cur = conn.cursor()
@@ -5968,7 +6081,7 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
     if not api_key:
         raise HTTPException(status_code=401, detail="missing api_key")
 
-    if (not str(payload.tenant_id).isdigit()) or str(payload.tenant_id).startswith('0'):
+    if not str(payload.tenant_id).strip():
         raise HTTPException(status_code=400, detail="invalid tenant_id")
 
     conn = _db()
@@ -6763,7 +6876,7 @@ def sync_status(tenant_id: str, request: Request, api_key: str = Header(default=
     if not api_key:
         raise HTTPException(status_code=401, detail='missing api_key')
 
-    if (not str(tenant_id).isdigit()) or str(tenant_id).startswith('0'):
+    if not str(tenant_id).strip():
         raise HTTPException(status_code=400, detail='invalid tenant_id')
 
     conn = _db()

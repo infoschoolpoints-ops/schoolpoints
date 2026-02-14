@@ -160,6 +160,217 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
         except Exception:
             pass
         tconn.commit()
+        return
+
+    if et == 'setting' and at in ('create', 'update'):
+        key = str(
+            payload.get('key')
+            or payload.get('name')
+            or payload.get('setting')
+            or entity_id_str
+            or ''
+        ).strip()
+        if not key:
+            return
+        raw_val = payload.get('value')
+        if raw_val is None:
+            raw_val = payload.get('val')
+        value = '' if raw_val is None else str(raw_val)
+        cur = tconn.cursor()
+        try:
+            cur.execute(
+                sql_placeholder(
+                    'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
+                    'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP'
+                ),
+                (key, value)
+            )
+        except Exception:
+            try:
+                cur.execute(
+                    sql_placeholder('UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?'),
+                    (value, key)
+                )
+                if cur.rowcount == 0:
+                    cur.execute(
+                        sql_placeholder('INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)'),
+                        (key, value)
+                    )
+            except Exception:
+                return
+        tconn.commit()
+        return
+
+    if et == 'setting' and at == 'delete':
+        key = str(entity_id_str or '').strip()
+        if not key:
+            return
+        cur = tconn.cursor()
+        try:
+            cur.execute(sql_placeholder('DELETE FROM settings WHERE key = ?'), (key,))
+            tconn.commit()
+        except Exception:
+            return
+
+    if et == 'purchase' and at in ('insert', 'create'):
+        try:
+            pid = int(entity_id_str or 0)
+        except Exception:
+            pid = 0
+        student_id = int(payload.get('student_id') or 0)
+        product_id = int(payload.get('product_id') or 0)
+        variant_id = int(payload.get('variant_id') or 0)
+        qty = int(payload.get('qty') or 1)
+        total_points = int(payload.get('total_points') or 0)
+        deduct_points = int(payload.get('deduct_points') or 1)
+        station_type = str(payload.get('station_type') or '').strip()
+        cur = tconn.cursor()
+        try:
+            cols = ['student_id', 'product_id', 'variant_id', 'qty', 'points_each', 'total_points', 'deduct_points', 'station_type']
+            vals = [student_id, product_id, (variant_id if variant_id > 0 else None), qty, 0, total_points, deduct_points, station_type]
+            placeholders = ','.join(['?' for _ in cols])
+            if USE_POSTGRES:
+                placeholders = ','.join(['%s' for _ in cols])
+            if pid > 0:
+                cols.insert(0, 'id')
+                vals.insert(0, pid)
+                placeholders = ('?, ' + placeholders) if not USE_POSTGRES else ('%s, ' + placeholders)
+            sql = f"INSERT INTO purchases_log ({','.join(cols)}) VALUES ({placeholders})"
+            if USE_POSTGRES:
+                sql += ' ON CONFLICT (id) DO NOTHING'
+            else:
+                sql = sql.replace('INSERT INTO', 'INSERT OR IGNORE INTO', 1)
+            cur.execute(sql_placeholder(sql), vals)
+            tconn.commit()
+        except Exception:
+            return
+        return
+
+    if et == 'card_validation' and at in ('insert', 'create'):
+        student_id = int(payload.get('student_id') or 0)
+        card_number = str(payload.get('card_number') or '').strip()
+        if student_id <= 0 or not card_number:
+            return
+        cur = tconn.cursor()
+        try:
+            cur.execute(
+                sql_placeholder('INSERT INTO card_validations (student_id, card_number) VALUES (?, ?)'),
+                (student_id, card_number)
+            )
+            tconn.commit()
+        except Exception:
+            return
+        return
+
+    # --- Generic handler for all other entity types ---
+    _GENERIC_TABLE_MAP = {
+        'student': ('students', 'id'),
+        'teacher': ('teachers', 'id'),
+        'product': ('products', 'id'),
+        'product_variant': ('product_variants', 'id'),
+        'product_category': ('product_categories', 'id'),
+        'static_message': ('static_messages', 'id'),
+        'threshold_message': ('threshold_messages', 'id'),
+        'news_item': ('news_items', 'id'),
+        'ads_item': ('ads_items', 'id'),
+        'student_message': ('student_messages', 'id'),
+        'time_bonus': ('time_bonus_schedules', 'id'),
+        'time_bonus_given': ('time_bonus_given', 'id'),
+        'teacher_bonus': ('teacher_bonus', 'teacher_id'),
+        'activity': ('activities', 'id'),
+        'activity_schedule': ('activity_schedules', 'id'),
+        'scheduled_service': ('scheduled_services', 'id'),
+        'scheduled_service_date': ('scheduled_service_dates', 'id'),
+        'public_closure': ('public_closures', 'id'),
+        'teacher_class': ('teacher_classes', 'id'),
+        'student_tier': ('student_tier_state', 'student_id'),
+        'card_block': ('card_blocks', 'id'),
+        'cashier_responsible': ('cashier_responsibles', 'student_id'),
+        'activity_claim': ('activity_claims', 'id'),
+        'service_reservation': ('scheduled_service_reservations', 'id'),
+        'refund': ('refunds_log', 'id'),
+    }
+
+    if et in _GENERIC_TABLE_MAP:
+        table, pk_col = _GENERIC_TABLE_MAP[et]
+        try:
+            eid = int(entity_id_str or 0)
+        except (ValueError, TypeError):
+            eid = entity_id_str
+
+        if at == 'delete':
+            try:
+                cur = tconn.cursor()
+                cur.execute(sql_placeholder(f"DELETE FROM {table} WHERE {pk_col} = ?"), (eid,))
+                tconn.commit()
+            except Exception:
+                pass
+            return
+
+        if at in ('create', 'update'):
+            if not payload:
+                return
+            _generic_upsert(tconn, table, pk_col, eid, payload)
+            return
+
+
+def _generic_upsert(conn, table: str, pk_col: str, pk_val, payload: Dict[str, Any]) -> None:
+    """Generic upsert: insert or update a single row in a tenant DB table."""
+    cols = table_columns(conn, table)
+    if not cols:
+        return
+    allowed = set(cols)
+    row = {k: v for k, v in payload.items() if k in allowed}
+    row[pk_col] = pk_val
+
+    insert_cols = [k for k in row.keys() if k in allowed]
+    if not insert_cols:
+        return
+    if pk_col not in insert_cols:
+        insert_cols.append(pk_col)
+
+    placeholders = ','.join(['?' for _ in insert_cols])
+    col_names = ','.join(insert_cols)
+    update_cols = [c for c in insert_cols if c != pk_col]
+    values = [row.get(c) for c in insert_cols]
+
+    cur = conn.cursor()
+    if update_cols:
+        if USE_POSTGRES:
+            pg_placeholders = ','.join(['%s' for _ in insert_cols])
+            update_clause = ', '.join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+            sql = f'INSERT INTO {table} ({col_names}) VALUES ({pg_placeholders}) ON CONFLICT ({pk_col}) DO UPDATE SET {update_clause}'
+            try:
+                cur.execute(sql, values)
+                conn.commit()
+                return
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+        else:
+            update_clause = ', '.join([f"{c} = excluded.{c}" for c in update_cols])
+            sql = f'INSERT INTO {table} ({col_names}) VALUES ({placeholders}) ON CONFLICT({pk_col}) DO UPDATE SET {update_clause}'
+            try:
+                cur.execute(sql_placeholder(sql), values)
+                conn.commit()
+                return
+            except Exception:
+                pass
+
+    # Fallback: delete + insert
+    try:
+        cur.execute(sql_placeholder(f"DELETE FROM {table} WHERE {pk_col} = ?"), (pk_val,))
+        sql = f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})"
+        cur.execute(sql_placeholder(sql), values)
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
 
 def save_snapshot2_blob(tenant_id: str, blob: bytes) -> None:
     conn = get_db_connection()

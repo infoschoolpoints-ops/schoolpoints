@@ -20,12 +20,14 @@ import urllib.request
 import urllib.parse
 import base64
 import re
+import sqlite3
 from license_manager import LicenseManager
 from typing import Optional
 from datetime import datetime
 import csv
 from datetime import date, timedelta
 from jewish_calendar import hebrew_date_from_gregorian_str
+import traceback
 
 try:
     from ui_icons import normalize_ui_icons
@@ -57,7 +59,7 @@ PDF = '\u202c'  # Pop Directional Formatting
 
 UNIVERSAL_MASTER_CODE = "05276247440527624744"
 
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.6.1"
 
 def fix_rtl_text(text):
     """תיקון כיוון טקסט עברי עם סימני קריאה בצד הנכון"""
@@ -88,6 +90,25 @@ def safe_print(text):
             print(text_no_emoji)
         except:
             pass  # אם עדיין יש בעיה, התעלם
+
+
+def _install_crash_logger():
+    def _excepthook(exc_type, exc, tb):
+        try:
+            with open('crash_log.txt', 'a', encoding='utf-8') as f:
+                f.write('\n=== Unhandled Exception ===\n')
+                f.write(''.join(traceback.format_exception(exc_type, exc, tb)))
+        except Exception:
+            pass
+        try:
+            sys.__excepthook__(exc_type, exc, tb)
+        except Exception:
+            pass
+
+    try:
+        sys.excepthook = _excepthook
+    except Exception:
+        pass
 
 def _is_running_as_admin():
     try:
@@ -255,18 +276,83 @@ class AdminStation:
                 pass
             return
 
-        # הפעלת סנכרון רקע אוטומטי (Hybrid/Cloud בלבד)
+        # הפעלת סנכרון רקע אוטומטי (מיידית עבור עמדה משנית, אחרת נדחה לאחר התחברות)
         self._sync_agent_thread = None
         self._sync_agent_started = False
+        
+        # בדיקה אם זו עמדה משנית (local-sync client) - אם כן, מפעילים סינכרון מיד
+        self._should_start_local_sync_server = False
         try:
-            self._maybe_start_sync_agent()
-        except Exception:
+            cfg = self.app_config or {}
+            import sync_agent
+            if sync_agent._local_sync_enabled_from_cfg(cfg):
+                shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+                host = sync_agent._unc_host(str(shared_folder or '').strip())
+                if host and not sync_agent._is_local_host(host):
+                    # עמדה משנית - מפעילים סינכרון מיד
+                    print(f"[ADMIN] Starting sync agent for secondary station (host={host})")
+                    self._maybe_start_sync_agent()
+                elif host and sync_agent._is_local_host(host):
+                    # עמדה ראשית - נזכור להפעיל local sync server אחרי שה-DB יהיה מוכן
+                    print(f"[ADMIN] Will start local sync server for primary station (host={host})")
+                    self._should_start_local_sync_server = True
+        except Exception as e:
+            print(f"[ADMIN] Error starting background services: {e}")
             pass
         
         # רישוי מערכת – רק לאחר שהוגדרה תיקיית הרשת/הגדרות האפליקציה
         self.license_manager = license_manager or LicenseManager(self.base_dir, "admin")
         
-        self.db = Database()
+        self.db = None
+        last_db_err = None
+        for attempt in range(3):
+            try:
+                self.db = Database()
+                last_db_err = None
+                break
+            except sqlite3.OperationalError as e:
+                last_db_err = e
+                msg = str(e).lower()
+                if ('locked' in msg or 'busy' in msg) and attempt < 2:
+                    try:
+                        time.sleep(0.6 + 0.6 * attempt)
+                    except Exception:
+                        pass
+                    continue
+                break
+            except Exception as e:
+                last_db_err = e
+                break
+        if self.db is None:
+            err_msg = str(last_db_err or 'שגיאה בפתיחת מסד הנתונים')
+            low = err_msg.lower()
+            if 'readonly' in low or 'read-only' in low:
+                user_msg = (
+                    'מסד הנתונים פתוח לקריאה בלבד.\n'
+                    'בדוק הרשאות לשיתוף \\ או שמסומן כ-Read Only.\n'
+                    'יש לוודא שאין תוכנה אחרת שפותחת את הקובץ ללא הרשאות כתיבה.'
+                )
+            elif 'locked' in low or 'busy' in low:
+                user_msg = (
+                    'מסד הנתונים נעול על ידי תחנה אחרת.\n'
+                    'סגור עמדות פעילות / תוכנות שמשתמשות בקובץ ונסה שוב.'
+                )
+            else:
+                user_msg = f'שגיאה בפתיחת מסד הנתונים:\n{err_msg}'
+            try:
+                messagebox.showerror('שגיאת מסד נתונים', user_msg, parent=self.root)
+            except Exception:
+                pass
+            try:
+                self.root.after(100, self.root.destroy)
+            except Exception:
+                pass
+            return
+
+        # הפעלת local sync server בעמדה ראשית (אחרי שה-DB מוכן)
+        if getattr(self, '_should_start_local_sync_server', False):
+            print("[ADMIN] Starting local sync server now that DB is ready")
+            self._maybe_start_local_sync_server()
 
         # השמעת צלילים בעמדת ניהול (בדיקות/תצוגה מקדימה) - אתחול עצל
         self._admin_sound_manager = None
@@ -307,9 +393,123 @@ class AdminStation:
         # הצגת מסך התחברות
         self.show_login_screen()
 
+    def _is_local_sync_server_running(self, port: int) -> bool:
+        try:
+            url = f"http://127.0.0.1:{int(port)}/sync/status"
+            req = urllib.request.Request(url, headers={'Accept': 'application/json'})
+            with urllib.request.urlopen(req, timeout=0.5) as resp:
+                data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
+                return bool(data.get('ok'))
+        except Exception:
+            return False
+
+    def _maybe_start_local_sync_server(self) -> None:
+        print("[ADMIN] _maybe_start_local_sync_server called")
+        try:
+            if bool(getattr(self, '_local_sync_server_started', False)):
+                print("[ADMIN] Local sync server already started")
+                return
+        except Exception:
+            pass
+
+        try:
+            cfg = self.load_app_config() or {}
+        except Exception:
+            cfg = {}
+
+        try:
+            import sync_agent
+            local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(cfg)
+        except Exception:
+            try:
+                local_sync_enabled = str(cfg.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
+            except Exception:
+                local_sync_enabled = False
+        print(f"[ADMIN] local_sync_enabled={local_sync_enabled}")
+        
+        if not local_sync_enabled:
+            print("[ADMIN] Local sync not enabled, returning")
+            return
+
+        try:
+            role = str(cfg.get('local_sync_role') or '').strip().lower()
+        except Exception:
+            role = ''
+        print(f"[ADMIN] local_sync_role={role}")
+
+        if role and role != 'master':
+            print(f"[ADMIN] Not master role ({role}), returning")
+            return
+
+        try:
+            shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+        except Exception:
+            shared_folder = None
+        host = None
+        try:
+            import sync_agent
+            host = sync_agent._unc_host(str(shared_folder or '').strip())
+            print(f"[ADMIN] shared_folder={shared_folder}, host={host}")
+            if host and not sync_agent._is_local_host(host):
+                print("[ADMIN] Host is not local, returning")
+                return
+        except Exception:
+            host = None
+
+        try:
+            port = int(cfg.get('local_sync_port') or 8765)
+        except Exception:
+            port = 8765
+        print(f"[ADMIN] port={port}")
+
+        if self._is_local_sync_server_running(port):
+            print("[ADMIN] Local sync server already running")
+            try:
+                self._local_sync_server_started = True
+            except Exception:
+                pass
+            return
+
+        try:
+            api_key = str(cfg.get('local_sync_key') or 'local').strip()
+        except Exception:
+            api_key = 'local'
+        try:
+            tenant_id = str(cfg.get('local_sync_tenant_id') or 'local').strip()
+        except Exception:
+            tenant_id = 'local'
+        print(f"[ADMIN] api_key={api_key}, tenant_id={tenant_id}")
+
+        try:
+            import local_sync_server
+            print("[ADMIN] Starting local sync server thread...")
+            # ודא שמעבירים את נתיב ה-DB הנכון
+            db_path_to_use = None
+            if hasattr(self, 'db') and self.db:
+                db_path_to_use = self.db.db_path
+            print(f"[ADMIN] Using DB path for local sync server: {db_path_to_use}")
+            t = local_sync_server.start_in_thread(
+                host='0.0.0.0',
+                port=port,
+                db_path=db_path_to_use,
+                api_key=api_key,
+                tenant_id=tenant_id
+            )
+            try:
+                self._local_sync_server_thread = t
+                self._local_sync_server_started = True
+                print("[ADMIN] Local sync server started successfully")
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[ADMIN] Failed to start local sync server: {e}")
+            pass
+
     def _maybe_start_sync_agent(self) -> None:
+        print("[ADMIN] _maybe_start_sync_agent called")
         try:
             if bool(getattr(self, '_sync_agent_started', False)):
+                print("[ADMIN] Sync agent already started")
                 return
         except Exception:
             pass
@@ -323,8 +523,57 @@ class AdminStation:
             mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
         except Exception:
             mode = 'local'
+        print(f"[ADMIN] deployment_mode={mode}")
+        
+        sync_agent_mod = None
+        try:
+            import sync_agent
+            sync_agent_mod = sync_agent
+            local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(cfg)
+        except Exception:
+            try:
+                local_sync_enabled = str(cfg.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
+            except Exception:
+                local_sync_enabled = False
+        print(f"[ADMIN] local_sync_enabled={local_sync_enabled}")
 
-        if mode not in ('hybrid', 'cloud'):
+        local_sync_url = ''
+        if local_sync_enabled and sync_agent_mod is not None:
+            try:
+                local_sync_url = sync_agent_mod._local_sync_url_from_cfg(cfg)
+            except Exception:
+                local_sync_url = ''
+
+        local_sync_role = ''
+        try:
+            local_sync_role = str(cfg.get('local_sync_role') or '').strip().lower()
+        except Exception:
+            local_sync_role = ''
+        if not local_sync_role and local_sync_enabled and sync_agent_mod is not None:
+            try:
+                shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+            except Exception:
+                shared_folder = None
+            try:
+                host = sync_agent_mod._unc_host(str(shared_folder or '').strip())
+                if host and sync_agent_mod._is_local_host(host):
+                    local_sync_role = 'master'
+                elif host:
+                    local_sync_role = 'client'
+            except Exception:
+                pass
+        print(f"[ADMIN] local_sync_role={local_sync_role}, local_sync_url={local_sync_url}")
+
+        if local_sync_enabled and not local_sync_url and mode not in ('hybrid', 'cloud'):
+            print("[ADMIN] Returning: local_sync_enabled but no local_sync_url and mode is local")
+            return
+
+        if mode == 'local' and local_sync_enabled and local_sync_role != 'client':
+            print(f"[ADMIN] Returning: mode=local, local_sync_enabled=True, but role={local_sync_role} != client")
+            return
+
+        if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
+            print("[ADMIN] Returning: mode not hybrid/cloud and local_sync not enabled")
             return
 
         try:
@@ -340,23 +589,26 @@ class AdminStation:
         except Exception:
             push_url = ''
 
-        if not (tenant_id and api_key and push_url):
-            return
+        if not local_sync_enabled:
+            if not (tenant_id and api_key and push_url):
+                return
 
         try:
-            interval_sec = int(cfg.get('sync_interval_sec') or 60)
+            interval_sec = int(cfg.get('sync_interval_sec') or 15)
         except Exception:
-            interval_sec = 60
-        interval_sec = max(10, int(interval_sec or 60))
+            interval_sec = 15
+        interval_sec = max(10, int(interval_sec or 15))
 
         def _run_sync_loop():
             try:
+                print(f"[ADMIN] Starting sync loop with interval={interval_sec}sec")
                 import sync_agent
                 sync_agent.main_loop(interval_sec=interval_sec)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[ADMIN] Sync loop error: {e}")
 
         try:
+            print("[ADMIN] Starting sync agent thread...")
             self._sync_agent_started = True
         except Exception:
             pass
@@ -364,7 +616,9 @@ class AdminStation:
             t = threading.Thread(target=_run_sync_loop, daemon=True)
             self._sync_agent_thread = t
             t.start()
-        except Exception:
+            print("[ADMIN] Sync agent thread started")
+        except Exception as e:
+            print(f"[ADMIN] Failed to start sync thread: {e}")
             try:
                 self._sync_agent_started = False
             except Exception:
@@ -5267,10 +5521,78 @@ class AdminStation:
             except Exception as e:
                 safe_print(f"⚠️ שגיאה בסינכרון: {e}")
         
+        # הערה: סנכרון מהשרת המקומי לא נדרש יותר
+        # כל העמדות קוראות ישירות מה־DB המשותף
+        
         try:
             self.auto_sync_job = self.root.after(self.sync_interval, self.start_auto_sync)
         except Exception:
             self.auto_sync_job = None
+    
+    def _sync_from_local_server(self):
+        """סנכרון מהשרת המקומי (לעמדה משנית)"""
+        try:
+            cfg = self.load_app_config() or {}
+            shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+            if not shared_folder:
+                return
+            
+            # בדיקת האם אנחנו במצב ניסיון (ללא התקנה)
+            test_mode = cfg.get('test_sync_mode', False)
+            if test_mode:
+                safe_print("🧪 מצב ניסיון: מדמה קבלת נתונים מהשרת...")
+                # הדמיה פשוטה - נראה אם הפונקציה רצה
+                self.show_status_message("🧪 בדיקת סנכרון - מצב ניסיון", '#3498db')
+                return
+            
+            import sync_agent
+            host = sync_agent._unc_host(str(shared_folder))
+            if not host:
+                safe_print("❌ לא נמצא כתובת שרת")
+                return
+            
+            # בדיקת סטטוס השרת
+            status_url = f"http://{host}:8765/sync/status"
+            try:
+                import urllib.request
+                import json
+                req = urllib.request.Request(status_url)
+                req.add_header('User-Agent', 'SchoolPoints-LocalSync/1.0')
+                with urllib.request.urlopen(req, timeout=5) as response:
+                    if response.status != 200:
+                        safe_print(f"❌ שרת לא זמין (סטטוס: {response.status})")
+                        return
+                    safe_print(f"✅ שרת זמין בכתובת {host}")
+            except Exception as e:
+                safe_print(f"❌ שגיאת התחברות לשרת: {e}")
+                return
+            
+            # משיכת שינויים אחרונים
+            pull_url = f"http://{host}:8765/sync/pull"
+            api_key = str(cfg.get('local_sync_key') or 'local').strip()
+            tenant_id = str(cfg.get('local_sync_tenant_id') or 'local').strip()
+            station_id = str(cfg.get('sync_station_id') or '').strip()
+            
+            safe_print(f"🔄 מושך שינויים מהשרת {host}...")
+            resp = sync_agent.pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+            if resp and isinstance(resp, dict) and resp.get('changes'):
+                conn = self.db.get_connection()
+                try:
+                    applied = sync_agent.apply_changes(conn, resp.get('changes', []))
+                    if applied > 0:
+                        safe_print(f"✅ סונכרנו {applied} שינויים מהשרת")
+                        self.load_students(keep_selection=True)
+                        self.show_status_message(f"✡ התקבלו {applied} עדכונים מהשרת", '#27ae60')
+                    else:
+                        safe_print("ℹ️ אין שינויים חדשים")
+                finally:
+                    conn.close()
+            else:
+                safe_print("ℹ️ אין שינויים לסנכרון")
+        except Exception as e:
+            safe_print(f"⚠️ שגיאה בסנכרון מקומי: {e}")
+            import traceback
+            safe_print(traceback.format_exc())
     
     def auto_refresh_table(self):
         """רענון אוטומטי של הטבלה כל 10 שניות (לקליטת עדכונים מהעמדה הציבורית)"""
@@ -6542,60 +6864,31 @@ class AdminStation:
             except Exception:
                 pass
 
-        # ביצוע עדכון נקודות לכל תלמיד
-        updated = 0
-        changes = []
+        # ביצוע עדכון נקודות לכל תלמיד – בטרנזקציה אחת (מהיר!)
         actor_name = self._get_points_actor_name()
-        for sid in students:
-            try:
-                old_points = None
-                try:
-                    st = self.db.get_student_by_id(int(sid))
-                    if st is not None and st.get('points') is not None:
-                        old_points = int(st.get('points') or 0)
-                except Exception:
-                    old_points = None
+        try:
+            if operation == 'add':
+                reason = f"עדכון מהיר +{points}"
+            elif operation == 'subtract':
+                reason = f"עדכון מהיר -{abs(points)}"
+            else:
+                reason = f"עדכון מהיר = {max(0, int(points))}"
+        except Exception:
+            reason = "עדכון מהיר"
 
-                ok = False
-                if operation == 'add':
-                    ok = self.db.add_points(int(sid), points, f"עדכון מהיר +{points}", actor_name)
-                    try:
-                        if old_points is not None:
-                            changes.append({'student_id': int(sid), 'old_points': int(old_points), 'new_points': int(old_points) + int(points)})
-                    except Exception:
-                        pass
-                elif operation == 'subtract':
-                    ok = self.db.subtract_points(int(sid), abs(points), f"עדכון מהיר -{abs(points)}", actor_name)
-                    try:
-                        if old_points is not None:
-                            changes.append({'student_id': int(sid), 'old_points': int(old_points), 'new_points': int(old_points) - int(abs(points))})
-                    except Exception:
-                        pass
-                elif operation == 'set':
-                    ok = self.db.update_student_points(int(sid), max(0, int(points)), f"עדכון מהיר = {max(0, int(points))}", actor_name)
-                    try:
-                        if old_points is not None:
-                            changes.append({'student_id': int(sid), 'old_points': int(old_points), 'new_points': int(max(0, int(points)))})
-                    except Exception:
-                        pass
-                if ok:
-                    updated += 1
-            except Exception:
-                pass
+        result = self.db.bulk_update_points(
+            students,
+            operation=operation,
+            value=int(points),
+            reason=reason,
+            added_by=actor_name
+        )
+        updated = int(result.get('updated') or 0)
+        changes = result.get('changes') or []
 
         try:
             if changes:
-                op_label = "עדכון מהיר"
-                try:
-                    if operation == 'add':
-                        op_label = f"עדכון מהיר (+{points})"
-                    elif operation == 'subtract':
-                        op_label = f"עדכון מהיר (-{abs(points)})"
-                    elif operation == 'set':
-                        op_label = f"עדכון מהיר (= {max(0, int(points))})"
-                except Exception:
-                    pass
-                self._push_points_action(op_label, changes)
+                self._push_points_action(reason, changes)
         except Exception:
             pass
         return updated
@@ -7925,45 +8218,40 @@ class AdminStation:
     def _get_config_file_path(self) -> str:
         """החזרת נתיב קובץ ההגדרות ה"חי" מחוץ ל-Program Files במידת האפשר.
 
-        העדיפות: PROGRAMDATA / LOCALAPPDATA / APPDATA, ורק כמוצא אחרון – תיקיית האפליקציה.
+        העדיפות: LOCALAPPDATA / APPDATA / PROGRAMDATA – בודק כתיבה אמיתית.
         """
-        for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
-            root = os.environ.get(env_name)
-            if not root:
-                continue
-            try:
-                if os.path.isdir(root) and os.access(root, os.W_OK):
-                    cfg_dir = os.path.join(root, "SchoolPoints")
-                    try:
-                        os.makedirs(cfg_dir, exist_ok=True)
-                    except Exception:
-                        pass
-                    return os.path.join(cfg_dir, "config.json")
-            except Exception:
-                continue
+        return AdminStation._get_config_file_path_impl(
+            fallback_base=getattr(self, 'base_dir', os.path.dirname(os.path.abspath(__file__)))
+        )
 
-        # מוצא אחרון – עשוי להיות לקריאה בלבד בהתקנה, אבל בסביבת פיתוח זה תקין
-        return os.path.join(self.base_dir, 'config.json')
+    @staticmethod
+    def _can_write_dir(cfg_dir: str) -> bool:
+        """בדיקת כתיבה אמיתית – לא סומכים על os.access ב-Windows."""
+        try:
+            os.makedirs(cfg_dir, exist_ok=True)
+            test_file = os.path.join(cfg_dir, '.write_test')
+            with open(test_file, 'w') as f:
+                f.write('ok')
+            os.remove(test_file)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _get_config_file_path_impl(fallback_base: str = None) -> str:
+        for env_name in ("LOCALAPPDATA", "APPDATA", "PROGRAMDATA"):
+            root = os.environ.get(env_name)
+            if not root or not os.path.isdir(root):
+                continue
+            cfg_dir = os.path.join(root, "SchoolPoints")
+            if AdminStation._can_write_dir(cfg_dir):
+                return os.path.join(cfg_dir, "config.json")
+        base = fallback_base or os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(base, 'config.json')
 
     @staticmethod
     def _get_config_file_path_static() -> str:
-        for env_name in ("PROGRAMDATA", "LOCALAPPDATA", "APPDATA"):
-            root = os.environ.get(env_name)
-            if not root:
-                continue
-            try:
-                if os.path.isdir(root) and os.access(root, os.W_OK):
-                    cfg_dir = os.path.join(root, "SchoolPoints")
-                    try:
-                        os.makedirs(cfg_dir, exist_ok=True)
-                    except Exception:
-                        pass
-                    return os.path.join(cfg_dir, "config.json")
-            except Exception:
-                continue
-
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        return os.path.join(base_dir, 'config.json')
+        return AdminStation._get_config_file_path_impl()
 
     @staticmethod
     def load_app_config_static():
@@ -8033,6 +8321,13 @@ class AdminStation:
                 pass
 
             local_cfg = dict(config) if isinstance(config, dict) else {}
+            if 'restart_public_stations_token' not in local_cfg:
+                try:
+                    existing_cfg = AdminStation.load_app_config_static()
+                    if isinstance(existing_cfg, dict) and 'restart_public_stations_token' in existing_cfg:
+                        local_cfg['restart_public_stations_token'] = existing_cfg.get('restart_public_stations_token')
+                except Exception:
+                    pass
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(local_cfg, f, ensure_ascii=False, indent=4)
 
@@ -8048,7 +8343,12 @@ class AdminStation:
                     pass
                 try:
                     with open(shared_config_path, 'w', encoding='utf-8') as f:
-                        json.dump(local_cfg, f, ensure_ascii=False, indent=4)
+                        shared_cfg = dict(local_cfg) if isinstance(local_cfg, dict) else {}
+                        try:
+                            shared_cfg.pop('db_path', None)
+                        except Exception:
+                            pass
+                        json.dump(shared_cfg, f, ensure_ascii=False, indent=4)
                 except Exception:
                     pass
 
@@ -8131,6 +8431,13 @@ class AdminStation:
                 pass
 
             local_cfg = dict(config) if isinstance(config, dict) else {}
+            if 'restart_public_stations_token' not in local_cfg:
+                try:
+                    existing_cfg = self.load_app_config()
+                    if isinstance(existing_cfg, dict) and 'restart_public_stations_token' in existing_cfg:
+                        local_cfg['restart_public_stations_token'] = existing_cfg.get('restart_public_stations_token')
+                except Exception:
+                    pass
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(local_cfg, f, ensure_ascii=False, indent=4)
 
@@ -8255,6 +8562,20 @@ class AdminStation:
         temp_db = Database()
         teachers = temp_db.get_all_teachers()
         if not teachers:
+            # אם זו עמדה משנית (DB אמור להיות מלא) – בעיית סנכרון, לא מנהל ראשוני
+            _is_secondary = bool(getattr(temp_db, '_remote_write_url', None))
+            if _is_secondary:
+                try:
+                    messagebox.showwarning(
+                        "עמדה משנית – נתונים לא נטענו",
+                        "העמדה מזוהה כעמדה משנית, אך מסד הנתונים ריק.\n\n"
+                        "ייתכן שההעתקה מהרשת נכשלה.\n"
+                        "ודא שהעמדה הראשית פועלת ושהתיקייה המשותפת נגישה,\n"
+                        "ואז הפעל מחדש את העמדה."
+                    )
+                except Exception:
+                    pass
+                return False
             if not self._open_initial_admin_dialog(temp_db):
                 return False
         return True
@@ -9882,6 +10203,69 @@ class AdminStation:
         mode_var = tk.StringVar(value=str(config.get('deployment_mode') or 'local'))
         tenant_id_var = tk.StringVar(value=str(config.get('sync_tenant_id') or ''))
         tenant_name_var = tk.StringVar(value=str(config.get('sync_tenant_name') or ''))
+        station_role_raw = str(config.get('local_sync_role') or '').strip().lower()
+        if station_role_raw not in ('master', 'client'):
+            station_role_raw = 'auto'
+        station_role_var = tk.StringVar(value=station_role_raw)
+        system_mode_raw = str(config.get('system_mode') or 'normal').strip().lower()
+        if system_mode_raw not in ('normal', 'emergency', 'emergency_mode'):
+            system_mode_raw = 'normal'
+        if system_mode_raw == 'emergency_mode':
+            system_mode_raw = 'emergency'
+        system_mode_var = tk.StringVar(value=system_mode_raw)
+
+        station_role_status_text = 'לא ידוע'
+        station_role_status_color = '#7f8c8d'
+        local_sync_enabled = False
+        try:
+            import sync_agent
+            local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(config)
+        except Exception:
+            try:
+                local_sync_enabled = str(config.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
+            except Exception:
+                local_sync_enabled = False
+        if not local_sync_enabled:
+            station_role_status_text = 'Local Sync לא פעיל'
+        else:
+            role_hint = station_role_raw
+            if role_hint == 'master':
+                station_role_status_text = 'עמדה ראשית (ידני)'
+                station_role_status_color = '#27ae60'
+            elif role_hint == 'client':
+                station_role_status_text = 'עמדה משנית (ידני)'
+                station_role_status_color = '#2980b9'
+            else:
+                try:
+                    shared_folder = config.get('shared_folder') or config.get('network_root')
+                except Exception:
+                    shared_folder = None
+                host = ''
+                try:
+                    import sync_agent
+                    host = sync_agent._unc_host(str(shared_folder or '').strip())
+                    if host and sync_agent._is_local_host(host):
+                        station_role_status_text = 'עמדה ראשית (אוטומטי)'
+                        station_role_status_color = '#27ae60'
+                    elif host:
+                        station_role_status_text = 'עמדה משנית (אוטומטי)'
+                        station_role_status_color = '#2980b9'
+                    else:
+                        station_role_status_text = 'לא ידוע (אוטומטי)'
+                except Exception:
+                    station_role_status_text = 'לא ידוע (אוטומטי)'
+
+        system_mode_status_text = 'רגיל'
+        system_mode_status_color = '#27ae60'
+        try:
+            if bool(getattr(self, 'db', None)) and bool(getattr(self.db, 'emergency_mode', False)):
+                system_mode_status_text = 'חירום'
+                system_mode_status_color = '#c0392b'
+                reason = str(getattr(self.db, 'emergency_reason', '') or '').strip().lower()
+                if reason == 'readonly':
+                    system_mode_status_text = 'חירום (DB לקריאה בלבד)'
+        except Exception:
+            pass
 
         show_default_printer = False
 
@@ -9898,8 +10282,8 @@ class AdminStation:
             dialog2.grab_set()
             nonlocal license_status_label
             try:
-                dialog2.geometry('780x460')
-                dialog2.minsize(740, 420)
+                dialog2.geometry('900x600')
+                dialog2.minsize(860, 540)
             except Exception:
                 pass
 
@@ -9957,6 +10341,38 @@ class AdminStation:
             tk.Radiobutton(mode_frame_i, text=fix_rtl_text('רשת ביתית'), variable=mode_var, value='local', bg='#ecf0f1').pack(side=tk.RIGHT, padx=6)
             tk.Radiobutton(mode_frame_i, text=fix_rtl_text('היברידי'), variable=mode_var, value='hybrid', bg='#ecf0f1').pack(side=tk.RIGHT, padx=6)
             tk.Radiobutton(mode_frame_i, text=fix_rtl_text('מקוון בלבד'), variable=mode_var, value='cloud', bg='#ecf0f1').pack(side=tk.RIGHT, padx=6)
+
+            # שורה - תפקיד עמדה (סטטוס בלבד)
+            row1b2i = tk.Frame(frame2, bg='#ecf0f1')
+            row1b2i.pack(fill=tk.X, pady=3)
+            row1b2i.columnconfigure(1, weight=1)
+            tk.Label(row1b2i, text=fix_rtl_text("תפקיד עמדה:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
+            tk.Label(
+                row1b2i,
+                text=fix_rtl_text(station_role_status_text),
+                font=('Arial', 9),
+                bg='#ecf0f1',
+                fg=station_role_status_color,
+                anchor='e'
+            ).grid(row=0, column=1, sticky='e', padx=5)
+            tk.Label(row1b2i, text="", bg='#ecf0f1').grid(row=0, column=0, padx=5)
+
+            # שורה - מצב מערכת
+            row1b3i = tk.Frame(frame2, bg='#ecf0f1')
+            row1b3i.pack(fill=tk.X, pady=3)
+            row1b3i.columnconfigure(1, weight=1)
+            tk.Label(row1b3i, text=fix_rtl_text("מצב מערכת:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e', width=LABEL_WIDTH).grid(row=0, column=2, sticky='e', padx=5)
+            sys_frame_i = tk.Frame(row1b3i, bg='#ecf0f1')
+            sys_frame_i.grid(row=0, column=1, sticky='e', padx=5)
+            tk.Label(row1b3i, text="", bg='#ecf0f1').grid(row=0, column=0, padx=5)
+            tk.Label(
+                sys_frame_i,
+                text=fix_rtl_text(f"סטטוס: {system_mode_status_text}"),
+                font=('Arial', 9),
+                bg='#ecf0f1',
+                fg=system_mode_status_color,
+                anchor='e'
+            ).pack(side=tk.RIGHT, padx=6)
 
             # שורה - שם מוסד (אנגלית)
             row1ci = tk.Frame(frame2, bg='#ecf0f1')
@@ -10295,6 +10711,232 @@ class AdminStation:
                     return False, msg or 'שגיאת התחברות', {}
                 except Exception as e:
                     return False, str(e), {}
+
+            def _auto_cloud_init_push(tenant_id: str, api_key: str, push_url: str) -> None:
+                def _set_status(text: str) -> None:
+                    try:
+                        cloud_state_lbl.configure(text=fix_rtl_text(text))
+                    except Exception:
+                        pass
+
+                def _run() -> None:
+                    _set_status('חובר לענן. בודק מצב נתונים...')
+                    tid = str(tenant_id or '').strip()
+                    key = str(api_key or '').strip()
+                    purl = str(push_url or '').strip()
+                    if not (tid and key and purl):
+                        _set_status('חסרים פרטי חיבור לסנכרון.')
+                        return
+
+                    ok, msg, cloud_info = _verify_cloud_connection(tid, key, purl)
+                    if not ok:
+                        _set_status(f"שגיאת חיבור: {msg}")
+                        return
+
+                    local_teachers = 0
+                    local_students = 0
+                    conn = None
+                    try:
+                        conn = self.db.get_connection()
+                        cur = conn.cursor()
+                        try:
+                            cur.execute('SELECT COUNT(*) FROM teachers')
+                            row = cur.fetchone()
+                            local_teachers = int((row[0] if row else 0) or 0)
+                        except Exception:
+                            local_teachers = 0
+                        try:
+                            cur.execute('SELECT COUNT(*) FROM students')
+                            row = cur.fetchone()
+                            local_students = int((row[0] if row else 0) or 0)
+                        except Exception:
+                            local_students = 0
+                    except Exception:
+                        local_teachers = 0
+                        local_students = 0
+                    finally:
+                        try:
+                            if conn is not None:
+                                conn.close()
+                        except Exception:
+                            pass
+
+                    cloud_teachers = 0
+                    cloud_students = 0
+                    try:
+                        cloud_teachers = int(cloud_info.get('teachers_count') or 0)
+                    except Exception:
+                        cloud_teachers = 0
+                    try:
+                        cloud_students = int(cloud_info.get('students_count') or 0)
+                    except Exception:
+                        cloud_students = 0
+
+                    forced_action = ''
+                    if (local_teachers > 0 or local_students > 0) and (cloud_teachers > 0 or cloud_students > 0):
+                        try:
+                            msg = (
+                                "נמצאו נתונים גם במחשב וגם בענן.\n\n"
+                                f"מחשב: {local_teachers} מורים, {local_students} תלמידים\n"
+                                f"ענן: {cloud_teachers} מורים, {cloud_students} תלמידים\n\n"
+                                "כן = לדרוס את הענן (להעלות נתונים מהמחשב)\n"
+                                "לא = לדרוס את המחשב (להוריד נתונים מהענן)\n"
+                                "ביטול = עצירה ללא שינוי"
+                            )
+                            choice = messagebox.askyesnocancel('התנגשות נתונים', fix_rtl_text(msg), parent=dialog2)
+                        except Exception:
+                            choice = None
+                        if choice is None:
+                            _set_status('בוטל ע"י המשתמש.')
+                            return
+                        forced_action = 'push' if choice else 'pull'
+
+                    if forced_action == 'push':
+                        should_push_snapshot = True
+                        should_pull_snapshot = False
+                    elif forced_action == 'pull':
+                        should_push_snapshot = False
+                        should_pull_snapshot = True
+                    else:
+                        should_push_snapshot = (cloud_teachers == 0 and cloud_students == 0 and (local_teachers > 0 or local_students > 0))
+                        should_pull_snapshot = (local_teachers == 0 and local_students == 0 and (cloud_teachers > 0 or cloud_students > 0))
+
+                    try:
+                        import sync_agent
+                    except Exception:
+                        sync_agent = None
+
+                    if sync_agent is None:
+                        _set_status('חסר מודול סנכרון (sync_agent).')
+                        return
+
+                    if should_push_snapshot:
+                        _set_status('שולח נתונים מלאים לענן...')
+                        snapshot_url = purl
+                        if snapshot_url.endswith('/sync/push'):
+                            snapshot_url = snapshot_url[:-len('/sync/push')] + '/sync/snapshot'
+                        else:
+                            snapshot_url = snapshot_url.rstrip('/') + '/sync/snapshot'
+                        try:
+                            conn = sync_agent._connect(self.db.db_path)
+                            try:
+                                snap = sync_agent.build_snapshot(conn)
+                            finally:
+                                conn.close()
+                        except Exception:
+                            snap = {}
+                        ok = False
+                        try:
+                            ok = bool(sync_agent.push_snapshot2(snapshot_url, snap, api_key=key, tenant_id=tid, station_id=socket.gethostname()))
+                        except Exception:
+                            ok = False
+                        if not ok:
+                            try:
+                                ok = bool(sync_agent.push_snapshot(snapshot_url, snap, api_key=key, tenant_id=tid, station_id=socket.gethostname()))
+                            except Exception:
+                                ok = False
+                        if ok:
+                            _set_status('הנתונים נשלחו לענן בהצלחה.')
+                        else:
+                            _set_status('שליחת הנתונים נכשלה. בדוק יומן.')
+                        return
+
+                    snapshot_attempt = bool(should_pull_snapshot or (local_teachers == 0 and local_students == 0))
+                    if snapshot_attempt:
+                        _set_status('טוען נתונים מלאים מהענן...')
+                        snapshot_url = purl
+                        if snapshot_url.endswith('/sync/push'):
+                            snapshot_url = snapshot_url[:-len('/sync/push')] + '/sync/snapshot'
+                        else:
+                            snapshot_url = snapshot_url.rstrip('/') + '/sync/snapshot'
+                        try:
+                            resp = sync_agent.pull_snapshot(snapshot_url, api_key=key, tenant_id=tid)
+                        except Exception:
+                            resp = None
+                        ok = False
+                        if isinstance(resp, dict) and resp.get('ok'):
+                            try:
+                                conn = sync_agent._connect(self.db.db_path)
+                                try:
+                                    sync_agent._ensure_sync_state(conn)
+                                    res = sync_agent.apply_snapshot(conn, resp)
+                                    last_id = resp.get('last_event_id')
+                                    if last_id is None:
+                                        last_id = resp.get('last_change_id')
+                                    if last_id is not None:
+                                        sync_agent._set_sync_state(conn, 'pull_since_id', str(last_id))
+                                    ok = True
+                                finally:
+                                    conn.close()
+                            except Exception:
+                                ok = False
+                        if ok:
+                            _set_status('הנתונים הוטענו מהענן בהצלחה.')
+                            return
+                        if local_teachers == 0 and local_students == 0:
+                            try:
+                                conn = sync_agent._connect(self.db.db_path)
+                                try:
+                                    sync_agent._ensure_sync_state(conn)
+                                    sync_agent._set_sync_state(conn, 'pull_since_id', '0')
+                                finally:
+                                    conn.close()
+                            except Exception:
+                                pass
+                        _set_status('טעינת נתונים מהענן נכשלה. מנסה סנכרון רגיל...')
+
+                    _set_status('מבצע סנכרון רגיל...')
+                    try:
+                        pull_url = sync_agent._pull_url_from_push(purl, {})
+                    except Exception:
+                        pull_url = ''
+                    pull_ok = True
+                    if pull_url:
+                        try:
+                            conn = sync_agent._connect(self.db.db_path)
+                            try:
+                                sync_agent._ensure_sync_state(conn)
+                                since_id_s = sync_agent._get_sync_state(conn, 'pull_since_id', '0')
+                                try:
+                                    since_id = int(str(since_id_s or '0').strip() or '0')
+                                except Exception:
+                                    since_id = 0
+                                resp = sync_agent.pull_changes(pull_url, api_key=key, tenant_id=tid, since_id=since_id)
+                                if isinstance(resp, dict) and resp.get('ok'):
+                                    items = resp.get('items') or []
+                                    if isinstance(items, list):
+                                        sync_agent.apply_pull_events(conn, items)
+                                    next_since = resp.get('next_since_id')
+                                    try:
+                                        next_since_i = int(next_since or since_id)
+                                    except Exception:
+                                        next_since_i = since_id
+                                    if next_since_i != since_id:
+                                        sync_agent._set_sync_state(conn, 'pull_since_id', str(next_since_i))
+                                else:
+                                    pull_ok = False
+                            finally:
+                                conn.close()
+                        except Exception:
+                            pull_ok = False
+                    else:
+                        pull_ok = False
+                    push_ok = True
+                    try:
+                        push_ok = bool(sync_agent.run_once(self.db.db_path, purl, api_key=key, tenant_id=tid, station_id=socket.gethostname()))
+                    except Exception:
+                        push_ok = False
+                    if pull_ok and push_ok:
+                        _set_status('מחובר לענן • סנכרון רגיל הסתיים בהצלחה.')
+                    else:
+                        _set_status('סנכרון רגיל נכשל. בדוק יומן.')
+                    return
+
+                try:
+                    t = threading.Thread(target=_run, daemon=True)
+                    t.start()
+                except Exception:
+                    pass
 
             def _poll_connect_ready() -> None:
                 try:
@@ -11290,6 +11932,18 @@ class AdminStation:
             
             mode = str(mode_var.get() or '').strip() or 'local'
             cfg['deployment_mode'] = mode
+
+            station_role = str(station_role_var.get() or '').strip().lower()
+            if station_role in ('master', 'client'):
+                cfg['local_sync_role'] = station_role
+            else:
+                cfg.pop('local_sync_role', None)
+
+            system_mode = str(system_mode_var.get() or '').strip().lower()
+            if system_mode in ('normal', 'emergency'):
+                cfg['system_mode'] = system_mode
+            else:
+                cfg.pop('system_mode', None)
 
             tenant_name = str(tenant_name_var.get() or '').strip()
             if tenant_name:
@@ -20726,6 +21380,11 @@ class AdminStation:
         login_window.geometry("550x350")
         login_window.configure(bg='#ecf0f1')
         login_window.resizable(True, True)
+        keep_topmost = True
+        try:
+            login_window.attributes('-topmost', True)
+        except Exception:
+            pass
         try:
             # כאשר root שקוף/מוסתר, transient לפעמים גורם לחלון ההתחברות לא להופיע.
             # נשאיר את החלון עצמאי אך עדיין נשתמש ב-grab_set.
@@ -20789,16 +21448,39 @@ class AdminStation:
                     'name': 'מאסטר אוניברסלי',
                     'is_admin': 1,
                 }
+                try:
+                    keep_topmost = False
+                except Exception:
+                    pass
                 login_window.destroy()
                 self.continue_init()
                 return
             
             # בדיקת כרטיס במסד הנתונים
-            teacher = self.db.get_teacher_by_card(card_number)
+            try:
+                teacher = self.db.get_teacher_by_card(card_number)
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if 'locked' in msg or 'busy' in msg:
+                    card_display.config(
+                        text="⏳ מסד הנתונים עסוק, נסה שוב בעוד כמה שניות",
+                        fg='#e67e22'
+                    )
+                    card_buffer['text'] = ''
+                    login_window.after(2500, lambda: card_display.config(
+                        text="ממתין לכרטיס...",
+                        fg='#7f8c8d'
+                    ))
+                    return
+                raise
             
             if teacher:
                 # מורה נמצא - התחבר
                 self.current_teacher = teacher
+                try:
+                    keep_topmost = False
+                except Exception:
+                    pass
                 login_window.destroy()
                 try:
                     self._login_active = False
@@ -20820,6 +21502,10 @@ class AdminStation:
         # טיפול בסגירת חלון ההתחברות
         def on_login_close():
             """כשסוגרים את חלון ההתחברות - סוגרים את כל התוכנה"""
+            try:
+                keep_topmost = False
+            except Exception:
+                pass
             try:
                 login_window.destroy()
             except Exception:
@@ -20865,6 +21551,8 @@ class AdminStation:
                 pass
 
             def _restore_topmost():
+                if keep_topmost:
+                    return
                 try:
                     login_window.attributes('-topmost', False)
                 except Exception:
@@ -20893,6 +21581,11 @@ class AdminStation:
                     pass
                 try:
                     login_window.focus_force()
+                except Exception:
+                    pass
+                try:
+                    if keep_topmost:
+                        login_window.attributes('-topmost', True)
                 except Exception:
                     pass
 
@@ -20980,6 +21673,8 @@ class AdminStation:
                 pass
 
             def _restore_topmost():
+                if keep_topmost:
+                    return
                 try:
                     login_window.attributes('-topmost', False)
                 except Exception:
@@ -21245,6 +21940,21 @@ class AdminStation:
 
         # הסרת הודעת טעינה
         loading_label.destroy()
+
+        # הפעלת Local Sync/Sync Agent רק אחרי שהממשק נטען (כדי למנוע נעילות בזמן ההתחברות)
+        def _start_background_sync():
+            try:
+                self._maybe_start_local_sync_server()
+            except Exception:
+                pass
+            try:
+                self._maybe_start_sync_agent()
+            except Exception:
+                pass
+        try:
+            self.root.after(800, _start_background_sync)
+        except Exception:
+            _start_background_sync()
 
         # רענון אוטומטי של הטבלה כל 10 שניות (לעדכונים מהעמדה הציבורית)
         self.auto_refresh_interval = 10000  # 10 שניות
@@ -21660,6 +22370,7 @@ def main():
 
 def main_no_splash():
     """הפעלה ללא splash screen (לבדיקות)"""
+    _install_crash_logger()
     _set_windows_dpi_awareness()
     root = tk.Tk()
     _apply_tk_scaling(root)
@@ -21668,4 +22379,5 @@ def main_no_splash():
 
 
 if __name__ == "__main__":
+    _install_crash_logger()
     main()
