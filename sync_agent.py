@@ -1327,10 +1327,8 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                         ]
                         pvals = [serial, first, last, cls_name, card, photo, p_msg, idn, blocked, datetime.now()]
                         
-                        # Only update points if explicitly in payload (Admin edit)
-                        if 'points' in payload:
-                            sets.append("points = ?")
-                            pvals.append(int(payload['points']))
+                        # אין לעדכן points כאן - נקודות מסונכרנות רק דרך student_points delta
+                        # (trigger על students יוצר student update שכולל points, אבל זה יגרום לדריסה)
                             
                         pvals.append(sid)
                         

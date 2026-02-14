@@ -225,6 +225,7 @@ class Database:
     _local_host_cache = {}      # host→bool cache (class-level, computed once)
     _local_names_resolved = False
     _local_names = set()
+    _sync_triggers_ensured = False  # True after triggers verified/created in this process
 
     def __init__(self, db_path: str = None):
         """אתחול מסד נתונים"""
@@ -655,6 +656,35 @@ class Database:
                     continue
                 raise
 
+    def _ensure_sync_triggers(self):
+        """ודא שה-sync triggers קיימים ב-DB. רץ פעם אחת בתהליך."""
+        if Database._sync_triggers_ensured:
+            return
+        try:
+            conn = self._get_raw_connection()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE '_sync_log_%'")
+                count = int(cur.fetchone()[0] or 0)
+                if count < 10:
+                    self._create_sync_triggers(conn)
+                else:
+                    try:
+                        print(f"[DB] Sync triggers already exist: {count}")
+                    except Exception:
+                        pass
+                Database._sync_triggers_ensured = True
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                print(f"[DB] _ensure_sync_triggers error: {e}")
+            except Exception:
+                pass
+
     def get_connection(self):
         """יצירת חיבור למסד הנתונים"""
         # ודא שהתיקייה של ה-DB קיימת (למשל בתיקיית נתוני משתמש)
@@ -664,6 +694,13 @@ class Database:
         except Exception:
             # אם לא הצלחנו ליצור תיקייה – ניתן ל-sqlite לטפל בשגיאה
             pass
+
+        # ודא triggers לסנכרון (פעם אחת בתהליך)
+        if not Database._sync_triggers_ensured:
+            try:
+                self._ensure_sync_triggers()
+            except Exception:
+                pass
 
         self._maybe_backup_db()
 
@@ -2386,6 +2423,8 @@ class Database:
             ('refunds_log', 'refund', 'id'),
         ]
 
+        created = 0
+        failed = 0
         for table, entity_type, id_col in tables:
             # בדוק שהטבלה קיימת
             try:
@@ -2410,11 +2449,23 @@ class Database:
                             VALUES ('{entity_type}', CAST({ref}.{id_col} AS TEXT), '{action}', '{{}}');
                         END
                     ''')
-                except Exception:
-                    pass
+                    created += 1
+                except Exception as e:
+                    failed += 1
+                    try:
+                        print(f"[DB] Trigger {trigger_name} failed: {e}")
+                    except Exception:
+                        pass
 
         try:
             conn.commit()
+        except Exception as e:
+            try:
+                print(f"[DB] Trigger commit failed: {e}")
+            except Exception:
+                pass
+        try:
+            print(f"[DB] Sync triggers: {created} created, {failed} failed")
         except Exception:
             pass
 

@@ -244,6 +244,9 @@ def _fill_payload_from_table(conn: sqlite3.Connection, item: Dict[str, Any]) -> 
             for k, v in d.items():
                 if v is not None and not isinstance(v, (int, float, str, bool)):
                     d[k] = str(v)
+            # הסר points מ-student entity - נקודות מסונכרנות רק דרך student_points delta
+            if entity_type == 'student':
+                d.pop('points', None)
             return json.dumps(d, ensure_ascii=False)
     except Exception:
         pass
