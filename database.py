@@ -4316,6 +4316,16 @@ class Database:
             new_points = int(old_points + refunded_points)
             if refunded_points:
                 cursor.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (int(new_points), int(sid)))
+                try:
+                    self._log_change(
+                        cursor,
+                        entity_type='student_points',
+                        entity_id=str(sid),
+                        action_type='update',
+                        payload={'old_points': int(old_points), 'new_points': int(new_points), 'reason': 'ביטול קנייה'}
+                    )
+                except Exception:
+                    pass
 
             # restore stock
             if vid:
@@ -4559,6 +4569,16 @@ class Database:
                             str(actor_name or 'cashier'),
                             'purchase'
                         )
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._log_change(
+                        cursor,
+                        entity_type='student_points',
+                        entity_id=str(student_id or ''),
+                        action_type='update',
+                        payload={'old_points': int(old_points), 'new_points': int(new_points), 'reason': 'קניה בקופה'}
                     )
                 except Exception:
                     pass
@@ -5395,6 +5415,16 @@ class Database:
                             'cashier',
                             'purchase'
                         )
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._log_change(
+                        cursor,
+                        entity_type='student_points',
+                        entity_id=str(student_id or ''),
+                        action_type='update',
+                        payload={'old_points': int(old_points), 'new_points': int(new_points), 'reason': 'קניה בקופה'}
                     )
                 except Exception:
                     pass
@@ -6457,6 +6487,21 @@ class Database:
                         cursor.execute(
                             'INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)',
                             (sid, old_points, int(new_points), points_diff, str(reason or '').strip(), str(added_by or '').strip(), 'עדכון מהיר')
+                        )
+                    except Exception:
+                        pass
+                    try:
+                        self._log_change(
+                            cursor,
+                            entity_type='student_points',
+                            entity_id=str(sid),
+                            action_type='update',
+                            payload={
+                                'old_points': int(old_points),
+                                'new_points': int(new_points),
+                                'reason': str(reason or '').strip(),
+                                'added_by': str(added_by or '').strip()
+                            }
                         )
                     except Exception:
                         pass
