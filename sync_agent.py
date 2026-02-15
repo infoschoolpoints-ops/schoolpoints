@@ -1712,21 +1712,40 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
             if local_sync_enabled and local_sync_role == 'client':
                 try:
                     cur0 = conn0.cursor()
-                    cur0.execute('SELECT MAX(id) FROM change_log')
-                    r0 = cur0.fetchone()
-                    max_local_id = int((r0[0] if r0 else 0) or 0)
                     old_since = _get_sync_state(conn0, 'pull_since_id_local', '0')
                     old_since_i = int(str(old_since or '0').strip() or '0')
-                    if max_local_id > 0 and max_local_id != old_since_i:
-                        _set_sync_state(conn0, 'pull_since_id_local', str(max_local_id))
-                        # סמן את כל ה-change_log הקיים כ-synced כדי שלא יישלח חזרה לראשי
-                        # (ה-DB הועתק מהרשת וכבר מכיל change_log entries של הראשי)
+                    if old_since_i == 0:
+                        # שמור max לפני מחיקה (fallback אם השרת לא זמין)
+                        local_max_fallback = 0
                         try:
-                            cur0.execute("UPDATE change_log SET synced_at = CURRENT_TIMESTAMP WHERE synced_at IS NULL")
-                            conn0.commit()
+                            cur0.execute('SELECT MAX(id) FROM change_log')
+                            r0 = cur0.fetchone()
+                            local_max_fallback = int((r0[0] if r0 else 0) or 0)
                         except Exception:
                             pass
-                        print(f"[BOOTSTRAP] Local sync client: set pull_since_id_local={max_local_id} (was {old_since_i})")
+                        # Bootstrap: DB הועתק מהרשת - מחק change_log מקומי (העתק מיותר של הראשי)
+                        # כדי שלא יישלח חזרה לראשי
+                        try:
+                            cur0.execute("DELETE FROM change_log")
+                            conn0.commit()
+                            print("[BOOTSTRAP] Local sync client: cleared copied change_log")
+                        except Exception:
+                            pass
+                        # שאל את השרת הראשי מה ה-max change_log id שלו
+                        # כדי שנתחיל לקבל רק שינויים חדשים (ה-DB המועתק כבר מכיל את הנתונים)
+                        server_max = 0
+                        try:
+                            _pull_url = local_sync_url.rstrip('/') + '/sync/pull'
+                            _api = str(cfg.get('local_sync_key') or 'local').strip()
+                            resp = pull_changes(_pull_url, api_key=_api, tenant_id='local', since_id=999999999)
+                            if isinstance(resp, dict) and resp.get('ok'):
+                                server_max = int(resp.get('next_since_id') or 0)
+                        except Exception:
+                            pass
+                        if server_max <= 0:
+                            server_max = local_max_fallback
+                        _set_sync_state(conn0, 'pull_since_id_local', str(server_max))
+                        print(f"[BOOTSTRAP] Local sync client: pull_since_id_local={server_max} (server_queried={'yes' if server_max != local_max_fallback else 'no, fallback'})")
                 except Exception as e:
                     print(f"[BOOTSTRAP] Error setting local since_id: {e}")
 
@@ -1807,7 +1826,11 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                     except Exception:
                         next_since_i = since_id
                     items_count = (len(items) if isinstance(items, list) else 0)
-                    if next_since_i != since_id:
+                    # בטיחות: אם since_id שלנו גבוה מה-max של השרת, אפס
+                    if items_count == 0 and next_since_i < since_id and since_id > 0:
+                        print(f"[PULL] RESET since_id: local {since_id} > server {next_since_i}, resetting to 0")
+                        _set_sync_state(conn, since_id_key, '0')
+                    elif next_since_i != since_id:
                         _set_sync_state(conn, since_id_key, str(next_since_i))
                         print(f"[PULL] OK items={items_count} applied={applied} since_id={since_id} -> {next_since_i} (key={since_id_key})")
                     else:

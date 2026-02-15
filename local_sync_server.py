@@ -418,6 +418,18 @@ def make_handler(db_path: str, api_key: str, tenant_id: str):
                             max_id = max(max_id, int(it.get('id') or 0))
                         except Exception:
                             pass
+                    # אם אין פריטים, החזר את ה-max האמיתי של change_log
+                    # כדי שהלקוח יזהה אם ה-since_id שלו גבוה מדי
+                    if not items:
+                        try:
+                            cur2 = conn.cursor()
+                            cur2.execute('SELECT MAX(id) FROM change_log')
+                            r2 = cur2.fetchone()
+                            real_max = int((r2[0] if r2 else 0) or 0)
+                            if real_max < since_id:
+                                max_id = real_max
+                        except Exception:
+                            pass
                 finally:
                     conn.close()
                 n = self._active_station_count()
