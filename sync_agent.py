@@ -1169,23 +1169,26 @@ def _parse_dt_maybe(ts: str | None) -> Optional[datetime]:
 
 
 def _disable_sync_triggers(conn: sqlite3.Connection) -> None:
-    """משהה triggers של סנכרון ע"י הדלקת דגל _sync_paused (בלי למחוק triggers)."""
+    """מוחק triggers של סנכרון לפני apply כדי למנוע יצירת entries ב-change_log."""
     try:
         cur = conn.cursor()
-        cur.execute('CREATE TABLE IF NOT EXISTS _sync_paused (flag INTEGER NOT NULL DEFAULT 0)')
-        cur.execute('INSERT OR IGNORE INTO _sync_paused (rowid, flag) VALUES (1, 0)')
-        cur.execute('UPDATE _sync_paused SET flag = 1 WHERE rowid = 1')
+        cur.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '_sync_log_%'")
+        for row in cur.fetchall():
+            try:
+                tname = row[0] if not isinstance(row, dict) else row['name']
+                cur.execute(f"DROP TRIGGER IF EXISTS {tname}")
+            except Exception:
+                pass
         conn.commit()
     except Exception:
         pass
 
 
 def _enable_sync_triggers(conn: sqlite3.Connection) -> None:
-    """מפעיל מחדש triggers של סנכרון ע"י כיבוי דגל _sync_paused."""
+    """מסמן שצריך ליצור מחדש triggers בקריאה הבאה ל-get_connection."""
     try:
-        cur = conn.cursor()
-        cur.execute('UPDATE _sync_paused SET flag = 0 WHERE rowid = 1')
-        conn.commit()
+        from database import Database
+        Database._sync_triggers_ensured = False
     except Exception:
         pass
 
@@ -1260,6 +1263,12 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
 
             if entity_type == 'student' and action_type in ('create', 'update', 'delete'):
                 try:
+                    # דלג על student/update עם payload ריק (trigger-generated) - ימחק שדות
+                    if action_type == 'update' and not payload.get('first_name') and not payload.get('serial_number'):
+                        if event_id:
+                            _mark_event_applied(conn, event_id)
+                        continue
+
                     sid = int(entity_id or 0)
                     if sid <= 0:
                         sid = int(payload.get('id') or 0)
@@ -1879,9 +1888,16 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 except Exception:
                     pass
 
-            # 2) push local changes
+            # 2) push local changes (לא רלוונטי לעמדה משנית - כתיבות עוברות דרך RemoteWriteConnection)
             push_ok = True
-            if push_url and api_key and tenant_id:
+            if local_sync_enabled and local_sync_role == 'client':
+                # עמדה משנית: מחק change_log שנוצר ע"י triggers (רעש - לא צריך לשלוח)
+                try:
+                    conn.execute('DELETE FROM change_log')
+                    conn.commit()
+                except Exception:
+                    pass
+            elif push_url and api_key and tenant_id:
                 push_ok = run_once(db_path, push_url, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
 
             if pull_ok and push_ok:
