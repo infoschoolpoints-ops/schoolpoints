@@ -1193,7 +1193,7 @@ def _enable_sync_triggers(conn: sqlite3.Connection) -> None:
         pass
 
 
-def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, is_local_client: bool = False) -> int:
+def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, is_local_client: bool = False, local_station_id: str = '') -> int:
     if not items:
         return 0
     _ensure_applied_events(conn)
@@ -1209,10 +1209,25 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
     applied = 0
     cur = conn.cursor()
     try:
+      _local_ids = set()
+      try:
+          _h = str(socket.gethostname() or '').strip().lower()
+          if _h:
+              _local_ids.add(_h)
+      except Exception:
+          pass
+      if local_station_id:
+          _local_ids.add(str(local_station_id).strip().lower())
       for ev in items:
         try:
             event_id = str(ev.get('event_id') or '').strip()
             if event_id and _is_event_applied(conn, event_id):
+                continue
+            # דלג על events שמקורם בעמדה הנוכחית (נשלחו לענן וחזרו)
+            ev_station = str(ev.get('station_id') or '').strip().lower()
+            if ev_station and ev_station in _local_ids:
+                if event_id:
+                    _mark_event_applied(conn, event_id)
                 continue
             entity_type = str(ev.get('entity_type') or '').strip()
             action_type = str(ev.get('action_type') or '').strip()
@@ -1857,7 +1872,7 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                     items = resp.get('items') or []
                     _is_client = bool(local_sync_enabled and local_sync_role == 'client')
                     if isinstance(items, list):
-                        applied = apply_pull_events(conn, items, is_local_client=_is_client)
+                        applied = apply_pull_events(conn, items, is_local_client=_is_client, local_station_id=str(station_id or ''))
                     else:
                         applied = 0
                     next_since = resp.get('next_since_id')
