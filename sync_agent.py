@@ -1175,6 +1175,7 @@ def _disable_sync_triggers(conn: sqlite3.Connection) -> None:
         cur.execute('CREATE TABLE IF NOT EXISTS _sync_paused (flag INTEGER NOT NULL DEFAULT 0)')
         cur.execute('INSERT OR IGNORE INTO _sync_paused (rowid, flag) VALUES (1, 0)')
         cur.execute('UPDATE _sync_paused SET flag = 1 WHERE rowid = 1')
+        conn.commit()
     except Exception:
         pass
 
@@ -1184,6 +1185,7 @@ def _enable_sync_triggers(conn: sqlite3.Connection) -> None:
     try:
         cur = conn.cursor()
         cur.execute('UPDATE _sync_paused SET flag = 0 WHERE rowid = 1')
+        conn.commit()
     except Exception:
         pass
 
@@ -1192,6 +1194,13 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
     if not items:
         return 0
     _ensure_applied_events(conn)
+    # שמור max id לפני apply כדי למחוק entries שנוצרו ע"י triggers בזמן apply
+    _pre_apply_max_id = 0
+    try:
+        _r = conn.execute('SELECT MAX(id) FROM change_log').fetchone()
+        _pre_apply_max_id = int((_r[0] if _r else 0) or 0)
+    except Exception:
+        pass
     # בטל triggers כדי שהחלת שינויים לא תיצור רשומות חדשות ב-change_log
     _disable_sync_triggers(conn)
     applied = 0
@@ -1585,6 +1594,18 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
             pass
     finally:
       _enable_sync_triggers(conn)
+      # בטיחות: מחק entries שנוצרו ע"י triggers בזמן apply (דליפה למרות _sync_paused)
+      if _pre_apply_max_id >= 0:
+          try:
+              leaked = conn.execute(
+                  'SELECT COUNT(*) FROM change_log WHERE id > ?', (_pre_apply_max_id,)
+              ).fetchone()
+              leaked_count = int((leaked[0] if leaked else 0) or 0)
+              if leaked_count > 0:
+                  conn.execute('DELETE FROM change_log WHERE id > ?', (_pre_apply_max_id,))
+                  print(f"[SYNC] Cleaned {leaked_count} leaked change_log entries from apply")
+          except Exception:
+              pass
     conn.commit()
     return applied
 
