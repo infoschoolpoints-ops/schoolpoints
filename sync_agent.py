@@ -1193,7 +1193,7 @@ def _enable_sync_triggers(conn: sqlite3.Connection) -> None:
         pass
 
 
-def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> int:
+def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, is_local_client: bool = False) -> int:
     if not items:
         return 0
     _ensure_applied_events(conn)
@@ -1231,7 +1231,7 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                 old_points = int(payload.get('old_points') or 0)
                 new_points = int(payload.get('new_points') or 0)
                 delta = int(new_points - old_points)
-                if delta == 0:
+                if delta == 0 and not is_local_client:
                     if event_id:
                         _mark_event_applied(conn, event_id)
                     continue
@@ -1246,7 +1246,16 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                         cur_points = int(r0[0])
                     except Exception:
                         cur_points = 0
-                final_points = int(cur_points + delta)
+                if is_local_client:
+                    # עמדה משנית: השתמש בערך מוחלט (new_points) במקום delta
+                    # כי ה-DB הועתק מהראשי ותזמון ההעתקה לא מדויק
+                    final_points = new_points
+                else:
+                    final_points = int(cur_points + delta)
+                if final_points == cur_points:
+                    if event_id:
+                        _mark_event_applied(conn, event_id)
+                    continue
                 cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (int(final_points), int(sid)))
                 try:
                     reason = str(payload.get('reason') or '').strip()
@@ -1255,7 +1264,7 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                         INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                         ''',
-                        (int(sid), int(cur_points), int(final_points), int(delta), reason, 'sync', 'sync')
+                        (int(sid), int(cur_points), int(final_points), int(final_points - cur_points), reason, 'sync', 'sync')
                     )
                 except Exception:
                     pass
@@ -1846,8 +1855,9 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 resp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=since_id)
                 if isinstance(resp, dict) and resp.get('ok'):
                     items = resp.get('items') or []
+                    _is_client = bool(local_sync_enabled and local_sync_role == 'client')
                     if isinstance(items, list):
-                        applied = apply_pull_events(conn, items)
+                        applied = apply_pull_events(conn, items, is_local_client=_is_client)
                     else:
                         applied = 0
                     next_since = resp.get('next_since_id')
