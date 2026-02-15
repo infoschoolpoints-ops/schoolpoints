@@ -1169,22 +1169,23 @@ def _parse_dt_maybe(ts: str | None) -> Optional[datetime]:
 
 
 def _disable_sync_triggers(conn: sqlite3.Connection) -> None:
-    """מבטל triggers של סנכרון כדי למנוע לולאה אינסופית בזמן apply."""
+    """משהה triggers של סנכרון ע"י הדלקת דגל _sync_paused (בלי למחוק triggers)."""
     try:
         cur = conn.cursor()
-        cur.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '_sync_log_%'")
-        for row in cur.fetchall():
-            try:
-                cur.execute(f"DROP TRIGGER IF EXISTS {row[0]}")
-            except Exception:
-                pass
+        cur.execute('CREATE TABLE IF NOT EXISTS _sync_paused (flag INTEGER NOT NULL DEFAULT 0)')
+        cur.execute('INSERT OR IGNORE INTO _sync_paused (rowid, flag) VALUES (1, 0)')
+        cur.execute('UPDATE _sync_paused SET flag = 1 WHERE rowid = 1')
     except Exception:
         pass
 
 
 def _enable_sync_triggers(conn: sqlite3.Connection) -> None:
-    """מפעיל מחדש triggers של סנכרון. ה-triggers ייווצרו מחדש בפעם הבאה שנפתח Database()."""
-    pass  # ה-triggers ייווצרו מחדש ע"י create_tables בהפעלה הבאה
+    """מפעיל מחדש triggers של סנכרון ע"י כיבוי דגל _sync_paused."""
+    try:
+        cur = conn.cursor()
+        cur.execute('UPDATE _sync_paused SET flag = 0 WHERE rowid = 1')
+    except Exception:
+        pass
 
 
 def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> int:
@@ -1195,7 +1196,8 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
     _disable_sync_triggers(conn)
     applied = 0
     cur = conn.cursor()
-    for ev in items:
+    try:
+      for ev in items:
         try:
             event_id = str(ev.get('event_id') or '').strip()
             if event_id and _is_event_applied(conn, event_id):
@@ -1581,6 +1583,8 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]]) -> 
                 _mark_event_applied(conn, event_id)
         except Exception:
             pass
+    finally:
+      _enable_sync_triggers(conn)
     conn.commit()
     return applied
 
@@ -1715,6 +1719,13 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                     old_since_i = int(str(old_since or '0').strip() or '0')
                     if max_local_id > 0 and max_local_id != old_since_i:
                         _set_sync_state(conn0, 'pull_since_id_local', str(max_local_id))
+                        # סמן את כל ה-change_log הקיים כ-synced כדי שלא יישלח חזרה לראשי
+                        # (ה-DB הועתק מהרשת וכבר מכיל change_log entries של הראשי)
+                        try:
+                            cur0.execute("UPDATE change_log SET synced_at = CURRENT_TIMESTAMP WHERE synced_at IS NULL")
+                            conn0.commit()
+                        except Exception:
+                            pass
                         print(f"[BOOTSTRAP] Local sync client: set pull_since_id_local={max_local_id} (was {old_since_i})")
                 except Exception as e:
                     print(f"[BOOTSTRAP] Error setting local since_id: {e}")

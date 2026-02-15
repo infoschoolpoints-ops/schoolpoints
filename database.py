@@ -666,7 +666,22 @@ class Database:
                 cur = conn.cursor()
                 cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name LIKE '_sync_log_%'")
                 count = int(cur.fetchone()[0] or 0)
-                if count < 10:
+                # בדוק אם _sync_paused קיימת (אם לא - triggers ישנים בלי בדיקת דגל)
+                paused_exists = False
+                try:
+                    cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sync_paused'")
+                    paused_exists = bool(cur.fetchone())
+                except Exception:
+                    pass
+                # ודא שטבלת _sync_paused קיימת (נדרשת ע"י triggers)
+                try:
+                    cur.execute('CREATE TABLE IF NOT EXISTS _sync_paused (flag INTEGER NOT NULL DEFAULT 0)')
+                    cur.execute('INSERT OR IGNORE INTO _sync_paused (rowid, flag) VALUES (1, 0)')
+                    conn.commit()
+                except Exception:
+                    pass
+                if count < 10 or not paused_exists:
+                    # triggers חסרים או ישנים (בלי _sync_paused) - צור מחדש
                     self._create_sync_triggers(conn)
                 else:
                     try:
@@ -2423,6 +2438,13 @@ class Database:
             ('refunds_log', 'refund', 'id'),
         ]
 
+        # טבלת דגל להשהיית triggers בזמן apply (כדי לא למחוק triggers)
+        try:
+            cursor.execute('CREATE TABLE IF NOT EXISTS _sync_paused (flag INTEGER NOT NULL DEFAULT 0)')
+            cursor.execute('INSERT OR IGNORE INTO _sync_paused (rowid, flag) VALUES (1, 0)')
+        except Exception:
+            pass
+
         created = 0
         failed = 0
         for table, entity_type, id_col in tables:
@@ -2440,7 +2462,8 @@ class Database:
                         CREATE TRIGGER IF NOT EXISTS {trigger_name}
                         AFTER {op} ON {table}
                         FOR EACH ROW
-                        WHEN (SELECT COUNT(*) FROM change_log WHERE entity_type = '{entity_type}'
+                        WHEN (SELECT flag FROM _sync_paused WHERE rowid = 1) = 0
+                          AND (SELECT COUNT(*) FROM change_log WHERE entity_type = '{entity_type}'
                               AND entity_id = CAST({ref}.{id_col} AS TEXT)
                               AND action_type = '{action}'
                               AND created_at > datetime('now', '-1 second')) = 0
