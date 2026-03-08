@@ -2310,12 +2310,27 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
           display: flex;
           justify-content: center;
           align-items: center;
-          margin-bottom: 24px;
+          margin-bottom: 0;
           padding-bottom: 16px;
-          border-bottom: 1px solid rgba(255,255,255,0.1);
+          border-bottom: none;
         }
         .page-title { margin: 0; font-size: 24px; font-weight: 900; background: linear-gradient(135deg, #fff, #b2bec3); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        
+
+        .content-body {
+          background: rgba(255, 255, 255, 0.95);
+          color: #1f2d3a;
+          border-radius: 14px;
+          padding: 24px;
+        }
+        .content-body h2, .content-body h3, .content-body h4,
+        .content-body label, .content-body p, .content-body span,
+        .content-body li, .content-body div, .content-body small {
+          color: #1f2d3a;
+        }
+        .content-body a { color: #2980b9; }
+        .content-body .green, .content-body .blue, .content-body .gray,
+        .content-body .red, .content-body button.green, .content-body button.blue { color: #fff; }
+
         .footerbar {
           margin-top: 16px;
           padding-top: 14px;
@@ -2656,12 +2671,44 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
           display: flex;
           justify-content: center;
           align-items: center;
-          margin-bottom: 24px;
+          margin-bottom: 0;
           padding-bottom: 16px;
-          border-bottom: 1px solid rgba(255,255,255,0.1);
+          border-bottom: none;
         }
         .page-title { margin: 0; font-size: 24px; font-weight: 900; background: linear-gradient(135deg, #fff, #b2bec3); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        
+
+        .content-body {
+          background: rgba(255, 255, 255, 0.95);
+          color: #1f2d3a;
+          border-radius: 14px;
+          padding: 24px;
+        }
+        .content-body h2, .content-body h3, .content-body h4,
+        .content-body label, .content-body p, .content-body span,
+        .content-body li, .content-body div, .content-body small {
+          color: #1f2d3a;
+        }
+        .content-body a { color: #2980b9; }
+        .content-body .status-dot { color: transparent; }
+        .content-body .tab { color: #555; border-bottom: 3px solid transparent; cursor: pointer; padding: 10px 20px; font-weight: 600; }
+        .content-body .tab.active { color: #2c3e50; border-bottom-color: #3498db; }
+        .content-body .tab:hover { background: rgba(0,0,0,0.04); }
+        .content-body .tabs { border-bottom: 1px solid #e1e8ee; display: flex; margin-bottom: 20px; }
+        .content-body .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .content-body .modal { background: #fff; color: #1f2d3a; padding: 20px; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+        .content-body .green, .content-body .blue, .content-body .gray,
+        .content-body .red, .content-body button.green, .content-body button.blue { color: #fff; }
+        .content-body .btn-icon { color: #1f2d3a; }
+        .content-body .data-table { background: #fff; }
+        .content-body .data-table th { background: #f8f9fa; color: #555; font-weight: 700; }
+        .content-body .data-table td { color: #1f2d3a; }
+        .content-body .data-table tr:hover { background: #f8f9fa; }
+        .content-body .form-group label { color: #1f2d3a; font-weight: 600; }
+        .content-body .stat-num { color: #2c3e50; }
+        .content-body .stat-label { color: #7f8c8d; }
+        .content-body .list-header { color: #2c3e50; }
+        .content-body .list-val { color: #3498db; }
+
         .footerbar {
           margin-top: 16px;
           padding-top: 14px;
@@ -9775,6 +9822,20 @@ def web_system_settings(request: Request):
         <label style="display:block; margin-bottom:5px; font-weight:600;">נתיב לוגו (אופציונלי)</label>
         <input id="sys-logo" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
       </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">שם מבצע</label>
+        <input id="sys-campaign" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;" placeholder="אשראיכם">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">תיקיית תמונות תלמידים</label>
+        <input id="sys-photos" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label><input type="checkbox" id="sys-show-stats"> הצגת סטטיסטיקות בעמדה הציבורית</label>
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label><input type="checkbox" id="sys-show-photo"> הצגת תמונת תלמיד בעמדה הציבורית</label>
+      </div>
       <div>
         <button class="green" onclick="saveSystem()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
       </div>
@@ -9788,6 +9849,10 @@ def web_system_settings(request: Request):
           document.getElementById('sys-mode').value = data.deployment_mode || 'hybrid';
           document.getElementById('sys-shared').value = data.shared_folder || '';
           document.getElementById('sys-logo').value = data.logo_path || '';
+          document.getElementById('sys-campaign').value = data.campaign_name || '';
+          document.getElementById('sys-photos').value = data.photos_folder || '';
+          document.getElementById('sys-show-stats').checked = !!data.show_stats;
+          document.getElementById('sys-show-photo').checked = !!data.show_student_photo;
         } catch(e) {}
       }
 
@@ -9795,7 +9860,11 @@ def web_system_settings(request: Request):
         const payload = {
             deployment_mode: document.getElementById('sys-mode').value,
             shared_folder: document.getElementById('sys-shared').value,
-            logo_path: document.getElementById('sys-logo').value
+            logo_path: document.getElementById('sys-logo').value,
+            campaign_name: document.getElementById('sys-campaign').value,
+            photos_folder: document.getElementById('sys-photos').value,
+            show_stats: document.getElementById('sys-show-stats').checked ? 1 : 0,
+            show_student_photo: document.getElementById('sys-show-photo').checked ? 1 : 0
         };
         await fetch('/api/settings/save', {
             method: 'POST',
@@ -10671,8 +10740,8 @@ def web_messages(request: Request):
     </style>
 
     <div class="tabs">
-      <div class="tab active" onclick="switchTab('static')">הודעות רצות</div>
-      <div class="tab" onclick="switchTab('threshold')">הודעות סף</div>
+      <div class="tab active" onclick="switchTab('static')">הודעות כלליות</div>
+      <div class="tab" onclick="switchTab('threshold')">הודעות לפי ניקוד</div>
       <div class="tab" onclick="switchTab('news')">חדשות</div>
       <div class="tab" onclick="switchTab('ads')">פרסומות</div>
       <div class="tab" onclick="switchTab('student')">הודעות אישיות</div>
@@ -10746,7 +10815,7 @@ def web_messages(request: Request):
     <!-- Static Modal -->
     <div id="modal-static" class="modal-overlay">
       <div class="modal">
-        <h3 id="title-static">הודעה רצה</h3>
+        <h3 id="title-static">הודעה כללית</h3>
         <input type="hidden" id="static-id">
         <div class="form-group">
           <label>תוכן ההודעה</label>
@@ -10765,7 +10834,7 @@ def web_messages(request: Request):
     <!-- Threshold Modal -->
     <div id="modal-threshold" class="modal-overlay">
       <div class="modal">
-        <h3 id="title-threshold">הודעת סף</h3>
+        <h3 id="title-threshold">הודעה לפי ניקוד</h3>
         <input type="hidden" id="threshold-id">
         <div class="form-group">
           <label>תוכן ההודעה</label>
@@ -11004,7 +11073,7 @@ def web_messages(request: Request):
         document.getElementById('static-id').value = '';
         document.getElementById('static-message').value = '';
         document.getElementById('static-always').checked = false;
-        document.getElementById('title-static').textContent = 'הוספת הודעה רצה';
+        document.getElementById('title-static').textContent = 'הוספת הודעה כללית';
         document.getElementById('modal-static').style.display = 'flex';
       }
 
@@ -11012,7 +11081,7 @@ def web_messages(request: Request):
         document.getElementById('static-id').value = item.id;
         document.getElementById('static-message').value = item.message;
         document.getElementById('static-always').checked = !!item.show_always;
-        document.getElementById('title-static').textContent = 'עריכת הודעה רצה';
+        document.getElementById('title-static').textContent = 'עריכת הודעה כללית';
         document.getElementById('modal-static').style.display = 'flex';
       }
 
@@ -11072,7 +11141,7 @@ def web_messages(request: Request):
         document.getElementById('threshold-message').value = '';
         document.getElementById('threshold-min').value = '0';
         document.getElementById('threshold-max').value = '1000';
-        document.getElementById('title-threshold').textContent = 'הוספת הודעת סף';
+        document.getElementById('title-threshold').textContent = 'הוספת הודעה לפי ניקוד';
         document.getElementById('modal-threshold').style.display = 'flex';
       }
 
@@ -11081,7 +11150,7 @@ def web_messages(request: Request):
         document.getElementById('threshold-message').value = item.message;
         document.getElementById('threshold-min').value = item.min_points;
         document.getElementById('threshold-max').value = item.max_points;
-        document.getElementById('title-threshold').textContent = 'עריכת הודעת סף';
+        document.getElementById('title-threshold').textContent = 'עריכת הודעה לפי ניקוד';
         document.getElementById('modal-threshold').style.display = 'flex';
       }
 
@@ -12139,11 +12208,11 @@ def web_time_bonus(request: Request):
     <div class="card" style="padding:0; overflow:hidden;">
       <table style="width:100%; border-collapse:collapse;">
         <thead>
-          <tr style="background: rgba(15, 32, 39, 0.98); border-bottom:1px solid rgba(255,255,255,0.12);">
-            <th style="padding:12px; text-align:right; color:#fff;">שם הכלל</th>
-            <th style="padding:12px; text-align:right; color:#fff;">שעות</th>
-            <th style="padding:12px; text-align:right; color:#fff;">בונוס (נקודות)</th>
-            <th style="padding:12px; text-align:right; color:#fff;">פעולות</th>
+          <tr style="background: #f8f9fa; border-bottom:1px solid #e1e8ee;">
+            <th style="padding:12px; text-align:right; color:#555; font-weight:700;">שם הכלל</th>
+            <th style="padding:12px; text-align:right; color:#555; font-weight:700;">שעות</th>
+            <th style="padding:12px; text-align:right; color:#555; font-weight:700;">בונוס (נקודות)</th>
+            <th style="padding:12px; text-align:right; color:#555; font-weight:700;">פעולות</th>
           </tr>
         </thead>
         <tbody id="rules-list"></tbody>
