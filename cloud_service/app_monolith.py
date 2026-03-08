@@ -2843,6 +2843,61 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
             </div>
         </main>
       </div>
+
+      <!-- Auto-Logout after inactivity -->
+      <div id="idle-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.6); z-index:9999; align-items:center; justify-content:center; backdrop-filter:blur(4px);">
+        <div style="background:#fff; color:#1f2d3a; padding:30px; border-radius:16px; text-align:center; max-width:400px; box-shadow:0 8px 30px rgba(0,0,0,0.3);">
+          <div style="font-size:36px; margin-bottom:12px;">⏰</div>
+          <h3 style="margin:0 0 10px;">לא זוהתה פעילות</h3>
+          <p style="margin:0 0 16px; color:#555;">האם ברצונך להישאר מחובר?</p>
+          <p style="margin:0 0 20px; color:#888;">התנתקות אוטומטית בעוד <span id="idle-countdown" style="font-weight:900; color:#e74c3c;">30</span> שניות</p>
+          <button onclick="idleStayLoggedIn()" style="padding:12px 32px; background:#2ecc71; color:white; border:none; border-radius:8px; font-weight:700; font-size:16px; cursor:pointer;">כן, להישאר מחובר</button>
+        </div>
+      </div>
+      <script>
+      (function() {{
+        var IDLE_MS = 10 * 60 * 1000;
+        var WARN_SEC = 30;
+        var idleTimer = null;
+        var countdownTimer = null;
+        var countdownVal = WARN_SEC;
+
+        function resetIdle() {{
+          if (countdownTimer) {{ clearInterval(countdownTimer); countdownTimer = null; }}
+          var ov = document.getElementById('idle-overlay');
+          if (ov) ov.style.display = 'none';
+          clearTimeout(idleTimer);
+          idleTimer = setTimeout(showWarning, IDLE_MS);
+        }}
+
+        function showWarning() {{
+          var ov = document.getElementById('idle-overlay');
+          if (!ov) return;
+          ov.style.display = 'flex';
+          countdownVal = WARN_SEC;
+          var cd = document.getElementById('idle-countdown');
+          if (cd) cd.textContent = countdownVal;
+          countdownTimer = setInterval(function() {{
+            countdownVal--;
+            if (cd) cd.textContent = countdownVal;
+            if (countdownVal <= 0) {{
+              clearInterval(countdownTimer);
+              window.location.href = '/web/logout';
+            }}
+          }}, 1000);
+        }}
+
+        window.idleStayLoggedIn = function() {{
+          resetIdle();
+        }};
+
+        ['mousemove','mousedown','keydown','touchstart','scroll','click'].forEach(function(evt) {{
+          document.addEventListener(evt, resetIdle, {{ passive: true }});
+        }});
+
+        resetIdle();
+      }})();
+      </script>
     </body>
     </html>
     """
