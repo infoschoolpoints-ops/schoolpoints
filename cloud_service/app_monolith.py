@@ -2802,13 +2802,14 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
     except Exception:
         current_path = ''
 
-    def _side_link(href: str, label: str, icon: str) -> str:
+    def _side_link(href: str, label: str, icon: str, extra_attrs: str = '') -> str:
         try:
             is_active = bool(current_path == href or (href not in ('/web', '/web/admin') and current_path.startswith(href)))
         except Exception:
             is_active = False
         cls = 'side-link active' if is_active else 'side-link'
-        return f'<a class="{cls}" href="{href}"><span class="ico">{icon}</span><span>{label}</span></a>'
+        ea = (' ' + extra_attrs) if extra_attrs else ''
+        return f'<a class="{cls}" href="{href}"{ea}><span class="ico">{icon}</span><span>{label}</span></a>'
 
     sidebar_html = (
         '<div class="mobile-overlay" onclick="toggleMenu()"></div>'
@@ -2820,6 +2821,7 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
         '<div class="side-links">'
         + _side_link('/web/admin', 'לוח בקרה', '🏠')
         + _side_link('/web/students', 'תלמידים', '🎓')
+        + _side_link('/web/students#quick', 'עדכון מהיר', '⚡', extra_attrs='onclick="sessionStorage.setItem(\'openQuick\',\'1\')"')
         + _side_link('/web/teachers', 'מורים', '👥')
         + _side_link('/web/messages', 'הודעות כלליות', '💬')
         + _side_link('/web/special-bonus', 'בונוס מיוחד', '🎁')
@@ -14413,6 +14415,10 @@ def web_admin(request: Request):
       <div class="icon">🎓</div>
       <div class="label">תלמידים</div>
     </a>
+    <a href="/web/students#quick" class="tile orange" onclick="sessionStorage.setItem('openQuick','1')">
+      <div class="icon">⚡</div>
+      <div class="label">עדכון מהיר</div>
+    </a>
     """
     
     if is_admin:
@@ -15456,6 +15462,11 @@ def web_students(request: Request):
         timer = setTimeout(load, 250);
       });
       load();
+      // Auto-open quick modal if coming from dashboard tile
+      if (sessionStorage.getItem('openQuick') === '1') {
+        sessionStorage.removeItem('openQuick');
+        setTimeout(() => openQuickModal(), 400);
+      }
     </script>
     """
 
