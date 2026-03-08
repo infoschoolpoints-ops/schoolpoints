@@ -2213,11 +2213,13 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
           border: 1px solid rgba(0,0,0,0.18);
         }
 
-        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
-        table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { background: rgba(15, 32, 39, 0.98); }
+        table { border-collapse: collapse; }
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.92); }
+        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.82); }
+        table tbody td { color: #1f2d3a; padding: 10px 12px; }
+        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; }
         .table-scroll { overflow: auto; }
-        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: rgba(15, 32, 39, 0.98); }
+        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -2523,11 +2525,13 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
           color: rgba(255,255,255,0.5) !important;
         }
 
-        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
-        table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { background: rgba(15, 32, 39, 0.98); }
+        table { border-collapse: collapse; }
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.92); }
+        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.82); }
+        table tbody td { color: #1f2d3a; padding: 10px 12px; }
+        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; }
         .table-scroll { overflow: auto; }
-        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: rgba(15, 32, 39, 0.98); }
+        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -2768,10 +2772,18 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
         '</div>'
         '<div class="side-links">'
         + _side_link('/web/admin', 'לוח בקרה', '🏠')
-        + _side_link('/web/students', 'תלמידים', '👦')
-        + _side_link('/web/teachers', 'מורים', '👨‍🏫')
-        + _side_link('/web/messages', 'הודעות', '💬')
-        + _side_link('/web/reports', 'דוחות', '📊')
+        + _side_link('/web/students', 'תלמידים', '🎓')
+        + _side_link('/web/teachers', 'מורים', '👥')
+        + _side_link('/web/messages', 'הודעות כלליות', '💬')
+        + _side_link('/web/special-bonus', 'בונוס מיוחד', '🎁')
+        + _side_link('/web/time-bonus', 'בונוס זמנים', '⏰')
+        + _side_link('/web/system-settings', 'הגדרות מערכת', '⚙')
+        + _side_link('/web/display-settings', 'הגדרות תצוגה', '🖥')
+        + _side_link('/web/purchases', 'קניות', '🛒')
+        + _side_link('/web/holidays', 'חגים', '📅')
+        + _side_link('/web/import', 'ייבוא', '📥')
+        + _side_link('/web/reports', 'ייצוא / דוחות', '📤')
+        + _side_link('/web/personal', 'אזור אישי', '👤')
         + _side_link('/web/guide', 'מדריך', '📘')
         + '</div>'
         + '</aside>'
@@ -2816,6 +2828,7 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
 
       <!-- Layout -->
       <div class="layout-container">
+        {sidebar_html}
         <!-- Main Content -->
         <main class="main-content">
             <div class="page-card">
@@ -14284,22 +14297,6 @@ def web_admin(request: Request):
           <div class="icon">👥</div>
           <div class="label">מורים</div>
         </a>
-        <a href="/web/classes" class="tile orange">
-          <div class="icon">🏫</div>
-          <div class="label">כיתות</div>
-        </a>
-        <a href="/web/import" class="tile dark">
-          <div class="icon">📥</div>
-          <div class="label">ייבוא</div>
-        </a>
-        <a href="/web/reports" class="tile cyan">
-          <div class="icon">📤</div>
-          <div class="label">ייצוא</div>
-        </a>
-        <a href="/web/upgrades" class="tile orange">
-          <div class="icon">🎁</div>
-          <div class="label">שדרוגים</div>
-        </a>
         <a href="/web/messages" class="tile purple">
           <div class="icon">💬</div>
           <div class="label">הודעות כלליות</div>
@@ -14312,13 +14309,21 @@ def web_admin(request: Request):
           <div class="icon">⏱️</div>
           <div class="label">בונוס זמנים</div>
         </a>
-        <a href="/web/holidays" class="tile green">
-          <div class="icon">📅</div>
-          <div class="label">חגים</div>
+        <a href="/web/system-settings" class="tile gray">
+          <div class="icon">⚙️</div>
+          <div class="label">הגדרות מערכת</div>
+        </a>
+        <a href="/web/display-settings" class="tile gray">
+          <div class="icon">🖥️</div>
+          <div class="label">הגדרות תצוגה</div>
         </a>
         <a href="/web/purchases" class="tile indigo">
           <div class="icon">🛒</div>
           <div class="label">קניות</div>
+        </a>
+        <a href="/web/holidays" class="tile green">
+          <div class="icon">📅</div>
+          <div class="label">חגים</div>
         </a>
         <a href="/web/max-points" class="tile red">
           <div class="icon">📉</div>
@@ -14332,13 +14337,13 @@ def web_admin(request: Request):
           <div class="icon">🌙</div>
           <div class="label">מצב שקט</div>
         </a>
-        <a href="/web/system-settings" class="tile gray">
-          <div class="icon">⚙️</div>
-          <div class="label">הגדרות מערכת</div>
+        <a href="/web/import" class="tile dark">
+          <div class="icon">📥</div>
+          <div class="label">ייבוא</div>
         </a>
-        <a href="/web/display-settings" class="tile gray">
-          <div class="icon">🖥️</div>
-          <div class="label">הגדרות תצוגה</div>
+        <a href="/web/reports" class="tile cyan">
+          <div class="icon">📤</div>
+          <div class="label">ייצוא / דוחות</div>
         </a>
         """
 

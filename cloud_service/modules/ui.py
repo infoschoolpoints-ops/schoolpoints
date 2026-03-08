@@ -83,11 +83,13 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
           color: rgba(255,255,255,0.5) !important;
         }
 
-        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
-        table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { background: rgba(15, 32, 39, 0.98); }
+        table { border-collapse: collapse; }
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.92); }
+        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.82); }
+        table tbody td { color: #1f2d3a; padding: 10px 12px; }
+        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; }
         .table-scroll { overflow: auto; }
-        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: rgba(15, 32, 39, 0.98); }
+        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; }
 
         /* Glassmorphism Utilities */
         .glass {
@@ -319,8 +321,20 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
     
     # Sidebar Navigation Items
     menu_items = [
-        {'url': '/web/admin', 'icon': '🏠', 'label': 'ראשי'},
+        {'url': '/web/admin', 'icon': '🏠', 'label': 'לוח בקרה'},
         {'url': '/web/students', 'icon': '🎓', 'label': 'תלמידים'},
+        {'url': '/web/teachers', 'icon': '👥', 'label': 'מורים'},
+        {'url': '/web/messages', 'icon': '💬', 'label': 'הודעות כלליות'},
+        {'url': '/web/special-bonus', 'icon': '🎁', 'label': 'בונוס מיוחד'},
+        {'url': '/web/time-bonus', 'icon': '⏰', 'label': 'בונוס זמנים'},
+        {'url': '/web/system-settings', 'icon': '⚙', 'label': 'הגדרות מערכת'},
+        {'url': '/web/display-settings', 'icon': '🖥', 'label': 'הגדרות תצוגה'},
+        {'url': '/web/purchases', 'icon': '🛒', 'label': 'קניות'},
+        {'url': '/web/holidays', 'icon': '📅', 'label': 'חגים'},
+        {'url': '/web/import', 'icon': '📥', 'label': 'ייבוא'},
+        {'url': '/web/reports', 'icon': '📤', 'label': 'ייצוא / דוחות'},
+        {'url': '/web/personal', 'icon': '👤', 'label': 'אזור אישי'},
+        {'url': '/web/guide', 'icon': '📘', 'label': 'מדריך'},
     ]
     
     # Check if admin (this part needs context, maybe passed in args or extracted from request)
@@ -487,11 +501,13 @@ def public_web_shell(title: str, body_html: str, request: Request = None) -> str
           color: rgba(255,255,255,0.5) !important;
         }
 
-        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.06); }
-        table tbody tr:nth-child(odd) { background: rgba(0,0,0,0.04); }
-        table thead th { background: rgba(15, 32, 39, 0.98); }
+        table { border-collapse: collapse; }
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.92); }
+        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.82); }
+        table tbody td { color: #1f2d3a; padding: 10px 12px; }
+        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; }
         .table-scroll { overflow: auto; }
-        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: rgba(15, 32, 39, 0.98); }
+        .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; }
 
         /* Glassmorphism Utilities */
         .glass {
