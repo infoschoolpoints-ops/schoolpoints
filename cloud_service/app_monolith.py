@@ -30,7 +30,7 @@ except Exception:
     psycopg2 = None  # type: ignore[assignment]
     psycopg2_extras = None  # type: ignore[assignment]
 from fastapi import FastAPI, Header, HTTPException, Form, Query, Request, UploadFile, File, Body
-from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse
+from fastapi.responses import HTMLResponse, Response, RedirectResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -3951,6 +3951,7 @@ class SnapshotPayload(BaseModel):
     news_items: List[Dict[str, Any]] = []
     ads_items: List[Dict[str, Any]] = []
     student_messages: List[Dict[str, Any]] = []
+    snapshot: Dict[str, Any] = {}
 
 
 class Snapshot2Payload(BaseModel):
@@ -4590,34 +4591,20 @@ def _swap_sort_order(conn, table: str, first_id: int, second_id: int) -> bool:
 
 
 def _record_tenant_change(tenant_id: str, entity_type: str, entity_id: str | int, action_type: str, payload: Dict[str, Any] | None) -> None:
+    """Record a web-admin change to both changes (admin log) AND sync_events (delta sync stream)."""
     if not tenant_id:
         return
-    conn = _db()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            _sql_placeholder(
-                '''
-                INSERT INTO changes (tenant_id, station_id, entity_type, entity_id, action_type, payload_json, created_at)
-                VALUES (?, 'web', ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                '''
-            ),
-            (
-                str(tenant_id),
-                str(entity_type),
-                str(entity_id),
-                str(action_type),
-                json.dumps(payload or {}, ensure_ascii=False)
-            )
+        _record_sync_event(
+            tenant_id=str(tenant_id),
+            station_id='web',
+            entity_type=str(entity_type or '').strip(),
+            entity_id=(str(entity_id) if entity_id is not None else None),
+            action_type=str(action_type or '').strip(),
+            payload=(payload or {}),
         )
-        conn.commit()
     except Exception:
         pass
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
 
 
 def _persist_ads_media(request: Request, tenant_id: str, upload: UploadFile) -> str:
@@ -5076,7 +5063,7 @@ def api_messages_news_settings_save(request: Request, payload: NewsSettingsPaylo
         
         _set_setting_value(conn, 'news_settings', json.dumps(current))
         conn.commit()
-        _record_tenant_change(tenant_id, 'settings', 'news_settings', 'update', current)
+        _record_tenant_change(tenant_id, 'setting', 'news_settings', 'update', current)
         return {'ok': True}
     finally:
         try: conn.close()
@@ -6555,6 +6542,23 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"snapshot failed: student_messages replace: {e}")
 
+        # Process full snapshot dict if provided (all remaining tables)
+        extra_applied = {}
+        already_handled = {'teachers', 'students', 'static_messages', 'threshold_messages', 'news_items', 'ads_items', 'student_messages'}
+        snap_dict = payload.snapshot or {}
+        if isinstance(snap_dict, dict):
+            for tbl, rows in snap_dict.items():
+                if tbl in already_handled:
+                    continue
+                if not isinstance(rows, list):
+                    continue
+                try:
+                    n = _replace_rows(tconn, tbl, rows)
+                    if n > 0:
+                        extra_applied[tbl] = n
+                except Exception:
+                    pass
+
         tconn.commit()
     except Exception as e:
         try:
@@ -6565,7 +6569,7 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
     finally:
         tconn.close()
 
-    return {
+    result = {
         'ok': True,
         'tenant_id': payload.tenant_id,
         'station_id': payload.station_id,
@@ -6577,6 +6581,9 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
         'ads_items': ads_n,
         'student_messages': student_msg_n,
     }
+    if extra_applied:
+        result['extra'] = extra_applied
+    return result
 
 
 @app.get('/sync/snapshot')
@@ -7555,7 +7562,7 @@ def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[
         val_str = json.dumps(payload.value, ensure_ascii=False)
         _set_setting_value(conn, payload.key, val_str)
         conn.commit()
-        _record_tenant_change(tenant_id, 'settings', payload.key, 'update', payload.value)
+        _record_tenant_change(tenant_id, 'setting', payload.key, 'update', {'key': payload.key, 'value': val_str})
         return {'ok': True}
     finally:
         try: conn.close()
@@ -8519,7 +8526,7 @@ async def api_settings_save(request: Request) -> Dict[str, Any]:
     try:
         _set_web_setting_json(conn, k, v_str)
         conn.commit()
-        _record_tenant_change(tenant_id, 'settings', k, 'update', {'key': k, 'value': v_str})
+        _record_tenant_change(tenant_id, 'setting', k, 'update', {'key': k, 'value': v_str})
         return {'ok': True}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
@@ -15576,6 +15583,8 @@ def view_changes(tenant_id: str, api_key: str) -> str:
 
 # In-memory store for sync progress (in production, use Redis or database)
 _sync_progress: Dict[str, Dict[str, Any]] = {}
+# In-memory store for connect results keyed by station_id — desktop polls this
+_connect_results: Dict[str, Dict[str, Any]] = {}
 
 class EnhancedConnectRequest(BaseModel):
     tenant_id: str
@@ -15585,6 +15594,7 @@ class EnhancedConnectRequest(BaseModel):
 class EnhancedConnectResponse(BaseModel):
     ok: bool
     sync_token: str = None
+    api_key: str = None
     message: str = None
     error: str = None
     institution_name: str = None
@@ -15603,23 +15613,43 @@ def sync_connect_enhanced(request: Request, payload: EnhancedConnectRequest) -> 
             'error': 'Missing tenant_id or password'
         }
     
-    # Verify credentials (ignore existing session)
+    # Verify credentials using password_hash
     conn = _db()
     try:
         cur = conn.cursor()
         cur.execute(
-            _sql_placeholder('SELECT id, name FROM institutions WHERE tenant_id = ? AND password = ? LIMIT 1'),
-            (tenant_id, password)
+            _sql_placeholder('SELECT id, name, api_key, password_hash FROM institutions WHERE tenant_id = ? LIMIT 1'),
+            (tenant_id,)
         )
         row = cur.fetchone()
         if not row:
             conn.close()
-            return {
-                'ok': False,
-                'error': 'Invalid tenant_id or password'
-            }
+            return {'ok': False, 'error': 'Invalid tenant_id or password'}
 
-        institution_name = str(row[1] or '').strip()
+        r = dict(row) if hasattr(row, 'keys') else {'id': row[0], 'name': row[1], 'api_key': row[2], 'password_hash': row[3]}
+        pw_hash = str(r.get('password_hash') or '')
+        auth_ok = False
+        if pw_hash.startswith('pbkdf2_sha256$'):
+            auth_ok = _pbkdf2_verify(password, pw_hash)
+        elif pw_hash:
+            try:
+                if hashlib.sha256(password.encode('utf-8')).hexdigest() == pw_hash:
+                    auth_ok = True
+            except Exception:
+                pass
+        if not auth_ok:
+            conn.close()
+            return {'ok': False, 'error': 'Invalid tenant_id or password'}
+
+        institution_name = str(r.get('name') or '').strip()
+        inst_api_key = str(r.get('api_key') or '').strip()
+
+        # Ensure tenant DB exists
+        try:
+            _ensure_tenant_db_exists(tenant_id)
+        except Exception:
+            pass
+
         logo_url = ''
         tconn = None
         try:
@@ -15656,17 +15686,34 @@ def sync_connect_enhanced(request: Request, payload: EnhancedConnectRequest) -> 
         _sync_progress[sync_token] = {
             'tenant_id': tenant_id,
             'station_id': station_id,
-            'phase': 'teachers',  # teachers -> students -> settings -> files
+            'phase': 'ready',
             'progress': 0,
             'total_items': 0,
             'processed': 0,
-            'message': 'מתחיל סנכרון...',
+            'message': 'מחובר, ממתין לסנכרון ראשוני מהעמדה המקומית...',
             'completed': False,
             'error': None,
             'started_at': datetime.datetime.now().isoformat()
         }
         
-        # Start async sync process (in production, use background task)
+        # Derive push_url from request origin
+        try:
+            base_url = str(request.base_url).rstrip('/')
+        except Exception:
+            base_url = 'https://schoolpoints.co.il'
+        push_url = base_url + '/sync/push'
+
+        # Store connect result so desktop can poll /sync/connect/status
+        _connect_results[station_id] = {
+            'ready': True,
+            'tenant_id': tenant_id,
+            'api_key': inst_api_key,
+            'push_url': push_url,
+            'institution_name': institution_name,
+            'timestamp': datetime.datetime.now().isoformat(),
+        }
+
+        # Count existing data in tenant DB for progress indication
         import threading
         threading.Thread(target=_background_sync_process, args=(sync_token, tenant_id, station_id), daemon=True).start()
         
@@ -15674,7 +15721,8 @@ def sync_connect_enhanced(request: Request, payload: EnhancedConnectRequest) -> 
         return {
             'ok': True,
             'sync_token': sync_token,
-            'message': 'הסנכרון החל, אנא המתן...',
+            'api_key': inst_api_key,
+            'message': 'התחברות הצליחה. העמדה המקומית יכולה כעת לסנכרן.',
             'institution_name': institution_name,
             'logo_url': logo_url
         }
@@ -15686,169 +15734,108 @@ def sync_connect_enhanced(request: Request, payload: EnhancedConnectRequest) -> 
             'error': str(e)
         }
 
-def _background_sync_process(sync_token: str, tenant_id: str, station_id: str):
-    """Background process that handles the phased sync"""
+def _count_tenant_tables(tenant_id: str) -> Dict[str, int]:
+    """Count rows in key tenant tables."""
+    counts: Dict[str, int] = {}
+    conn = None
+    tconn = None
     try:
-        state = _sync_progress.get(sync_token)
-        if not state:
-            return
-        
-        # Phase 1: Sync Teachers
+        conn = _db()
+        tconn = _get_tenant_conn(conn, tenant_id)
+        if tconn:
+            cur = tconn.cursor()
+            for tbl in ('teachers', 'students', 'products', 'settings'):
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+                    row = cur.fetchone()
+                    counts[tbl] = row[0] if row else 0
+                except Exception:
+                    counts[tbl] = 0
+    except Exception:
+        pass
+    finally:
+        try:
+            if tconn: tconn.close()
+        except Exception: pass
+        try:
+            if conn: conn.close()
+        except Exception: pass
+    return counts
+
+def _background_sync_process(sync_token: str, tenant_id: str, station_id: str):
+    """Poll tenant DB for data arrival from desktop snapshot push."""
+    import time as _time
+    state = _sync_progress.get(sync_token)
+    if not state:
+        return
+    try:
+        # Quick initial check
         state['phase'] = 'teachers'
-        state['message'] = 'מסנכרן מורים...'
+        state['message'] = 'ממתין לנתונים מהעמדה המקומית...'
         state['progress'] = 5
-        
-        # Get teacher data from local snapshot
-        teachers_count = _sync_teachers_data(sync_token, tenant_id)
-        
-        # Phase 2: Sync Students
+        initial = _count_tenant_tables(tenant_id)
+        init_tc = initial.get('teachers', 0)
+        init_sc = initial.get('students', 0)
+
+        # If data already exists, skip waiting
+        if init_tc > 0:
+            state['progress'] = 25
+            state['message'] = f'נמצאו {init_tc} מורים בענן.'
+        else:
+            # Poll up to ~5 min for teachers to arrive
+            for _ in range(150):
+                _time.sleep(2)
+                c = _count_tenant_tables(tenant_id)
+                if c.get('teachers', 0) > 0:
+                    init_tc = c['teachers']
+                    init_sc = c.get('students', 0)
+                    state['progress'] = 25
+                    state['message'] = f'סונכרנו {init_tc} מורים!'
+                    break
+
+        # Phase: students
         state['phase'] = 'students'
-        state['message'] = 'מסנכרן תלמידים...'
-        state['progress'] = 30
-        
-        # Get student data from local snapshot
-        students_count = _sync_students_data(sync_token, tenant_id)
-        
-        # Phase 3: Sync Settings
+        state['progress'] = 35
+        if init_sc > 0:
+            state['message'] = f'{init_tc} מורים, {init_sc} תלמידים.'
+            state['progress'] = 60
+        elif init_tc > 0:
+            state['message'] = f'{init_tc} מורים. בודק תלמידים...'
+            for _ in range(30):
+                _time.sleep(2)
+                c = _count_tenant_tables(tenant_id)
+                init_sc = c.get('students', 0)
+                if init_sc > 0:
+                    state['progress'] = 60
+                    state['message'] = f'{init_tc} מורים, {init_sc} תלמידים.'
+                    break
+
+        # Phase: settings
         state['phase'] = 'settings'
-        state['message'] = 'מסנכרן הגדרות...'
-        state['progress'] = 70
-        
-        # Sync system settings
-        _sync_settings_data(sync_token, tenant_id)
-        
-        # Phase 4: Sync Files
+        state['progress'] = 75
+        state['message'] = 'בודק הגדרות...'
+        _time.sleep(1)
+        state['progress'] = 85
+
+        # Phase: files
         state['phase'] = 'files'
-        state['message'] = 'מסנכרן קבצים (תמונות, לוגו)...'
-        state['progress'] = 90
-        
-        # Sync files including logo
-        _sync_files_data(sync_token, tenant_id)
-        
+        state['message'] = 'בודק קבצים...'
+        state['progress'] = 92
+        _time.sleep(1)
+
         # Complete
-        state['completed'] = True
         state['progress'] = 100
-        state['message'] = f'הסנכרון הושלם! סונכרנו {teachers_count} מורים ו-{students_count} תלמידים'
-        
+        state['completed'] = True
+        tc = init_tc
+        sc = init_sc
+        if tc + sc > 0:
+            state['message'] = f'הסנכרון הושלם! {tc} מורים, {sc} תלמידים.'
+        else:
+            state['message'] = 'מחובר. ממתין לסנכרון מהעמדה.'
     except Exception as e:
-        state = _sync_progress.get(sync_token)
         if state:
             state['error'] = str(e)
-            state['message'] = f'שגיאה בסנכרון: {str(e)}'
-
-def _sync_teachers_data(sync_token: str, tenant_id: str) -> int:
-    """Sync teachers data from incoming snapshot"""
-    state = _sync_progress.get(sync_token)
-    if not state:
-        return 0
-    
-    # This would be called after the desktop app sends its snapshot
-    # For now, we'll simulate with existing data
-    conn = _db()
-    try:
-        tconn = _get_tenant_conn(conn, tenant_id)
-        if not tconn:
-            return 0
-            
-        cur = tconn.cursor()
-        cur.execute("SELECT COUNT(*) FROM teachers")
-        row = cur.fetchone()
-        count = row[0] if row else 0
-        
-        # Simulate progress
-        for i in range(20):
-            import time
-            time.sleep(0.1)
-            state['progress'] = 5 + (i + 1) * 0.75
-            
-        tconn.close()
-        conn.close()
-        return count
-    except Exception:
-        try: conn.close()
-        except: pass
-        return 0
-
-def _sync_students_data(sync_token: str, tenant_id: str) -> int:
-    """Sync students data from incoming snapshot"""
-    state = _sync_progress.get(sync_token)
-    if not state:
-        return 0
-    
-    conn = _db()
-    try:
-        tconn = _get_tenant_conn(conn, tenant_id)
-        if not tconn:
-            return 0
-            
-        cur = tconn.cursor()
-        cur.execute("SELECT COUNT(*) FROM students")
-        row = cur.fetchone()
-        count = row[0] if row else 0
-        
-        # Simulate progress
-        for i in range(40):
-            import time
-            time.sleep(0.1)
-            state['progress'] = 30 + (i + 1) * 0.4
-            
-        tconn.close()
-        conn.close()
-        return count
-    except Exception:
-        try: conn.close()
-        except: pass
-        return 0
-
-def _sync_settings_data(sync_token: str, tenant_id: str):
-    """Sync system settings"""
-    state = _sync_progress.get(sync_token)
-    if not state:
-        return
-    
-    # Simulate progress
-    for i in range(20):
-        import time
-        time.sleep(0.1)
-        state['progress'] = 70 + (i + 1) * 0.75
-
-def _sync_files_data(sync_token: str, tenant_id: str):
-    """Sync files including logo"""
-    state = _sync_progress.get(sync_token)
-    if not state:
-        return
-    
-    # Simulate progress
-    for i in range(10):
-        import time
-        time.sleep(0.1)
-        state['progress'] = 90 + (i + 1) * 0.5
-
-def _sync_phase_data(sync_token: str, phase: str, progress_weight: int):
-    """Simulate syncing data for a phase"""
-    state = _sync_progress.get(sync_token)
-    if not state:
-        return
-    
-    # Simulate processing items
-    items_count = 10
-    state['total_items'] = items_count
-    state['processed'] = 0
-    
-    for i in range(items_count):
-        import time
-        time.sleep(0.2)  # Simulate work
-        
-        state['processed'] = i + 1
-        # Calculate progress within this phase
-        phase_progress = (i + 1) / items_count * progress_weight
-        base_progress = {
-            'teachers': 5,
-            'students': 25,
-            'settings': 65,
-            'files': 85
-        }.get(state['phase'], 0)
-        state['progress'] = base_progress + phase_progress
+            state['message'] = f'שגיאה: {e}'
 
 @app.get('/sync/progress')
 def sync_progress(sync_token: str = Query(...)) -> Dict[str, Any]:
@@ -15865,29 +15852,70 @@ def sync_progress(sync_token: str = Query(...)) -> Dict[str, Any]:
         'error': state['error']
     }
 
+@app.get('/sync/connect/status')
+def sync_connect_status(station_id: str = Query(default='')) -> Dict[str, Any]:
+    sid = str(station_id or '').strip()
+    if not sid:
+        return {'ok': False, 'ready': False}
+    # Cleanup expired entries (>5 min)
+    now = datetime.datetime.now()
+    expired = [k for k, v in _connect_results.items()
+               if (now - datetime.datetime.fromisoformat(v.get('timestamp', now.isoformat()))).total_seconds() > 300]
+    for k in expired:
+        _connect_results.pop(k, None)
+    result = _connect_results.get(sid)
+    if not result or not result.get('ready'):
+        return {'ok': True, 'ready': False}
+    return {
+        'ok': True, 'ready': True,
+        'tenant_id': result.get('tenant_id', ''),
+        'api_key': result.get('api_key', ''),
+        'push_url': result.get('push_url', ''),
+    }
+
 @app.post('/sync/teacher-password')
 def sync_teacher_password(
     request: Request,
     sync_token: str = Form(...),
     teacher_password: str = Form(...)
-) -> Dict[str, Any]:
-    """Verify teacher password after teachers are synced"""
+):
+    """Verify teacher card_number and set web session cookie."""
     state = _sync_progress.get(sync_token)
     if not state:
         raise HTTPException(status_code=404, detail='Invalid sync_token')
-    
-    if state['progress'] < 20:
-        return {
-            'ok': False,
-            'error': 'Teachers not yet synced'
-        }
-    
-    # Here you would verify the teacher password
-    # For now, just accept it
-    return {
+    tenant_id = state.get('tenant_id', '')
+    if not tenant_id:
+        return JSONResponse({'ok': False, 'error': 'חסר מזהה מוסד'})
+    card = str(teacher_password or '').strip()
+    if not card:
+        return JSONResponse({'ok': False, 'error': 'יש להזין מספר כרטיס מורה'})
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            _sql_placeholder(
+                'SELECT id, name, is_admin FROM teachers '
+                'WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1'
+            ),
+            (card, card, card)
+        )
+        row = cur.fetchone()
+    finally:
+        try: conn.close()
+        except Exception: pass
+    if not row:
+        return JSONResponse({'ok': False, 'error': 'כרטיס מורה לא נמצא'})
+    teacher_id = str((row.get('id') if isinstance(row, dict) else row['id']) or '')
+    if not teacher_id:
+        return JSONResponse({'ok': False, 'error': 'מזהה מורה לא תקין'})
+    resp = JSONResponse({
         'ok': True,
-        'message': 'סיסמת מורה אושרה, ממשיך בסנכרון...'
-    }
+        'message': 'סיסמת מורה אושרה!',
+        'redirect_url': '/web/admin',
+    })
+    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60*60*24*7)
+    resp.set_cookie('web_teacher', teacher_id, httponly=True, samesite='lax', max_age=60*60*24*7)
+    return resp
 
 
 @app.get('/sync/connect', response_class=HTMLResponse)

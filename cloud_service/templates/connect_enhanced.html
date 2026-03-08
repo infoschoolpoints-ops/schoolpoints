@@ -262,12 +262,12 @@
             
             <!-- Teacher Password -->
             <div id="teacherPassword" class="teacher-password">
-                <h3>אישור סיסמת מורה</h3>
-                <p>המורים סונכרנו בהצלחה. הזן את סיסמת המורה שלך להמשך:</p>
+                <h3>כניסת מורה</h3>
+                <p>הסנכרון הושלם! הזן מספר כרטיס מורה כדי להיכנס לניהול:</p>
                 <div class="form-group">
-                    <input type="password" id="teacherPassInput" placeholder="סיסמת מורה">
+                    <input type="password" id="teacherPassInput" placeholder="מספר כרטיס מורה">
                 </div>
-                <button class="btn" onclick="submitTeacherPassword()">אשר סיסמה</button>
+                <button class="btn" onclick="submitTeacherPassword()">כניסה</button>
                 <div id="teacherError" class="error"></div>
             </div>
         </div>
@@ -383,15 +383,13 @@
                 
                 if (data.completed) {
                     clearInterval(progressInterval);
-                    showSuccess('progressSuccess', 'הסנכרון הושלם בהצלחה! אפשר להמשיך ללוח הניהול.');
+                    // Mark all phases completed
+                    document.querySelectorAll('.phase').forEach(el => { el.classList.remove('active'); el.classList.add('completed'); });
+                    // Show teacher password prompt
+                    document.getElementById('teacherPassword').style.display = 'block';
                 } else if (data.error) {
                     clearInterval(progressInterval);
                     showError('progressError', data.error);
-                }
-                
-                // Show teacher password prompt when teachers are synced
-                if (data.phase === 'students' && !document.getElementById('teacherPassword').style.display) {
-                    document.getElementById('teacherPassword').style.display = 'block';
                 }
             }, 500);
         }

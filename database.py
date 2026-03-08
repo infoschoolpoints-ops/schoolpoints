@@ -13,16 +13,26 @@ import threading
 import queue
 import urllib.request
 import urllib.error
+import atexit
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
+
+try:
+    from sp_logger import get_logger as _get_sp_logger
+    _log = _get_sp_logger()
+except Exception:
+    import logging as _logging
+    _log = _logging.getLogger('SchoolPoints')
 
 
 class _RemoteSyncWorker:
     """Worker singleton: thread אחד קבוע לכל URL שאוסף כתיבות ושולח באצווה.
     מונע פיצוץ threads כשיש 50 עמדות × 10 פעולות/דקה.
+    כתיבות שנכשלות נשמרות לדיסק ונשלחות שוב בהפעלה הבאה.
     """
     _instances = {}   # url → _RemoteSyncWorker
     _lock = threading.Lock()
+    _pending_dir_cache = None  # cached path to pending writes directory
 
     @classmethod
     def get(cls, url: str, api_key: str) -> '_RemoteSyncWorker':
@@ -35,12 +45,19 @@ class _RemoteSyncWorker:
         self._url = url
         self._api_key = api_key
         self._queue = queue.Queue()
+        self._in_flight = None  # batch בשליחה כרגע
+        # שלח כתיבות שנשמרו מהפעלה קודמת
+        self._replay_persisted()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def enqueue(self, stmts: list):
         """הוספת כתיבות לתור (לא חוסם)."""
         if stmts:
+            try:
+                print(f"[DB-SYNC] Enqueued {len(stmts)} write(s) to {self._url}")
+            except Exception:
+                pass
             self._queue.put(stmts)
 
     def _run(self):
@@ -59,27 +76,286 @@ class _RemoteSyncWorker:
                 except queue.Empty:
                     break
             # שלח הכל כ-HTTP אחד
+            self._in_flight = batch
             self._send(batch)
+            self._in_flight = None
 
-    def _send(self, stmts: list):
-        try:
-            payload = json.dumps({'statements': stmts}, ensure_ascii=False, default=str).encode('utf-8')
-            req = urllib.request.Request(
-                self._url + '/db/execute_many',
-                data=payload,
-                headers={
-                    'Content-Type': 'application/json; charset=utf-8',
-                    'api-key': self._api_key,
-                },
-                method='POST'
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                resp.read()
-        except Exception as e:
+    def flush(self, timeout: float = 5.0):
+        """מרוקן את התור ושולח הכל לשרת. חוסם עד timeout שניות."""
+        import time
+        # חכה ל-in-flight batch שהסתיים
+        deadline = time.time() + timeout
+        while getattr(self, '_in_flight', None) and time.time() < deadline:
+            time.sleep(0.2)
+        # אסוף items שנשארו בתור
+        all_stmts = []
+        while time.time() < deadline:
             try:
-                print(f"[DB-SYNC] Failed to send {len(stmts)} write(s) to master: {e}")
+                batch = self._queue.get_nowait()
+                all_stmts.extend(batch)
+            except queue.Empty:
+                break
+        if all_stmts:
+            try:
+                print(f"[DB-SYNC] Flush: sending {len(all_stmts)} pending write(s)...")
             except Exception:
                 pass
+            self._send(all_stmts)
+        else:
+            try:
+                print(f"[DB-SYNC] Flush: queue empty, nothing to send")
+            except Exception:
+                pass
+
+    @classmethod
+    def flush_all(cls, timeout: float = 5.0):
+        """מרוקן את כל ה-workers הפעילים."""
+        with cls._lock:
+            workers = list(cls._instances.values())
+        for w in workers:
+            try:
+                w.flush(timeout=timeout)
+            except Exception:
+                pass
+
+    # --- Persistence for failed writes ---
+
+    @classmethod
+    def _get_pending_dir(cls):
+        """תיקייה לשמירת כתיבות שנכשלו."""
+        if cls._pending_dir_cache:
+            return cls._pending_dir_cache
+        base = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA') or os.path.expanduser('~')
+        d = os.path.join(base, 'SchoolPoints', 'pending_writes')
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        cls._pending_dir_cache = d
+        return d
+
+    def _persist_failed(self, stmts: list):
+        """שמירת כתיבות שנכשלו לדיסק — לא מאבדים נתונים!"""
+        try:
+            d = self._get_pending_dir()
+            fname = f"pending_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}.json"
+            path = os.path.join(d, fname)
+            data = {'url': self._url, 'api_key': self._api_key, 'statements': stmts}
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, default=str)
+            try:
+                print(f"[DB-SYNC] Persisted {len(stmts)} failed write(s) to {fname}")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"[DB-SYNC] CRITICAL: Cannot persist failed writes: {e}")
+            except Exception:
+                pass
+
+    def _replay_persisted(self):
+        """שליחת כתיבות שנשמרו מהפעלה קודמת."""
+        try:
+            d = self._get_pending_dir()
+            if not os.path.isdir(d):
+                return
+            files = sorted(f for f in os.listdir(d) if f.startswith('pending_') and f.endswith('.json'))
+            if not files:
+                return
+            try:
+                print(f"[DB-SYNC] Found {len(files)} persisted write file(s) to replay")
+            except Exception:
+                pass
+            for fname in files:
+                path = os.path.join(d, fname)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    stmts = data.get('statements') or []
+                    if stmts:
+                        self._queue.put(stmts)
+                    # מחק את הקובץ — הכתיבות בתור עכשיו
+                    os.remove(path)
+                except Exception as e:
+                    try:
+                        print(f"[DB-SYNC] Failed to replay {fname}: {e}")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def send_persisted_writes_now(url: str, api_key: str, timeout: float = 8.0) -> int:
+        """שליחת כל הכתיבות השמורות לשרת — קוראים לזה לפני העתקת DB מהמאסטר!
+        מחזיר כמה כתיבות נשלחו."""
+        sent = 0
+        old_timeout = socket.getdefaulttimeout()
+        try:
+            # Set socket-level timeout so TCP connect also respects our timeout
+            # (urllib timeout= only applies to read, not connect on Windows)
+            socket.setdefaulttimeout(timeout)
+            d = _RemoteSyncWorker._get_pending_dir()
+            if not os.path.isdir(d):
+                return 0
+            files = sorted(f for f in os.listdir(d) if f.startswith('pending_') and f.endswith('.json'))
+            if not files:
+                return 0
+            try:
+                print(f"[DB-SYNC] Sending {len(files)} persisted write file(s) to master BEFORE db copy...")
+            except Exception:
+                pass
+            for fname in files:
+                path = os.path.join(d, fname)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    stmts = data.get('statements') or []
+                    if not stmts:
+                        os.remove(path)
+                        continue
+                    payload = json.dumps({'statements': stmts}, ensure_ascii=False, default=str).encode('utf-8')
+                    req = urllib.request.Request(
+                        url.rstrip('/') + '/db/execute_many',
+                        data=payload,
+                        headers={'Content-Type': 'application/json; charset=utf-8', 'api-key': api_key},
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(req, timeout=timeout) as resp:
+                        resp.read()
+                    os.remove(path)
+                    sent += len(stmts)
+                    try:
+                        print(f"[DB-SYNC] Replayed {len(stmts)} write(s) from {fname}")
+                    except Exception:
+                        pass
+                except Exception as e:
+                    try:
+                        print(f"[DB-SYNC] Failed to replay {fname}: {e} (will retry next time)")
+                    except Exception:
+                        pass
+                    break  # אם שרת לא זמין, לא ננסה את הבאים
+        except Exception:
+            pass
+        finally:
+            socket.setdefaulttimeout(old_timeout)
+        return sent
+
+    _MAX_RETRIES = 3
+
+    def _send(self, stmts: list):
+        # Write-ahead: persist BEFORE sending — prevents data loss if process dies
+        wal_path = self._persist_wal(stmts)
+        payload = json.dumps({'statements': stmts}, ensure_ascii=False, default=str).encode('utf-8')
+        last_err = None
+        _old_sock_timeout = socket.getdefaulttimeout()
+        try:
+            socket.setdefaulttimeout(8.0)
+        except Exception:
+            pass
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                req = urllib.request.Request(
+                    self._url + '/db/execute_many',
+                    data=payload,
+                    headers={
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'api-key': self._api_key,
+                    },
+                    method='POST'
+                )
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    resp_body = resp.read()
+                try:
+                    resp_data = json.loads(resp_body.decode('utf-8', errors='ignore'))
+                    results = resp_data.get('results') or []
+                    errors = [r for r in results if isinstance(r, dict) and r.get('error')]
+                    if errors:
+                        print(f"[DB-SYNC] Sent {len(stmts)} write(s): {len(results)-len(errors)} OK, {len(errors)} FAILED on server")
+                        for e in errors[:3]:
+                            print(f"[DB-SYNC]   server error: {e.get('error','')[:120]}")
+                    else:
+                        print(f"[DB-SYNC] Sent {len(stmts)} write(s) OK")
+                except Exception:
+                    try:
+                        print(f"[DB-SYNC] Sent {len(stmts)} write(s) OK")
+                    except Exception:
+                        pass
+                # הצלחה — מחק את ה-WAL file
+                self._remove_wal(wal_path)
+                try:
+                    socket.setdefaulttimeout(_old_sock_timeout)
+                except Exception:
+                    pass
+                return
+            except Exception as e:
+                last_err = e
+                try:
+                    print(f"[DB-SYNC] Send attempt {attempt+1}/{self._MAX_RETRIES} failed: {e}")
+                except Exception:
+                    pass
+                if attempt < self._MAX_RETRIES - 1:
+                    time.sleep(min(5.0, 1.0 * (attempt + 1)))
+        # Restore socket timeout
+        try:
+            socket.setdefaulttimeout(_old_sock_timeout)
+        except Exception:
+            pass
+        # נכשל — ה-WAL file נשאר על הדיסק ויישלח בהפעלה הבאה
+        try:
+            print(f"[DB-SYNC] Failed to send {len(stmts)} write(s) after {self._MAX_RETRIES} retries — saved to disk for retry")
+        except Exception:
+            pass
+
+    def _persist_wal(self, stmts: list) -> str:
+        """Write-ahead: שמירת כתיבות לדיסק לפני שליחה."""
+        try:
+            d = self._get_pending_dir()
+            fname = f"pending_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}.json"
+            path = os.path.join(d, fname)
+            data = {'url': self._url, 'api_key': self._api_key, 'statements': stmts}
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, default=str)
+            return path
+        except Exception as e:
+            try:
+                print(f"[DB-SYNC] WARNING: Cannot persist WAL: {e}")
+            except Exception:
+                pass
+            return ''
+
+    @staticmethod
+    def _remove_wal(path: str):
+        """מחיקת WAL file אחרי שליחה מוצלחת."""
+        if path:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+
+def _flush_remote_workers_at_exit():
+    """מרוקן את כל ה-workers לפני סגירת התהליך — מונע אובדן נתונים."""
+    import sys
+    try:
+        # דלג אם flush כבר בוצע ב-on_closing
+        if getattr(_RemoteSyncWorker, '_flushed_at_exit', False):
+            return
+        with _RemoteSyncWorker._lock:
+            count = len(_RemoteSyncWorker._instances)
+        if count > 0:
+            print(f"[DB-SYNC] Flushing {count} remote worker(s) before exit...")
+            sys.stdout.flush()
+            _RemoteSyncWorker.flush_all(timeout=8)
+            print("[DB-SYNC] Flush complete")
+            sys.stdout.flush()
+    except Exception as e:
+        try:
+            print(f"[DB-SYNC] Flush error: {e}")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+atexit.register(_flush_remote_workers_at_exit)
 
 
 class _RemoteWriteCursor:
@@ -187,12 +463,27 @@ class _RemoteWriteConnection:
         return cur.executemany(sql, seq_of_params)
 
     def commit(self):
-        # כתיבות נכנסות ל-worker queue (לא חוסם, thread אחד קבוע שולח באצווה)
-        if self._pending_writes:
-            self._worker.enqueue(list(self._pending_writes))
-            self._pending_writes.clear()
-        # commit מקומי – אם נכשל, השגיאה תעלה לקוד הקורא
+        # commit מקומי קודם – אם נכשל, לא נשלח לשרת (עקביות נתונים!)
+        stmts = list(self._pending_writes) if self._pending_writes else []
+        self._pending_writes.clear()
         self._conn.commit()
+        # רק אחרי commit מוצלח – שלח לשרת הראשי ברקע
+        if stmts:
+            try:
+                # לוג מפורט של כתיבות לשרת הראשי
+                for _s in stmts:
+                    _sql = str(_s.get('sql') or '')[:100].strip()
+                    if _sql.upper().startswith(('UPDATE', 'INSERT', 'DELETE')):
+                        try:
+                            print(f"[DB-SYNC] Remote: {_sql}")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
+                self._worker.enqueue(stmts)
+            except Exception:
+                pass
 
     def rollback(self):
         self._pending_writes.clear()
@@ -226,6 +517,14 @@ class Database:
     _local_names_resolved = False
     _local_names = set()
     _sync_triggers_ensured = False  # True after triggers verified/created in this process
+    _sync_triggers_last_fail_ts: float = 0.0  # throttle: don't retry too often
+
+    # --- קאש כרטיסים (class-level, משותף לכל instances) ---
+    _card_cache_lock = threading.Lock()
+    _student_card_cache: Dict[str, Dict[str, Any]] = {}   # card_number → student dict
+    _teacher_card_cache: Dict[str, Dict[str, Any]] = {}   # card_number → teacher dict
+    _card_cache_ts: float = 0.0                            # timestamp של רענון אחרון
+    _CARD_CACHE_TTL: float = 30.0                          # רענון כל 30 שניות
 
     def __init__(self, db_path: str = None):
         """אתחול מסד נתונים"""
@@ -410,18 +709,67 @@ class Database:
                         os.makedirs(os.path.dirname(local_db), exist_ok=True)
                     except Exception:
                         pass
-                    # העתקת DB מהרשת למקומי – פעם אחת בהפעלה כדי להבטיח נתונים עדכניים
-                    _copy_ok = False
+                    # ** לפני העתקת DB: שלח כתיבות שנכשלו בהפעלה קודמת למאסטר **
+                    # אם לא נשלח אותן קודם, ההעתקה תדרוס את השינויים!
                     if not Database._db_copied_from_network:
                         try:
+                            _rw_host = self._unc_host(str(shared_folder or '').strip())
+                            _rw_port = 8765
+                            try:
+                                _rw_port = int(cfg.get('local_sync_port') or 8765)
+                            except Exception:
+                                _rw_port = 8765
+                            if _rw_host:
+                                _rw_url = f"http://{_rw_host}:{_rw_port}"
+                                _rw_key = str(local_sync_key or 'local')
+                                _sent = _RemoteSyncWorker.send_persisted_writes_now(_rw_url, _rw_key, timeout=15.0)
+                                if _sent > 0:
+                                    print(f"[DB] Sent {_sent} persisted write(s) to master before DB copy")
+                        except Exception as _pw_err:
+                            try:
+                                print(f"[DB] Persisted writes send error (non-fatal): {_pw_err}")
+                            except Exception:
+                                pass
+
+                    # העתקת DB מהרשת למקומי – פעם אחת בהפעלה כדי להבטיח נתונים עדכניים
+                    # CRITICAL: NEVER use sqlite3.backup() on UNC/network paths!
+                    # The backup API acquires SQLite locks via SMB which are mandatory
+                    # on Windows — this blocks ALL writes on the primary station,
+                    # causing it to freeze with "database is locked" and crash.
+                    # Use shutil.copy2() which reads without SQLite locking.
+                    _copy_ok = False
+                    if not Database._db_copied_from_network:
+                        _copy_t0 = time.time()
+                        # Remove stale WAL/SHM files from previous zombie processes
+                        for _wal_ext in ('-wal', '-shm'):
+                            try:
+                                _wal_f = local_db + _wal_ext
+                                if os.path.exists(_wal_f):
+                                    os.remove(_wal_f)
+                                    print(f"[DB] Removed stale {_wal_ext} file: {_wal_f}")
+                            except Exception:
+                                pass
+                        try:
                             if os.path.exists(remote_db):
-                                shutil.copy2(remote_db, local_db)
-                                _copy_ok = True
-                                Database._db_copied_from_network = True
                                 try:
-                                    print(f"[DB] העתקת DB מרשת למקומי: {remote_db} -> {local_db}")
-                                except Exception:
-                                    pass
+                                    shutil.copy2(remote_db, local_db)
+                                    _copy_ok = True
+                                    Database._db_copied_from_network = True
+                                    print(f"[DB] העתקת DB מרשת למקומי (file copy): {remote_db} -> {local_db} ({time.time()-_copy_t0:.1f}s)")
+                                except Exception as _cp_err2:
+                                    print(f"[DB] *** כשלון בהעתקת DB מהרשת: {_cp_err2} ***")
+                                # After fresh copy: reset pull_since_id_local so sync_agent
+                                # bootstrap will query server for current max and start from there
+                                # (prevents re-pulling 18000+ stale items on every restart)
+                                if _copy_ok:
+                                    try:
+                                        _rc = sqlite3.connect(local_db, timeout=5)
+                                        _rc.execute("CREATE TABLE IF NOT EXISTS sync_state (key TEXT PRIMARY KEY, value TEXT)")
+                                        _rc.execute("DELETE FROM sync_state WHERE key = 'pull_since_id_local'")
+                                        _rc.commit()
+                                        _rc.close()
+                                    except Exception:
+                                        pass
                             else:
                                 print(f"[DB] *** קובץ DB לא נמצא ברשת: {remote_db} ***")
                         except Exception as _cp_err:
@@ -489,33 +837,34 @@ class Database:
                         Database._db_path_printed = True
         else:
             self.db_path = db_path
+        self._role = 'standalone'
+        self._shared_folder = str(shared_folder or '').strip() if db_path is None else ''
         try:
+            shared = self._shared_folder
+            source = 'local'
+            if shared and self._is_unc_path_value(shared):
+                host = self._unc_host(shared)
+                if host and self._is_local_host(host):
+                    self._role = 'master'
+                elif host:
+                    self._role = 'client'
+            # Special case: if using shared DB directly with local sync enabled, treat as master
+            if self._role == 'standalone' and shared and local_sync_enabled and self._is_unc_path_value(str(self.db_path or '')):
+                host = self._unc_host(shared)
+                if host and self._is_local_host(host):
+                    self._role = 'master'
+                    source = 'shared-master'
+            if self._is_unc_path_value(str(self.db_path or '')):
+                source = 'shared'
+            if shared and local_sync_enabled:
+                if self._role == 'client' and self._is_local_path(str(self.db_path or '')):
+                    source = 'local-sync client'
+                elif self._role == 'client':
+                    source = 'shared-fallback'
+                elif self._role == 'master' and self._is_local_path(str(self.db_path or '')):
+                    source = 'local-master'
             if not Database._db_status_printed:
-                role = 'standalone'
-                source = 'local'
-                shared = str(shared_folder or '').strip() if db_path is None else ''
-                if shared and self._is_unc_path_value(shared):
-                    host = self._unc_host(shared)
-                    if host and self._is_local_host(host):
-                        role = 'master'
-                    elif host:
-                        role = 'client'
-                # Special case: if using shared DB directly with local sync enabled, treat as master
-                if role == 'standalone' and shared and local_sync_enabled and self._is_unc_path_value(str(self.db_path or '')):
-                    host = self._unc_host(shared)
-                    if host and self._is_local_host(host):
-                        role = 'master'
-                        source = 'shared-master'
-                if self._is_unc_path_value(str(self.db_path or '')):
-                    source = 'shared'
-                if shared and local_sync_enabled:
-                    if role == 'client' and self._is_local_path(str(self.db_path or '')):
-                        source = 'local-sync client'
-                    elif role == 'client':
-                        source = 'shared-fallback'
-                    elif role == 'master' and self._is_local_path(str(self.db_path or '')):
-                        source = 'local-master'
-                print(f"[DB-STATUS] role={role} source={source}")
+                print(f"[DB-STATUS] role={self._role} source={source}")
                 Database._db_status_printed = True
         except Exception:
             pass
@@ -525,108 +874,133 @@ class Database:
         readonly_repair_done = False
         create_start = time.time()
         max_create_wait = 12.0
-        while True:
+        # דילוג על create_tables אם ה-DB כבר קיים ומכיל טבלאות ראשיות
+        _skip_create = False
+        try:
+            if self.db_path and os.path.exists(self.db_path) and os.path.getsize(self.db_path) > 4096:
+                _chk_conn = sqlite3.connect(self.db_path, timeout=3)
+                try:
+                    _chk_cur = _chk_conn.cursor()
+                    _chk_cur.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('students','settings','teachers')")
+                    if int(_chk_cur.fetchone()[0] or 0) >= 3:
+                        _skip_create = True
+                finally:
+                    _chk_conn.close()
+        except Exception:
+            pass
+        if _skip_create:
             try:
-                self.create_tables()
-                break
-            except sqlite3.OperationalError as e:
-                msg = str(e).lower()
-                if ('readonly' in msg or 'read-only' in msg) and not readonly_fallback_done and db_path is None and default_user_db:
-                    if not readonly_repair_done:
-                        readonly_repair_done = True
-                        try:
-                            src_db = str(self.db_path or '').strip()
-                            if src_db and os.path.exists(src_db):
-                                try:
-                                    os.chmod(src_db, 0o666)
-                                except Exception:
-                                    pass
-                                try:
-                                    if self._can_write_db(src_db):
-                                        continue
-                                except Exception:
-                                    pass
-                        except Exception:
-                            pass
-                        try:
-                            src_db = str(self.db_path or '').strip()
-                            if src_db and self._is_unc_path_value(src_db):
-                                local_src = self._local_path_from_unc_if_local(src_db)
-                                if local_src and local_src != src_db:
-                                    self.db_path = local_src
+                print("[DB] create_tables skipped (tables already exist)")
+            except Exception:
+                pass
+        else:
+            while True:
+                try:
+                    _ct_t0 = time.time()
+                    self.create_tables()
+                    try:
+                        print(f"[DB] create_tables done ({time.time()-_ct_t0:.1f}s)")
+                    except Exception:
+                        pass
+                    break
+                except sqlite3.OperationalError as e:
+                    msg = str(e).lower()
+                    if ('readonly' in msg or 'read-only' in msg) and not readonly_fallback_done and db_path is None and default_user_db:
+                        if not readonly_repair_done:
+                            readonly_repair_done = True
+                            try:
+                                src_db = str(self.db_path or '').strip()
+                                if src_db and os.path.exists(src_db):
                                     try:
-                                        if self._can_write_db(local_src):
+                                        os.chmod(src_db, 0o666)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        if self._can_write_db(src_db):
                                             continue
                                     except Exception:
                                         pass
-                        except Exception:
-                            pass
-                    readonly_fallback_done = True
-                    try:
-                        src_db = str(self.db_path or '').strip()
-                        dst_db = str(default_user_db or '').strip()
-                        if src_db and dst_db and os.path.abspath(src_db) != os.path.abspath(dst_db):
-                            try:
-                                os.makedirs(os.path.dirname(dst_db), exist_ok=True)
                             except Exception:
                                 pass
-                            if os.path.exists(src_db):
-                                try:
-                                    shutil.copy2(src_db, dst_db)
-                                except Exception:
-                                    pass
-                        if dst_db:
-                            self.db_path = dst_db
-                    except Exception:
-                        pass
-                    try:
-                        if shared_folder and self._is_unc_path_value(str(shared_folder)):
-                            local_sync_client = True
-                            local_sync_shared_folder = shared_folder
-                    except Exception:
-                        pass
-                    self.emergency_mode = True
-                    self.emergency_reason = 'readonly'
-                    continue
-                # DB לא נגיש (עמדה ראשית כבויה / רשת לא זמינה)
-                if ('unable to open' in msg or 'disk i/o' in msg or 'no such file' in msg) and not readonly_fallback_done and db_path is None and default_user_db:
-                    readonly_fallback_done = True
-                    try:
-                        dst_db = str(default_user_db or '').strip()
-                        if dst_db:
                             try:
-                                os.makedirs(os.path.dirname(dst_db), exist_ok=True)
+                                src_db = str(self.db_path or '').strip()
+                                if src_db and self._is_unc_path_value(src_db):
+                                    local_src = self._local_path_from_unc_if_local(src_db)
+                                    if local_src and local_src != src_db:
+                                        self.db_path = local_src
+                                        try:
+                                            if self._can_write_db(local_src):
+                                                continue
+                                        except Exception:
+                                            pass
                             except Exception:
                                 pass
-                            self.db_path = dst_db
-                            try:
-                                print(f"[DB] *** עמדה ראשית לא נגישה – עובר ל-DB מקומי: {dst_db} ***")
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                    self.emergency_mode = True
-                    self.emergency_reason = 'unreachable'
-                    continue
-                if 'locked' in msg or 'busy' in msg:
-                    try:
-                        waited = float(time.time() - create_start)
-                    except Exception:
-                        waited = 0.0
-                    if waited >= max_create_wait:
+                        readonly_fallback_done = True
                         try:
-                            if self.db_path and os.path.exists(self.db_path) and os.path.getsize(self.db_path) > 1024:
+                            src_db = str(self.db_path or '').strip()
+                            dst_db = str(default_user_db or '').strip()
+                            if src_db and dst_db and os.path.abspath(src_db) != os.path.abspath(dst_db):
                                 try:
-                                    print('[DB] create_tables skipped (db locked)')
+                                    os.makedirs(os.path.dirname(dst_db), exist_ok=True)
                                 except Exception:
                                     pass
-                                break
+                                if os.path.exists(src_db):
+                                    try:
+                                        shutil.copy2(src_db, dst_db)
+                                    except Exception:
+                                        pass
+                            if dst_db:
+                                self.db_path = dst_db
                         except Exception:
                             pass
-                    time.sleep(0.6 + 0.4 * min(attempt, 20))
-                    attempt += 1
-                    continue
-                raise
+                        try:
+                            if shared_folder and self._is_unc_path_value(str(shared_folder)):
+                                local_sync_client = True
+                                local_sync_shared_folder = shared_folder
+                        except Exception:
+                            pass
+                        self.emergency_mode = True
+                        self.emergency_reason = 'readonly'
+                        continue
+                    # DB לא נגיש (עמדה ראשית כבויה / רשת לא זמינה)
+                    if ('unable to open' in msg or 'disk i/o' in msg or 'no such file' in msg) and not readonly_fallback_done and db_path is None and default_user_db:
+                        readonly_fallback_done = True
+                        try:
+                            dst_db = str(default_user_db or '').strip()
+                            if dst_db:
+                                try:
+                                    os.makedirs(os.path.dirname(dst_db), exist_ok=True)
+                                except Exception:
+                                    pass
+                                self.db_path = dst_db
+                                try:
+                                    print(f"[DB] *** עמדה ראשית לא נגישה – עובר ל-DB מקומי: {dst_db} ***")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        self.emergency_mode = True
+                        self.emergency_reason = 'unreachable'
+                        continue
+                    if 'locked' in msg or 'busy' in msg:
+                        try:
+                            waited = float(time.time() - create_start)
+                        except Exception:
+                            waited = 0.0
+                        if waited >= max_create_wait:
+                            try:
+                                if self.db_path and os.path.exists(self.db_path) and os.path.getsize(self.db_path) > 1024:
+                                    try:
+                                        print('[DB] create_tables skipped (db locked)')
+                                    except Exception:
+                                        pass
+                                    break
+                            except Exception:
+                                pass
+                        time.sleep(0.6 + 0.4 * min(attempt, 20))
+                        attempt += 1
+                        continue
+                    raise
         try:
             if local_sync_client and local_sync_shared_folder:
                 # הערה: bootstrap לא נדרש יותר כי כולם מתחברים ישירות ל־DB המשותף
@@ -634,8 +1008,9 @@ class Database:
         except Exception:
             pass
     
-    def _get_raw_connection(self):
-        """חיבור ישיר ל-DB ללא proxy (לשימוש פנימי כמו create_tables)"""
+    def _get_raw_connection(self, max_attempts=6, connect_timeout=10):
+        """חיבור ישיר ל-DB ללא proxy (לשימוש פנימי כמו create_tables).
+        מוגבל ל-max_attempts ניסיונות כדי לא לתקוע את האתחול אם ה-DB נעול."""
         db_dir = os.path.dirname(self.db_path) or '.'
         try:
             os.makedirs(db_dir, exist_ok=True)
@@ -644,14 +1019,14 @@ class Database:
         attempt = 0
         while True:
             try:
-                conn = sqlite3.connect(self.db_path, timeout=30)
+                conn = sqlite3.connect(self.db_path, timeout=connect_timeout)
                 conn.row_factory = sqlite3.Row
-                self._apply_pragmas(conn)
+                self._apply_pragmas(conn, busy_timeout_ms=10000)
                 return conn
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
-                if 'locked' in msg or 'busy' in msg:
-                    time.sleep(0.6 + 0.4 * min(attempt, 20))
+                if ('locked' in msg or 'busy' in msg) and attempt < max_attempts:
+                    time.sleep(1.0 + 0.5 * min(attempt, 8))
                     attempt += 1
                     continue
                 raise
@@ -700,30 +1075,89 @@ class Database:
             except Exception:
                 pass
 
-    def get_connection(self):
-        """יצירת חיבור למסד הנתונים"""
-        # ודא שהתיקייה של ה-DB קיימת (למשל בתיקיית נתוני משתמש)
-        db_dir = os.path.dirname(self.db_path) or '.'
-        try:
-            os.makedirs(db_dir, exist_ok=True)
-        except Exception:
-            # אם לא הצלחנו ליצור תיקייה – ניתן ל-sqlite לטפל בשגיאה
-            pass
+    _db_dir_ensured = False
 
-        # ודא triggers לסנכרון (פעם אחת בתהליך)
-        if not Database._sync_triggers_ensured:
+    def _refresh_card_cache(self) -> None:
+        """רענון קאש כרטיסים מה-DB (אם עבר TTL). thread-safe."""
+        now = time.time()
+        if (now - Database._card_cache_ts) < Database._CARD_CACHE_TTL:
+            return
+        with Database._card_cache_lock:
+            # double-check בתוך ה-lock
+            if (time.time() - Database._card_cache_ts) < Database._CARD_CACHE_TTL:
+                return
+            conn = None
             try:
-                self._ensure_sync_triggers()
+                conn = sqlite3.connect(self.db_path, timeout=5)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                # קאש תלמידים
+                student_cache: Dict[str, Dict[str, Any]] = {}
+                try:
+                    cur.execute('SELECT * FROM students WHERE card_number IS NOT NULL AND card_number != ""')
+                    for row in cur:
+                        d = dict(row)
+                        card = str(d.get('card_number') or '').strip()
+                        if card:
+                            student_cache[card] = d
+                except Exception:
+                    pass
+                # קאש מורים (3 כרטיסים אפשריים לכל מורה)
+                teacher_cache: Dict[str, Dict[str, Any]] = {}
+                try:
+                    cur.execute('SELECT * FROM teachers')
+                    for row in cur:
+                        d = dict(row)
+                        for col in ('card_number', 'card_number2', 'card_number3'):
+                            card = str(d.get(col) or '').strip()
+                            if card:
+                                teacher_cache[card] = d
+                except Exception:
+                    pass
+                Database._student_card_cache = student_cache
+                Database._teacher_card_cache = teacher_cache
+                Database._card_cache_ts = time.time()
             except Exception:
                 pass
+            finally:
+                try:
+                    if conn:
+                        conn.close()
+                except Exception:
+                    pass
+
+    @classmethod
+    def invalidate_card_cache(cls) -> None:
+        """איפוס קאש כרטיסים — קורא אחרי הוספה/עדכון/מחיקה של תלמיד/מורה."""
+        cls._card_cache_ts = 0.0
+
+    def get_connection(self):
+        """יצירת חיבור למסד הנתונים"""
+        # ודא שהתיקייה של ה-DB קיימת (פעם אחת בלבד בתהליך)
+        if not Database._db_dir_ensured:
+            db_dir = os.path.dirname(self.db_path) or '.'
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+                Database._db_dir_ensured = True
+            except Exception:
+                pass
+
+        # ודא triggers לסנכרון (פעם אחת בתהליך, עם throttle אם נכשל)
+        if not Database._sync_triggers_ensured:
+            if time.time() - Database._sync_triggers_last_fail_ts > 60:
+                try:
+                    self._ensure_sync_triggers()
+                except Exception:
+                    Database._sync_triggers_last_fail_ts = time.time()
 
         self._maybe_backup_db()
 
         attempt = 0
         corrupt_attempts = 0
+        _max_lock_attempts = 30
         while True:
             try:
-                conn = sqlite3.connect(self.db_path, timeout=30)
+                conn = sqlite3.connect(self.db_path, timeout=10)
                 conn.row_factory = sqlite3.Row  # מאפשר גישה לעמודות לפי שם
                 self._apply_pragmas(conn)
                 # עמדה משנית: עטוף ב-proxy שמפנה כתיבות דרך HTTP
@@ -740,8 +1174,14 @@ class Database:
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
                 if 'locked' in msg or 'busy' in msg:
-                    time.sleep(0.6 + 0.4 * min(attempt, 20))
                     attempt += 1
+                    if attempt > _max_lock_attempts:
+                        try:
+                            print(f"[DB] *** DB נעול אחרי {attempt} ניסיונות — לא עוברים ל-DB מקומי (מניעת אובדן נתונים) ***")
+                        except Exception:
+                            pass
+                        raise
+                    time.sleep(0.3 + 0.2 * min(attempt, 10))
                     continue
                 # DB לא נגיש בזמן ריצה – ניסיון אחד עם DB מקומי
                 if ('unable to open' in msg or 'disk i/o' in msg) and self._is_unc_path():
@@ -758,7 +1198,7 @@ class Database:
                         except Exception:
                             pass
                         if os.path.exists(fallback_db):
-                            conn = sqlite3.connect(fallback_db, timeout=30)
+                            conn = sqlite3.connect(fallback_db, timeout=10)
                             conn.row_factory = sqlite3.Row
                             self._apply_pragmas(conn)
                             self.emergency_mode = True
@@ -774,7 +1214,62 @@ class Database:
                         pass
                 raise
 
+    def _try_locked_fallback(self):
+        """מצב חירום כש-DB נעול — ניסיון לעבור ל-DB מקומי."""
+        try:
+            user_root = (
+                os.environ.get('LOCALAPPDATA')
+                or os.environ.get('APPDATA')
+                or os.environ.get('PROGRAMDATA')
+                or os.path.dirname(os.path.abspath(__file__))
+            )
+            fallback_db = os.path.join(user_root, 'SchoolPoints', 'school_points.db')
+            try:
+                fb_abs = os.path.abspath(fallback_db).lower()
+                cur_abs = os.path.abspath(self.db_path).lower()
+            except Exception:
+                fb_abs = fallback_db.lower()
+                cur_abs = str(self.db_path or '').lower()
+            if fb_abs == cur_abs:
+                return None
+            try:
+                os.makedirs(os.path.dirname(fallback_db), exist_ok=True)
+            except Exception:
+                pass
+            if not os.path.exists(fallback_db):
+                try:
+                    src = sqlite3.connect(self.db_path, timeout=3)
+                    dst = sqlite3.connect(fallback_db)
+                    src.backup(dst)
+                    dst.close()
+                    src.close()
+                except Exception:
+                    pass
+            if os.path.exists(fallback_db):
+                conn = sqlite3.connect(fallback_db, timeout=10)
+                conn.row_factory = sqlite3.Row
+                self._apply_pragmas(conn)
+                self.emergency_mode = True
+                self.emergency_reason = 'locked'
+                try:
+                    print(f"[DB] *** DB נעול – מצב חירום, DB מקומי: {fallback_db} ***", flush=True)
+                except Exception:
+                    pass
+                if self._remote_write_url:
+                    return _RemoteWriteConnection(conn, self._remote_write_url, self._remote_write_api_key)
+                return conn
+        except Exception:
+            pass
+        return None
+
+    _last_holds_cleanup_ts: float = 0.0
+
     def _cleanup_expired_holds(self, cursor) -> None:
+        import time as _t
+        _now = _t.time()
+        if _now - Database._last_holds_cleanup_ts < 30:
+            return
+        Database._last_holds_cleanup_ts = _now
         try:
             cursor.execute('DELETE FROM purchase_holds WHERE expires_at <= CURRENT_TIMESTAMP')
         except Exception:
@@ -943,6 +1438,8 @@ class Database:
         Database._local_host_cache[h] = result
         return result
 
+    _share_resolve_cache: Dict[str, str] = {}  # share_name → local_path
+
     def _local_path_from_unc_if_local(self, path: str) -> str:
         try:
             p = str(path or '').replace('/', '\\')
@@ -958,12 +1455,116 @@ class Database:
             parts = rest.split('\\') if rest else []
             if not parts:
                 return path
-            drive = parts[0]
-            if len(drive) == 1 and drive.isalpha():
-                return drive.upper() + ':\\' + '\\'.join(parts[1:])
+            share_name = parts[0]
+            sub_path = '\\'.join(parts[1:]) if len(parts) > 1 else ''
+            # Case 1: share name is a drive letter (e.g., \\HOST\c\path → C:\path)
+            if len(share_name) == 1 and share_name.isalpha():
+                return share_name.upper() + ':\\' + sub_path
+            # Case 2: named share — resolve via 'net share' or cache
+            local_root = self._resolve_share_to_local(share_name)
+            if local_root:
+                return os.path.join(local_root, sub_path) if sub_path else local_root
         except Exception:
             return path
         return path
+
+    @classmethod
+    def _resolve_share_to_local(cls, share_name: str) -> str:
+        """Resolve a Windows share name to its local path using 'net share'."""
+        sn = str(share_name or '').strip()
+        if not sn:
+            return ''
+        if sn in cls._share_resolve_cache:
+            return cls._share_resolve_cache[sn]
+        try:
+            import subprocess, re
+            # CRITICAL: Do NOT use text=True — on Hebrew Windows the cp1255
+            # codec crashes with UnicodeDecodeError on certain bytes in the
+            # 'net share' output.  Read raw bytes and decode ourselves.
+            result = subprocess.run(
+                ['net', 'share', sn],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=5,
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+            if result.returncode == 0:
+                raw = result.stdout or b''
+                # Try each encoding AND validate with os.path.isdir.
+                # On Hebrew Windows 'net share' uses OEM cp862 but cp1255
+                # decodes without error producing wrong chars — we must
+                # validate the resolved path actually exists.
+                local_root = ''
+                for _enc in ('utf-8', 'cp862', 'cp1255', 'latin-1'):
+                    try:
+                        stdout_text = raw.decode(_enc)
+                    except (UnicodeDecodeError, LookupError):
+                        continue
+                    for line in stdout_text.splitlines():
+                        # Match drive-letter path; allow spaces in path
+                        m = re.search(r'([A-Za-z]:\\[^\r\n]+?)\s*$', line)
+                        if m:
+                            candidate = m.group(1).strip().rstrip('\\')
+                            if os.path.isdir(candidate):
+                                local_root = candidate
+                                break
+                    if local_root:
+                        break
+                if local_root:
+                    cls._share_resolve_cache[sn] = local_root
+                    try:
+                        print(f"[DB] Resolved share '{sn}' -> {local_root}")
+                    except Exception:
+                        pass
+                    return local_root
+                else:
+                    try:
+                        print(f"[DB] _resolve_share_to_local('{sn}'): net share OK but no valid path found")
+                    except Exception:
+                        pass
+            else:
+                try:
+                    print(f"[DB] _resolve_share_to_local('{sn}'): net share returned {result.returncode}")
+                except Exception:
+                    pass
+            # Fallback: parse 'net share' (no args) for the share list
+            try:
+                result2 = subprocess.run(
+                    ['net', 'share'],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=5,
+                    creationflags=0x08000000
+                )
+                if result2.returncode == 0:
+                    raw2 = result2.stdout or b''
+                    for _enc2 in ('utf-8', 'cp862', 'cp1255', 'latin-1'):
+                        try:
+                            text2 = raw2.decode(_enc2)
+                        except (UnicodeDecodeError, LookupError):
+                            continue
+                        for line2 in text2.splitlines():
+                            # Format: "ShareName    C:\path    Remark"
+                            if sn.lower() in line2.lower():
+                                m2 = re.search(r'([A-Za-z]:\\[^\s]+)', line2)
+                                if m2:
+                                    candidate2 = m2.group(1).strip().rstrip('\\')
+                                    if os.path.isdir(candidate2):
+                                        cls._share_resolve_cache[sn] = candidate2
+                                        try:
+                                            print(f"[DB] Resolved share '{sn}' -> {candidate2} (fallback)")
+                                        except Exception:
+                                            pass
+                                        return candidate2
+                        if sn in cls._share_resolve_cache:
+                            break
+            except Exception:
+                pass
+        except Exception as _e:
+            try:
+                print(f"[DB] _resolve_share_to_local('{sn}') error: {_e}")
+            except Exception:
+                pass
+        cls._share_resolve_cache[sn] = ''
+        return ''
 
     def _can_write_db(self, path: str) -> bool:
         try:
@@ -1014,13 +1615,23 @@ class Database:
         except Exception:
             return False
 
-    def _apply_pragmas(self, conn: sqlite3.Connection) -> None:
+    def _apply_pragmas(self, conn: sqlite3.Connection, busy_timeout_ms: int = 10000) -> None:
         try:
             conn.execute('PRAGMA foreign_keys = ON')
         except Exception:
             pass
         try:
-            conn.execute('PRAGMA busy_timeout = 30000')
+            conn.execute(f'PRAGMA busy_timeout = {int(busy_timeout_ms)}')
+        except Exception:
+            pass
+        # ביצועים: cache גדול יותר בזיכרון (ברירת מחדל 2MB, מעלים ל-8MB)
+        try:
+            conn.execute('PRAGMA cache_size = -8000')
+        except Exception:
+            pass
+        # ביצועים: טבלאות זמניות בזיכרון (לא בדיסק)
+        try:
+            conn.execute('PRAGMA temp_store = MEMORY')
         except Exception:
             pass
         try:
@@ -1044,6 +1655,11 @@ class Database:
                 else:
                     conn.execute('PRAGMA journal_mode = WAL')
                     conn.execute('PRAGMA synchronous = NORMAL')
+                    # memory-mapped I/O — מהיר מאוד ל-DB מקומי (64MB)
+                    try:
+                        conn.execute('PRAGMA mmap_size = 67108864')
+                    except Exception:
+                        pass
                 try:
                     if db_key:
                         Database._journal_mode_applied.add(db_key)
@@ -1078,10 +1694,512 @@ class Database:
         except Exception:
             return
         try:
-            shutil.copy2(self.db_path, self._last_backup_path())
+            # שימוש ב-SQLite backup API — מהיר יותר, בטוח עם WAL, לא חוסם DB
+            _src = sqlite3.connect(self.db_path, timeout=5)
+            _dst = sqlite3.connect(self._last_backup_path())
+            _src.backup(_dst)
+            _dst.close()
+            _src.close()
             self._last_backup_ts = now
         except Exception:
+            # fallback ל-file copy אם backup API נכשל
+            try:
+                shutil.copy2(self.db_path, self._last_backup_path())
+                self._last_backup_ts = now
+            except Exception:
+                pass
+        # ניקוי change_log ישן (מסונכרן מעל 7 ימים) + VACUUM תקופתי (פעם ביום)
+        try:
+            self._maybe_cleanup_db(now)
+        except Exception:
             pass
+
+    _last_cleanup_ts = 0
+    _last_wal_checkpoint_ts = 0
+
+    def _maybe_wal_checkpoint(self, now: float = None) -> None:
+        """WAL checkpoint כל 30 דקות — PASSIVE לא חוסם קריאות/כתיבות."""
+        if now is None:
+            now = time.time()
+        if (now - float(Database._last_wal_checkpoint_ts or 0)) < 1800:
+            return
+        Database._last_wal_checkpoint_ts = now
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=5)
+            result = conn.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()
+            if result:
+                # result = (busy, log_pages, checkpointed_pages)
+                try:
+                    print(f"[DB] WAL checkpoint: log={result[1]} checkpointed={result[2]}")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+
+    _CLEANUP_INTERVAL_SEC = 4 * 3600  # כל 4 שעות
+
+    # ===================== מערכת ארכיון (Hot/Cold) =====================
+
+    def _get_archive_db_path(self) -> str:
+        """נתיב ה-DB הארכיוני — באותה תיקייה של ה-DB הראשי, עם סיומת _archive."""
+        base, ext = os.path.splitext(self.db_path)
+        return base + '_archive' + ext
+
+    def _get_master_archive_path(self) -> Optional[str]:
+        """נתיב הארכיון ב-master (לשימוש עמדות משניות בייצוא).
+        מחזיר None אם לא ידוע / לא נגיש.
+        אין בדיקת isdir/exists כאן — כדי לא לתקוע על UNC!"""
+        if self._role == 'master' or self._role == 'standalone':
+            return self._get_archive_db_path()
+        # עמדה משנית — הארכיון ליד ה-DB ברשת
+        shared = self._shared_folder
+        if shared:
+            return os.path.join(shared, 'school_points_archive.db')
+        return None
+
+    def _ensure_archive_tables(self, archive_conn: sqlite3.Connection) -> None:
+        """יצירת טבלאות בארכיון (מראה של הטבלאות הנמחקות)."""
+        archive_conn.execute('''CREATE TABLE IF NOT EXISTS swipe_log (
+            id INTEGER PRIMARY KEY, student_id INTEGER, card_number TEXT,
+            station_type TEXT, swiped_at TIMESTAMP)''')
+        archive_conn.execute('''CREATE TABLE IF NOT EXISTS points_log (
+            id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL,
+            old_points INTEGER NOT NULL, new_points INTEGER NOT NULL,
+            delta INTEGER NOT NULL, reason TEXT, actor_name TEXT,
+            action_type TEXT, created_at TIMESTAMP)''')
+        archive_conn.execute('''CREATE TABLE IF NOT EXISTS points_history (
+            id INTEGER PRIMARY KEY, student_id INTEGER,
+            points_added INTEGER, reason TEXT, added_by TEXT,
+            added_at TIMESTAMP)''')
+        archive_conn.execute('''CREATE TABLE IF NOT EXISTS time_bonus_given (
+            id INTEGER PRIMARY KEY, student_id INTEGER,
+            bonus_schedule_id INTEGER, given_date DATE,
+            given_at TIMESTAMP)''')
+        archive_conn.execute('''CREATE TABLE IF NOT EXISTS card_validations (
+            id INTEGER PRIMARY KEY, student_id INTEGER,
+            card_number TEXT, validated_at TIMESTAMP)''')
+        # אינדקסים חשובים לייצוא
+        for idx_sql in [
+            'CREATE INDEX IF NOT EXISTS idx_arc_swipe_student ON swipe_log(student_id)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_swipe_time ON swipe_log(swiped_at)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_plog_student ON points_log(student_id)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_plog_time ON points_log(created_at)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_plog_actor ON points_log(actor_name)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_phist_student ON points_history(student_id)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_tbonus_student ON time_bonus_given(student_id)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_tbonus_date ON time_bonus_given(given_date)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_tbonus_bonus ON time_bonus_given(bonus_schedule_id)',
+            'CREATE INDEX IF NOT EXISTS idx_arc_cv_student ON card_validations(student_id)',
+        ]:
+            try:
+                archive_conn.execute(idx_sql)
+            except Exception:
+                pass
+        archive_conn.commit()
+
+    _archive_backup_done = False  # class-level flag: one-time backup before first archive
+
+    def _archive_old_rows(self, conn: sqlite3.Connection, cur: sqlite3.Cursor) -> int:
+        """העברת שורות ישנות מ-DB ראשי ל-archive DB (master בלבד).
+        מחזיר מספר שורות שהועברו+נמחקו."""
+        archive_path = self._get_archive_db_path()
+        total_moved = 0
+
+        # --- גיבוי חד-פעמי לפני פיצול ראשון לארכיון ---
+        if not Database._archive_backup_done:
+            Database._archive_backup_done = True
+            if not os.path.exists(archive_path):
+                # ארכיון לא קיים = פעם ראשונה. שומרים גיבוי של ה-DB לפני הפיצול.
+                try:
+                    backup_path = self.db_path + '.pre_archive.bak'
+                    if not os.path.exists(backup_path):
+                        # SQLite backup API — כולל WAL data, בטוח גם כשה-DB פתוח
+                        _bk_src = sqlite3.connect(self.db_path, timeout=10)
+                        _bk_dst = sqlite3.connect(backup_path)
+                        _bk_src.backup(_bk_dst)
+                        _bk_dst.close()
+                        _bk_src.close()
+                        try:
+                            print(f"[DB-ARCHIVE] One-time backup before first archive: {backup_path}")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    try:
+                        print(f"[DB-ARCHIVE] Backup failed (continuing): {e}")
+                    except Exception:
+                        pass
+
+        try:
+            cur.execute(f"ATTACH DATABASE ? AS archive", (archive_path,))
+        except Exception as e:
+            try:
+                print(f"[DB-ARCHIVE] Failed to ATTACH archive: {e}")
+            except Exception:
+                pass
+            return 0
+
+        _triggers_paused = False
+        try:
+            # יצירת טבלאות בארכיון אם לא קיימות
+            for tbl_sql in [
+                '''CREATE TABLE IF NOT EXISTS archive.swipe_log (
+                    id INTEGER PRIMARY KEY, student_id INTEGER, card_number TEXT,
+                    station_type TEXT, swiped_at TIMESTAMP)''',
+                '''CREATE TABLE IF NOT EXISTS archive.points_log (
+                    id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL,
+                    old_points INTEGER NOT NULL, new_points INTEGER NOT NULL,
+                    delta INTEGER NOT NULL, reason TEXT, actor_name TEXT,
+                    action_type TEXT, created_at TIMESTAMP)''',
+                '''CREATE TABLE IF NOT EXISTS archive.points_history (
+                    id INTEGER PRIMARY KEY, student_id INTEGER,
+                    points_added INTEGER, reason TEXT, added_by TEXT,
+                    added_at TIMESTAMP)''',
+                '''CREATE TABLE IF NOT EXISTS archive.time_bonus_given (
+                    id INTEGER PRIMARY KEY, student_id INTEGER,
+                    bonus_schedule_id INTEGER, given_date DATE,
+                    given_at TIMESTAMP)''',
+                '''CREATE TABLE IF NOT EXISTS archive.card_validations (
+                    id INTEGER PRIMARY KEY, student_id INTEGER,
+                    card_number TEXT, validated_at TIMESTAMP)''',
+            ]:
+                try:
+                    cur.execute(tbl_sql)
+                except Exception:
+                    pass
+            # אינדקסים חשובים לייצוא מהיר מהארכיון
+            for idx_sql in [
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_swipe_student ON swipe_log(student_id)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_swipe_time ON swipe_log(swiped_at)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_plog_student ON points_log(student_id)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_plog_time ON points_log(created_at)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_plog_actor ON points_log(actor_name)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_phist_student ON points_history(student_id)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_tbonus_student ON time_bonus_given(student_id)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_tbonus_date ON time_bonus_given(given_date)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_tbonus_bonus ON time_bonus_given(bonus_schedule_id)',
+                'CREATE INDEX IF NOT EXISTS archive.idx_arc_cv_student ON card_validations(student_id)',
+            ]:
+                try:
+                    cur.execute(idx_sql)
+                except Exception:
+                    pass
+            conn.commit()
+
+            # טבלאות להעברה: (טבלה, עמודות מפורשות, עמודת תאריך, ימי שמירה)
+            archive_tables = [
+                ('swipe_log',
+                 'id, student_id, card_number, station_type, swiped_at',
+                 'swiped_at', 7),
+                ('points_log',
+                 'id, student_id, old_points, new_points, delta, reason, actor_name, action_type, created_at',
+                 'created_at', 7),
+                ('points_history',
+                 'id, student_id, points_added, reason, added_by, added_at',
+                 'added_at', 7),
+                ('time_bonus_given',
+                 'id, student_id, bonus_schedule_id, given_date, given_at',
+                 'given_at', 7),
+                ('card_validations',
+                 'id, student_id, card_number, validated_at',
+                 'validated_at', 7),
+            ]
+
+            # השהיית sync triggers בזמן מחיקה — המחיקות הן פעולות ניקיון,
+            # לא צריך לסנכרן אותן (עמדות משניות מנקות בעצמן).
+            # בלי זה: DELETE של time_bonus_given יוצר אלפי שורות change_log מיותרות.
+            _triggers_paused = False
+            try:
+                cur.execute("UPDATE _sync_paused SET flag = 1 WHERE rowid = 1")
+                conn.commit()
+                _triggers_paused = True
+            except Exception:
+                pass  # טבלה לא קיימת = אין triggers = בסדר
+
+            for table, columns, date_col, keep_days in archive_tables:
+                try:
+                    # INSERT OR IGNORE — למניעת כפילויות (עמודות מפורשות למניעת mismatch)
+                    cur.execute(f"""
+                        INSERT OR IGNORE INTO archive.{table} ({columns})
+                        SELECT {columns} FROM main.{table}
+                        WHERE {date_col} < datetime('now', '-{keep_days} days')
+                    """)
+                    moved = cur.rowcount or 0
+                    # מחיקה מה-DB הראשי
+                    cur.execute(f"""
+                        DELETE FROM main.{table}
+                        WHERE {date_col} < datetime('now', '-{keep_days} days')
+                    """)
+                    deleted = cur.rowcount or 0
+                    if moved or deleted:
+                        conn.commit()
+                        total_moved += max(moved, deleted)
+                        try:
+                            print(f"[DB-ARCHIVE] {table}: archived {moved}, deleted {deleted} (>{keep_days} days)")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    try:
+                        print(f"[DB-ARCHIVE] {table} error: {e}")
+                    except Exception:
+                        pass
+        except Exception as e:
+            try:
+                print(f"[DB-ARCHIVE] General error: {e}")
+            except Exception:
+                pass
+        finally:
+            # שחרור sync triggers — תמיד, גם אם הייתה שגיאה
+            if _triggers_paused:
+                try:
+                    cur.execute("UPDATE _sync_paused SET flag = 0 WHERE rowid = 1")
+                    conn.commit()
+                except Exception:
+                    pass
+            try:
+                cur.execute("DETACH DATABASE archive")
+            except Exception:
+                pass
+        return total_moved
+
+    def _get_archive_connection(self) -> Optional[sqlite3.Connection]:
+        """חיבור קריאה בלבד ל-archive DB (לייצוא). מחזיר None אם לא נגיש.
+        אין בדיקת os.path.exists על UNC — יכולה לתקוע 30-60 שניות!"""
+        path = self._get_master_archive_path()
+        if not path:
+            return None
+        is_unc = False
+        try:
+            is_unc = self._is_unc_path_value(path)
+        except Exception:
+            pass
+        # לנתיבים מקומיים: בדיקה מהירה וזולה
+        if not is_unc:
+            try:
+                if not os.path.exists(path):
+                    return None
+            except Exception:
+                return None
+        try:
+            # URI mode=ro למניעת יצירת קובץ ריק ברשת
+            # quote נדרש כי תווים כמו # שוברים את ה-URI (SQLite מפרש # כ-fragment)
+            import urllib.parse
+            clean = urllib.parse.quote(path.replace('\\', '/'), safe='/:@')
+            if is_unc:
+                # UNC: \\server\share\f.db -> //server/share/f.db -> file:////server/share/f.db
+                uri = 'file://' + clean + '?mode=ro'
+            else:
+                # Local: C:\...\f.db -> C:/.../f.db -> file:///C:/.../f.db
+                uri = 'file:///' + clean + '?mode=ro'
+            conn = sqlite3.connect(uri, uri=True, timeout=5)
+            conn.row_factory = sqlite3.Row
+            conn.execute('PRAGMA busy_timeout = 5000')
+            # בדיקה שהטבלה קיימת (ארכיון חדש/ריק = אין טעם לשלוף)
+            try:
+                conn.execute('SELECT 1 FROM swipe_log LIMIT 0')
+            except Exception:
+                conn.close()
+                return None
+            return conn
+        except Exception:
+            return None
+
+    def query_with_archive(self, table: str, where: str = '', params: tuple = (),
+                           columns: str = '*', order_by: str = '') -> list:
+        """שאילתת SELECT שמאחדת DB ראשי + ארכיון.
+        מחזירה רשימת dict (sqlite3.Row)."""
+        results = []
+        # שליפה מ-DB ראשי
+        conn = self.get_connection()
+        try:
+            where_clause = f" WHERE {where}" if where else ''
+            order_clause = f" ORDER BY {order_by}" if order_by else ''
+            sql = f"SELECT {columns} FROM {table}{where_clause}{order_clause}"
+            rows = conn.execute(sql, params).fetchall()
+            results.extend(rows)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+        # שליפה מארכיון
+        arc_conn = self._get_archive_connection()
+        if arc_conn:
+            try:
+                where_clause = f" WHERE {where}" if where else ''
+                sql = f"SELECT {columns} FROM {table}{where_clause}"
+                rows = arc_conn.execute(sql, params).fetchall()
+                results.extend(rows)
+            except Exception:
+                pass
+            finally:
+                try:
+                    arc_conn.close()
+                except Exception:
+                    pass
+
+        # מיון סופי אם נדרש
+        if order_by:
+            try:
+                # ניתוח פשוט של order_by (תמיכה ב"col ASC/DESC")
+                parts = order_by.strip().split()
+                col_name = parts[0]
+                desc = len(parts) > 1 and parts[1].upper() == 'DESC'
+                results.sort(key=lambda r: (r[col_name] or ''), reverse=desc)
+            except Exception:
+                pass
+
+        return results
+
+    # ===================== ניקוי DB =====================
+
+    def _maybe_cleanup_db(self, now: float = None) -> None:
+        if now is None:
+            now = time.time()
+        # WAL checkpoint כל 30 דקות (קל, לא חוסם)
+        try:
+            self._maybe_wal_checkpoint(now)
+        except Exception:
+            pass
+        # ניקוי כל 4 שעות (במקום פעם ביום)
+        if (now - float(Database._last_cleanup_ts or 0)) < Database._CLEANUP_INTERVAL_SEC:
+            # ניקוי חירום אם DB חורג מ-80MB
+            try:
+                if os.path.getsize(self.db_path) <= 80 * 1024 * 1024:
+                    return
+            except Exception:
+                return
+        Database._last_cleanup_ts = now
+        is_master = self._role in ('master', 'standalone')
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=15)
+            conn.execute('PRAGMA busy_timeout = 15000')
+            cur = conn.cursor()
+            total_deleted = 0
+
+            # --- change_log: תמיד מוחקים (לוג סנכרון בלבד, לא לדיווח) ---
+            try:
+                cur.execute("DELETE FROM change_log WHERE created_at < datetime('now', '-7 days')")
+                d = cur.rowcount
+                if d:
+                    conn.commit()
+                    total_deleted += d
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
+            try:
+                cnt = cur.execute('SELECT COUNT(*) FROM change_log').fetchone()[0]
+                if cnt > 50000:
+                    cur.execute("""DELETE FROM change_log WHERE id NOT IN
+                                   (SELECT id FROM change_log ORDER BY id DESC LIMIT 50000)""")
+                    d = cur.rowcount
+                    if d:
+                        conn.commit()
+                        total_deleted += d
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
+            # --- anti_spam_events: תפעולי, תמיד מוחקים ---
+            try:
+                cur.execute("DELETE FROM anti_spam_events WHERE event_time < datetime('now', '-7 days')")
+                d = cur.rowcount
+                if d:
+                    conn.commit()
+                    total_deleted += d
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
+            # --- applied_events: תפעולי, תמיד מוחקים ---
+            try:
+                cur.execute("DELETE FROM applied_events WHERE applied_at < datetime('now', '-14 days')")
+                d = cur.rowcount
+                if d:
+                    conn.commit()
+                    total_deleted += d
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+
+            # --- טבלאות דיווח: master מעביר לארכיון, secondary מוחק ---
+            if is_master:
+                try:
+                    moved = self._archive_old_rows(conn, cur)
+                    total_deleted += moved
+                except Exception as e:
+                    try: print(f"[DB] Archive error: {e}")
+                    except Exception: pass
+            else:
+                # עמדה משנית — מחיקה אגרסיבית (7 ימים), הנתונים כבר ב-master
+                # השהיית sync triggers — time_bonus_given יש trigger שיוצר change_log מיותרים
+                _sec_paused = False
+                try:
+                    cur.execute("UPDATE _sync_paused SET flag = 1 WHERE rowid = 1")
+                    conn.commit()
+                    _sec_paused = True
+                except Exception:
+                    pass
+                try:
+                    for table, date_col, days in [
+                        ('swipe_log',        'swiped_at',    7),
+                        ('points_log',       'created_at',   7),
+                        ('points_history',   'added_at',     7),
+                        ('time_bonus_given', 'given_at',     7),
+                        ('card_validations', 'validated_at', 7),
+                    ]:
+                        try:
+                            cur.execute(f"DELETE FROM {table} WHERE {date_col} < datetime('now', '-{days} days')")
+                            d = cur.rowcount
+                            if d:
+                                conn.commit()
+                                total_deleted += d
+                        except Exception:
+                            try: conn.rollback()
+                            except Exception: pass
+                finally:
+                    if _sec_paused:
+                        try:
+                            cur.execute("UPDATE _sync_paused SET flag = 0 WHERE rowid = 1")
+                            conn.commit()
+                        except Exception:
+                            pass
+
+            # --- VACUUM רק אם נמחקו שורות ו-DB גדול ---
+            try:
+                db_size = os.path.getsize(self.db_path)
+                freelist = cur.execute('PRAGMA freelist_count').fetchone()[0]
+                page_size = cur.execute('PRAGMA page_size').fetchone()[0]
+                wasted = freelist * page_size
+                if wasted > 10 * 1024 * 1024 or (total_deleted > 5000 and db_size > 50 * 1024 * 1024):
+                    cur.execute('VACUUM')
+                    new_size = os.path.getsize(self.db_path)
+                    try:
+                        print(f"[DB] VACUUM: {db_size // 1024}KB -> {new_size // 1024}KB (freed {(db_size - new_size) // 1024}KB)")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+        finally:
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
 
     def _handle_corrupt_db(self, err: Exception) -> None:
         try:
@@ -1191,7 +2309,7 @@ class Database:
                     pid = int(pid)
                 stock_qty = vrow['stock_qty']
 
-            cursor.execute('SELECT stock_qty, is_active FROM products WHERE id = ?', (int(pid),))
+            cursor.execute('SELECT stock_qty, is_active, max_per_student, max_per_class FROM products WHERE id = ?', (int(pid),))
             prow = cursor.fetchone()
             if not prow or int(prow['is_active'] or 1) != 1:
                 conn.rollback()
@@ -1206,6 +2324,148 @@ class Database:
                     stock_qty = None
 
             station_key = str(station_id or '').strip()
+
+            # אכיפת max_per_student - בדיקה גם של רכישות עבר וגם של שריונות נוכחיים
+            if dq > 0:
+                try:
+                    _mps = prow['max_per_student']
+                    _mps = (int(_mps) if _mps is not None and str(_mps).strip() != '' else None)
+                except Exception:
+                    _mps = None
+                if _mps is not None and int(_mps) >= 0:
+                    # רכישות עבר (לא מבוטלות)
+                    cursor.execute(
+                        'SELECT COALESCE(SUM(qty),0) AS q FROM purchases_log WHERE student_id = ? AND product_id = ? AND is_refunded = 0',
+                        (int(student_id or 0), int(pid))
+                    )
+                    _row = cursor.fetchone()
+                    past_qty = int((_row['q'] if _row else 0) or 0)
+                    # שריונות נוכחיים (כל העמדות)
+                    cursor.execute(
+                        '''SELECT COALESCE(SUM(qty),0) AS q FROM purchase_holds
+                           WHERE hold_type = 'product' AND expires_at > CURRENT_TIMESTAMP
+                             AND student_id = ? AND product_id = ?''',
+                        (int(student_id or 0), int(pid))
+                    )
+                    _row = cursor.fetchone()
+                    held_qty = int((_row['q'] if _row else 0) or 0)
+                    if int(past_qty) + int(held_qty) + int(dq) > int(_mps):
+                        conn.rollback()
+                        return {'ok': False, 'error': f'מוגבל ל-{_mps} יח\' לתלמיד'}
+
+                # אכיפת max_per_class - בדיקה גם של רכישות עבר וגם של שריונות נוכחיים
+                try:
+                    _mpc = prow['max_per_class']
+                    _mpc = (int(_mpc) if _mpc is not None and str(_mpc).strip() != '' else None)
+                except Exception:
+                    _mpc = None
+                if _mpc is not None and int(_mpc) >= 0:
+                    # מציאת כיתת התלמיד
+                    cursor.execute('SELECT class_name FROM students WHERE id = ?', (int(student_id or 0),))
+                    _st = cursor.fetchone()
+                    _cls = str((_st['class_name'] if _st else '') or '').strip()
+                    if _cls:
+                        # רכישות עבר של כל הכיתה
+                        cursor.execute(
+                            '''SELECT COALESCE(SUM(pl.qty),0) AS q
+                               FROM purchases_log pl
+                               JOIN students s ON s.id = pl.student_id
+                              WHERE pl.product_id = ? AND pl.is_refunded = 0 AND s.class_name = ?''',
+                            (int(pid), _cls)
+                        )
+                        _row = cursor.fetchone()
+                        class_past = int((_row['q'] if _row else 0) or 0)
+                        # שריונות נוכחיים של כל הכיתה
+                        cursor.execute(
+                            '''SELECT COALESCE(SUM(ph.qty),0) AS q
+                               FROM purchase_holds ph
+                               JOIN students s ON s.id = ph.student_id
+                              WHERE ph.hold_type = 'product' AND ph.expires_at > CURRENT_TIMESTAMP
+                                AND ph.product_id = ? AND s.class_name = ?''',
+                            (int(pid), _cls)
+                        )
+                        _row = cursor.fetchone()
+                        class_held = int((_row['q'] if _row else 0) or 0)
+                        if int(class_past) + int(class_held) + int(dq) > int(_mpc):
+                            conn.rollback()
+                            return {'ok': False, 'error': f'מוגבל ל-{_mpc} יח\' לכיתה'}
+
+                # אכיפת הגבלות ברמת קטגוריה
+                try:
+                    cursor.execute('SELECT category_id FROM products WHERE id = ?', (int(pid),))
+                    _pr = cursor.fetchone()
+                    _cat_id = int((_pr['category_id'] if _pr else 0) or 0) if _pr else 0
+                except Exception:
+                    _cat_id = 0
+                if _cat_id:
+                    try:
+                        cursor.execute(
+                            'SELECT max_items_per_student, max_items_per_class FROM product_categories WHERE id = ?',
+                            (int(_cat_id),))
+                        _cr = cursor.fetchone()
+                    except Exception:
+                        _cr = None
+                    if _cr:
+                        # הגבלת יחידות לתלמיד מקטגוריה
+                        try:
+                            _cmps = _cr['max_items_per_student']
+                            _cmps = (int(_cmps) if _cmps is not None and str(_cmps).strip() != '' else None)
+                        except Exception:
+                            _cmps = None
+                        if _cmps is not None and int(_cmps) >= 0:
+                            cursor.execute(
+                                '''SELECT COALESCE(SUM(pl.qty),0) AS q
+                                   FROM purchases_log pl
+                                   JOIN products pr ON pr.id = pl.product_id
+                                  WHERE pl.student_id = ? AND pr.category_id = ? AND pl.is_refunded = 0''',
+                                (int(student_id or 0), int(_cat_id)))
+                            _row = cursor.fetchone()
+                            _cat_past = int((_row['q'] if _row else 0) or 0)
+                            cursor.execute(
+                                '''SELECT COALESCE(SUM(ph.qty),0) AS q
+                                   FROM purchase_holds ph
+                                   JOIN products pr ON pr.id = ph.product_id
+                                  WHERE ph.hold_type = 'product' AND ph.expires_at > CURRENT_TIMESTAMP
+                                    AND ph.student_id = ? AND pr.category_id = ?''',
+                                (int(student_id or 0), int(_cat_id)))
+                            _row = cursor.fetchone()
+                            _cat_held = int((_row['q'] if _row else 0) or 0)
+                            if int(_cat_past) + int(_cat_held) + int(dq) > int(_cmps):
+                                conn.rollback()
+                                return {'ok': False, 'error': f'מוגבל ל-{_cmps} יח\' לתלמיד מקטגוריה זו'}
+                        # הגבלת יחידות לכיתה מקטגוריה
+                        try:
+                            _cmpc = _cr['max_items_per_class']
+                            _cmpc = (int(_cmpc) if _cmpc is not None and str(_cmpc).strip() != '' else None)
+                        except Exception:
+                            _cmpc = None
+                        if _cmpc is not None and int(_cmpc) >= 0:
+                            cursor.execute('SELECT class_name FROM students WHERE id = ?', (int(student_id or 0),))
+                            _st2 = cursor.fetchone()
+                            _cls2 = str((_st2['class_name'] if _st2 else '') or '').strip()
+                            if _cls2:
+                                cursor.execute(
+                                    '''SELECT COALESCE(SUM(pl.qty),0) AS q
+                                       FROM purchases_log pl
+                                       JOIN products pr ON pr.id = pl.product_id
+                                       JOIN students s ON s.id = pl.student_id
+                                      WHERE pr.category_id = ? AND pl.is_refunded = 0 AND s.class_name = ?''',
+                                    (int(_cat_id), _cls2))
+                                _row = cursor.fetchone()
+                                _ccp = int((_row['q'] if _row else 0) or 0)
+                                cursor.execute(
+                                    '''SELECT COALESCE(SUM(ph.qty),0) AS q
+                                       FROM purchase_holds ph
+                                       JOIN products pr ON pr.id = ph.product_id
+                                       JOIN students s ON s.id = ph.student_id
+                                      WHERE ph.hold_type = 'product' AND ph.expires_at > CURRENT_TIMESTAMP
+                                        AND pr.category_id = ? AND s.class_name = ?''',
+                                    (int(_cat_id), _cls2))
+                                _row = cursor.fetchone()
+                                _cch = int((_row['q'] if _row else 0) or 0)
+                                if int(_ccp) + int(_cch) + int(dq) > int(_cmpc):
+                                    conn.rollback()
+                                    return {'ok': False, 'error': f'מוגבל ל-{_cmpc} יח\' לכיתה מקטגוריה זו'}
 
             if stock_qty is not None:
                 cursor.execute(
@@ -1534,6 +2794,57 @@ class Database:
             cursor.execute('ALTER TABLE students ADD COLUMN is_free_fix_blocked INTEGER DEFAULT 0')
         except:
             pass  # העמודה כבר קיימת
+
+        # מונה תיקופים מצטבר — נשמר לנצח גם כש-swipe_log מתנקה
+        try:
+            cursor.execute('ALTER TABLE students ADD COLUMN total_swipes INTEGER DEFAULT 0')
+            # מיגרציה חד-פעמית: מילוי מונה מ-swipe_log הקיים
+            try:
+                cursor.execute('''
+                    UPDATE students SET total_swipes = (
+                        SELECT COUNT(*) FROM swipe_log
+                        WHERE swipe_log.student_id = students.id
+                          AND swipe_log.station_type = 'public'
+                    ) WHERE COALESCE(total_swipes, 0) = 0
+                ''')
+            except Exception:
+                pass
+        except:
+            pass  # העמודה כבר קיימת
+
+        # תאריך תיקוף אחרון — נשמר לנצח גם כש-swipe_log מתנקה אחרי 7 ימים
+        try:
+            cursor.execute('ALTER TABLE students ADD COLUMN last_swiped_at TIMESTAMP DEFAULT NULL')
+            # מיגרציה חד-פעמית: מילוי מ-swipe_log הקיים
+            try:
+                cursor.execute('''
+                    UPDATE students SET last_swiped_at = (
+                        SELECT MAX(swiped_at) FROM swipe_log
+                        WHERE swipe_log.student_id = students.id
+                    ) WHERE last_swiped_at IS NULL
+                ''')
+            except Exception:
+                pass
+        except:
+            pass  # העמודה כבר קיימת
+
+        # עמודות יום הולדת עברי + מגדר
+        try:
+            cursor.execute('ALTER TABLE students ADD COLUMN hebrew_birth_day INTEGER DEFAULT NULL')
+        except:
+            pass
+        try:
+            cursor.execute('ALTER TABLE students ADD COLUMN hebrew_birth_month INTEGER DEFAULT NULL')
+        except:
+            pass
+        try:
+            cursor.execute('ALTER TABLE students ADD COLUMN hebrew_birth_year INTEGER DEFAULT NULL')
+        except:
+            pass
+        try:
+            cursor.execute('ALTER TABLE students ADD COLUMN gender TEXT DEFAULT NULL')
+        except:
+            pass
         
         # טבלת חסימות כרטיסים (אנטי-ספאם)
         cursor.execute('''
@@ -1624,6 +2935,10 @@ class Database:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_points_log_time ON points_log(created_at)')
         except Exception:
             pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_points_log_student_delta ON points_log(student_id, created_at, delta)')
+        except Exception:
+            pass
         
         # טבלת הודעות
         cursor.execute('''
@@ -1671,6 +2986,40 @@ class Database:
         except Exception:
             pass
 
+        # אינדקסים קריטיים ל-change_log — triggers עושים COUNT(*) על הטבלה הזו בכל כתיבה!
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_change_log_dedup ON change_log(entity_type, entity_id, action_type, created_at)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_change_log_synced ON change_log(synced_at)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_change_log_pending ON change_log(synced_at, id)')
+        except Exception:
+            pass
+
+        # אינדקסים קריטיים ל-students — חיפוש כרטיס, מס' סידורי, כיתה
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_students_card ON students(card_number)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_students_serial ON students(serial_number)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_students_class ON students(class_name)')
+        except Exception:
+            pass
+
+        # אינדקס ל-card_validations — בדיקות אנטי-ספאם
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_card_validations_student_time ON card_validations(student_id, validated_at)')
+        except Exception:
+            pass
+
         try:
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS applied_events (
@@ -1678,6 +3027,10 @@ class Database:
                     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_applied_events_time ON applied_events(applied_at)')
         except Exception:
             pass
 
@@ -1714,11 +3067,27 @@ class Database:
                 name TEXT NOT NULL,
                 sort_order INTEGER DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
+                show_in_catalog INTEGER DEFAULT 1,
+                max_items_per_student INTEGER,
+                max_items_per_class INTEGER,
+                min_points_required INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(name) ON CONFLICT IGNORE
             )
         ''')
+
+        # Add columns for existing DBs (safe ALTER — ignores if already exists)
+        for _col_sql in (
+            'ALTER TABLE product_categories ADD COLUMN show_in_catalog INTEGER DEFAULT 1',
+            'ALTER TABLE product_categories ADD COLUMN max_items_per_student INTEGER',
+            'ALTER TABLE product_categories ADD COLUMN max_items_per_class INTEGER',
+            'ALTER TABLE product_categories ADD COLUMN min_points_required INTEGER DEFAULT 0',
+        ):
+            try:
+                cursor.execute(_col_sql)
+            except Exception:
+                pass
 
         try:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_product_categories_active_sort ON product_categories(is_active, sort_order, name)')
@@ -1737,6 +3106,7 @@ class Database:
                 deduct_points INTEGER DEFAULT 1,
                 sort_order INTEGER DEFAULT 0,
                 is_active INTEGER DEFAULT 1,
+                consolidated_voucher INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -1807,6 +3177,16 @@ class Database:
 
         try:
             cursor.execute('ALTER TABLE products ADD COLUMN price_override_discount_pct INTEGER')
+        except Exception:
+            pass
+
+        try:
+            cursor.execute('ALTER TABLE products ADD COLUMN consolidated_voucher INTEGER DEFAULT 0')
+        except Exception:
+            pass
+
+        try:
+            cursor.execute('ALTER TABLE products ADD COLUMN voucher_per_unit INTEGER DEFAULT 0')
         except Exception:
             pass
 
@@ -1977,6 +3357,14 @@ class Database:
 
         try:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_refunded ON purchases_log(is_refunded, created_at)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_product ON purchases_log(product_id, created_at)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_purchases_time ON purchases_log(created_at)')
         except Exception:
             pass
 
@@ -2224,6 +3612,10 @@ class Database:
             cursor.execute('ALTER TABLE scheduled_services ADD COLUMN min_points_required INTEGER DEFAULT 0')
         except Exception:
             pass
+        try:
+            cursor.execute('ALTER TABLE scheduled_services ADD COLUMN class_grouping INTEGER DEFAULT 0')
+        except Exception:
+            pass
 
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS scheduled_service_dates (
@@ -2354,6 +3746,20 @@ class Database:
         except:
             pass
         
+        # אינדקסים למורים — חיפוש מהיר לפי כרטיס (unlock קופה, תיקוף)
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_teachers_card ON teachers(card_number)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_teachers_card2 ON teachers(card_number2)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_teachers_card3 ON teachers(card_number3)')
+        except Exception:
+            pass
+
         # טבלת שיוך מורים לכיתות (many-to-many)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS teacher_classes (
@@ -2386,6 +3792,20 @@ class Database:
             )
         ''')
 
+        # אינדקסים קריטיים ל-swipe_log — בלעדיהם כל load_students עושה full table scan!
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_swipe_log_student_station ON swipe_log(student_id, station_type)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_swipe_log_station_time ON swipe_log(station_type, swiped_at)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_swipe_log_time ON swipe_log(swiped_at)')
+        except Exception:
+            pass
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS student_tier_state (
                 student_id INTEGER PRIMARY KEY,
@@ -2398,7 +3818,12 @@ class Database:
         conn.commit()
 
         # יצירת triggers אוטומטיים לסנכרון change_log
+        _trig_t0 = time.time()
         self._create_sync_triggers(conn)
+        try:
+            print(f"[DB] _create_sync_triggers ({time.time()-_trig_t0:.1f}s)")
+        except Exception:
+            pass
 
         conn.close()
 
@@ -2752,36 +4177,80 @@ class Database:
     def add_student(self, last_name: str, first_name: str, id_number: str = "",
                    class_name: str = "", photo_number: str = "", 
                    card_number: str = "", points: int = 0,
-                   serial_number: Optional[int] = None) -> int:
+                   serial_number: Optional[int] = None,
+                   hebrew_birth_day: Optional[int] = None,
+                   hebrew_birth_month: Optional[int] = None,
+                   hebrew_birth_year: Optional[int] = None,
+                   gender: Optional[str] = None) -> int:
         """הוספת תלמיד חדש"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            INSERT INTO students (serial_number, last_name, first_name, id_number, class_name, 
-                                 photo_number, card_number, points)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (serial_number, last_name, first_name, id_number, class_name, photo_number, 
-              card_number, points))
-        
-        student_id = cursor.lastrowid
         try:
-            self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='create',
-                             payload={'serial_number': serial_number, 'first_name': first_name, 'last_name': last_name,
-                                      'id_number': id_number, 'class_name': class_name, 'photo_number': photo_number,
-                                      'card_number': card_number, 'points': points})
-        except Exception:
-            pass
-        conn.commit()
-        conn.close()
-        
-        return student_id
+            cursor.execute('''
+                INSERT INTO students (serial_number, last_name, first_name, id_number, class_name, 
+                                     photo_number, card_number, points,
+                                     hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (serial_number, last_name, first_name, id_number, class_name, photo_number, 
+                  card_number, points,
+                  hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender or None))
+            
+            # שליפת ה-id של התלמיד שנוסף — lastrowid עלול להשתנות ע"י trigger שרושם ל-change_log
+            student_id = 0
+            try:
+                cursor.execute('SELECT MAX(id) FROM students')
+                _r = cursor.fetchone()
+                if _r and _r[0]:
+                    student_id = int(_r[0])
+            except Exception as _e:
+                try:
+                    print(f"[DB] add_student SELECT MAX(id) error: {_e}")
+                except Exception:
+                    pass
+            if student_id <= 0:
+                try:
+                    student_id = cursor.lastrowid or 0
+                except Exception:
+                    pass
+            try:
+                print(f"[DB] add_student OK: id={student_id} name={first_name} {last_name}")
+            except Exception:
+                pass
+            try:
+                self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='create',
+                                 payload={'serial_number': serial_number, 'first_name': first_name, 'last_name': last_name,
+                                          'id_number': id_number, 'class_name': class_name, 'photo_number': photo_number,
+                                          'card_number': card_number, 'points': points})
+            except Exception:
+                pass
+            conn.commit()
+            conn.close()
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
+            return student_id
+        except Exception as e:
+            try:
+                print(f"[DB] add_student FAILED: {e}")
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return 0
     
     def update_student_basic(self, student_id: int, last_name: str, first_name: str,
                              id_number: str = "", class_name: str = "",
                              card_number: str = "", photo_number: str = "",
-                             serial_number: Optional[int] = None) -> bool:
-        """עדכון פרטי תלמיד בסיסיים (שם, ת"ז, כיתה, כרטיס, תמונה, מס' סידורי)."""
+                             serial_number: Optional[int] = None,
+                             hebrew_birth_day: Optional[int] = None,
+                             hebrew_birth_month: Optional[int] = None,
+                             hebrew_birth_year: Optional[int] = None,
+                             gender: Optional[str] = None) -> bool:
+        """עדכון פרטי תלמיד בסיסיים (שם, ת"ז, כיתה, כרטיס, תמונה, מס' סידורי, יום הולדת עברי, מגדר)."""
         conn = self.get_connection()
         cursor = conn.cursor()
 
@@ -2795,40 +4264,61 @@ class Database:
                     card_number = ?,
                     photo_number = ?,
                     serial_number = ?,
+                    hebrew_birth_day = ?,
+                    hebrew_birth_month = ?,
+                    hebrew_birth_year = ?,
+                    gender = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             ''', (last_name, first_name, id_number or None, class_name or None,
-                  card_number or None, photo_number or None, serial_number, student_id))
+                  card_number or None, photo_number or None, serial_number,
+                  hebrew_birth_day, hebrew_birth_month, hebrew_birth_year,
+                  gender or None, student_id))
             try:
                 self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
                                  payload={'serial_number': serial_number, 'first_name': first_name, 'last_name': last_name,
                                           'id_number': id_number, 'class_name': class_name, 'photo_number': photo_number,
-                                          'card_number': card_number})
+                                          'card_number': card_number,
+                                          'hebrew_birth_day': hebrew_birth_day, 'hebrew_birth_month': hebrew_birth_month,
+                                          'hebrew_birth_year': hebrew_birth_year, 'gender': gender})
             except Exception:
                 pass
 
             conn.commit()
             conn.close()
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
             return True
         except Exception as e:
             conn.close()
             print(f"שגיאה בעדכון פרטי תלמיד: {e}")
             return False
     def get_student_by_card(self, card_number: str) -> Optional[Dict[str, Any]]:
-        """שליפת פרטי תלמיד לפי מספר כרטיס"""
+        """שליפת פרטי תלמיד לפי מספר כרטיס — עם קאש בזיכרון"""
+        card_number = str(card_number or '').strip()
+        if not card_number:
+            return None
+        # ניסיון מהקאש (רענון אוטומטי כל 30 שניות)
+        try:
+            self._refresh_card_cache()
+            cached = Database._student_card_cache.get(card_number)
+            if cached:
+                return dict(cached)  # עותק — שהקורא לא ישנה את הקאש
+        except Exception:
+            pass
+        # fallback: שאילתה ישירה ב-DB (כרטיס חדש / קאש לא מוכן)
         conn = self.get_connection()
         cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT * FROM students WHERE card_number = ?
-        ''', (card_number,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return dict(row)
-        return None
+        try:
+            cursor.execute('SELECT * FROM students WHERE card_number = ?', (card_number,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+        finally:
+            conn.close()
 
     # ========================================
     # קניות / קופה
@@ -3624,6 +5114,7 @@ class Database:
                                  queue_priority_custom: str = '',
                                  allowed_classes: str = '',
                                  min_points_required: int = 0,
+                                 class_grouping: int = 0,
                                  is_active: int = 1) -> int:
         """יוצר/מעדכן שירות מתוזמן עבור מוצר. מחזיר service_id."""
         conn = self.get_connection()
@@ -3648,6 +5139,7 @@ class Database:
                            queue_priority_custom = ?,
                            allowed_classes = ?,
                            min_points_required = ?,
+                           class_grouping = ?,
                            is_active = ?,
                            updated_at = CURRENT_TIMESTAMP
                      WHERE id = ?
@@ -3664,6 +5156,7 @@ class Database:
                         str(queue_priority_custom or '').strip(),
                         str(allowed_classes or '').strip(),
                         int(min_points_required or 0),
+                        1 if int(class_grouping or 0) == 1 else 0,
                         1 if int(is_active or 0) == 1 else 0,
                         int(sid),
                     )
@@ -3676,8 +5169,8 @@ class Database:
                 INSERT INTO scheduled_services
                     (product_id, duration_minutes, capacity_per_slot, start_time, end_time, allow_auto_time,
                      max_per_student, max_per_class, queue_priority_mode, queue_priority_custom,
-                     allowed_classes, min_points_required, is_active, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                     allowed_classes, min_points_required, class_grouping, is_active, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''',
                 (
                     int(product_id or 0),
@@ -3692,6 +5185,7 @@ class Database:
                     str(queue_priority_custom or '').strip(),
                     str(allowed_classes or '').strip(),
                     int(min_points_required or 0),
+                    1 if int(class_grouping or 0) == 1 else 0,
                     1 if int(is_active or 0) == 1 else 0,
                 )
             )
@@ -3853,6 +5347,30 @@ class Database:
                     'is_full': 1 if remaining <= 0 else 0,
                 })
                 cur += dur
+            return out
+        finally:
+            conn.close()
+
+    def get_slot_classes_map(self, *, service_id: int, service_date: str) -> Dict[str, List[str]]:
+        """מחזיר מיפוי slot_start_time -> [class_name, ...] של התלמידים שכבר משובצים."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                '''
+                SELECT r.slot_start_time, s.class_name
+                  FROM scheduled_service_reservations r
+                  JOIN students s ON s.id = r.student_id
+                 WHERE r.service_id = ? AND r.service_date = ?
+                 ORDER BY r.slot_start_time
+                ''',
+                (int(service_id or 0), str(service_date or '').strip())
+            )
+            out: Dict[str, List[str]] = {}
+            for row in (cursor.fetchall() or []):
+                t = str(row['slot_start_time'] or '').strip()
+                cn = str(row['class_name'] or '').strip()
+                out.setdefault(t, []).append(cn)
             return out
         finally:
             conn.close()
@@ -4113,6 +5631,9 @@ class Database:
                        p.max_per_class AS product_max_per_class,
                        p.price_override_min_points AS product_price_override_min_points,
                        p.price_override_discount_pct AS product_price_override_discount_pct,
+                       p.consolidated_voucher,
+                       p.voucher_per_unit,
+                       p.category_id,
                        ss.id AS challenge_id,
                        ss.is_active AS challenge_is_active,
                        ss.duration_minutes AS challenge_duration_minutes,
@@ -4125,7 +5646,8 @@ class Database:
                        ss.queue_priority_mode AS challenge_queue_priority_mode,
                        ss.queue_priority_custom AS challenge_queue_priority_custom,
                        ss.allowed_classes AS challenge_allowed_classes,
-                       ss.min_points_required AS challenge_min_points_required
+                       ss.min_points_required AS challenge_min_points_required,
+                       ss.class_grouping AS challenge_class_grouping
                   FROM products p
                   LEFT JOIN product_categories c ON c.id = p.category_id
                   LEFT JOIN scheduled_services ss ON ss.product_id = p.id
@@ -4150,13 +5672,20 @@ class Database:
         finally:
             conn.close()
 
-    def add_product_category(self, *, name: str, sort_order: int = 0, is_active: int = 1) -> int:
+    def add_product_category(self, *, name: str, sort_order: int = 0, is_active: int = 1,
+                             show_in_catalog: int = 1, max_items_per_student: int = None,
+                             max_items_per_class: int = None, min_points_required: int = 0) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute(
-                'INSERT INTO product_categories (name, sort_order, is_active, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)',
-                (str(name or '').strip(), int(sort_order or 0), int(is_active or 0))
+                '''INSERT INTO product_categories
+                   (name, sort_order, is_active, show_in_catalog, max_items_per_student,
+                    max_items_per_class, min_points_required, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''',
+                (str(name or '').strip(), int(sort_order or 0), int(is_active or 0),
+                 int(show_in_catalog if show_in_catalog is not None else 1),
+                 max_items_per_student, max_items_per_class, int(min_points_required or 0))
             )
             cid = cursor.lastrowid
             conn.commit()
@@ -4164,13 +5693,22 @@ class Database:
         finally:
             conn.close()
 
-    def update_product_category(self, category_id: int, *, name: str, sort_order: int = 0, is_active: int = 1) -> bool:
+    def update_product_category(self, category_id: int, *, name: str, sort_order: int = 0, is_active: int = 1,
+                                show_in_catalog: int = 1, max_items_per_student: int = None,
+                                max_items_per_class: int = None, min_points_required: int = 0) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
             cursor.execute(
-                'UPDATE product_categories SET name = ?, sort_order = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                (str(name or '').strip(), int(sort_order or 0), int(is_active or 0), int(category_id or 0))
+                '''UPDATE product_categories
+                   SET name = ?, sort_order = ?, is_active = ?, show_in_catalog = ?,
+                       max_items_per_student = ?, max_items_per_class = ?,
+                       min_points_required = ?, updated_at = CURRENT_TIMESTAMP
+                   WHERE id = ?''',
+                (str(name or '').strip(), int(sort_order or 0), int(is_active or 0),
+                 int(show_in_catalog if show_in_catalog is not None else 1),
+                 max_items_per_student, max_items_per_class, int(min_points_required or 0),
+                 int(category_id or 0))
             )
             conn.commit()
             return cursor.rowcount > 0
@@ -4656,7 +6194,8 @@ class Database:
                     allowed_classes: str = '', min_points_required: int = 0,
                     max_per_student: Optional[int] = None, max_per_class: Optional[int] = None,
                     price_override_min_points: Optional[int] = None, price_override_points: Optional[int] = None,
-                    price_override_discount_pct: Optional[int] = None) -> int:
+                    price_override_discount_pct: Optional[int] = None,
+                    consolidated_voucher: int = 0, voucher_per_unit: int = 0) -> int:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
@@ -4667,9 +6206,9 @@ class Database:
                     price_points, stock_qty, deduct_points, is_active,
                     allowed_classes, min_points_required, max_per_student, max_per_class,
                     price_override_min_points, price_override_points, price_override_discount_pct,
-                    updated_at
+                    consolidated_voucher, voucher_per_unit, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''',
                 (
                     str(name).strip(),
@@ -4687,6 +6226,8 @@ class Database:
                     price_override_min_points,
                     price_override_points,
                     price_override_discount_pct,
+                    int(consolidated_voucher or 0),
+                    int(voucher_per_unit or 0),
                 )
             )
             pid = cursor.lastrowid
@@ -4707,7 +6248,8 @@ class Database:
                        allowed_classes: str = '', min_points_required: int = 0,
                        max_per_student: Optional[int] = None, max_per_class: Optional[int] = None,
                        price_override_min_points: Optional[int] = None, price_override_points: Optional[int] = None,
-                       price_override_discount_pct: Optional[int] = None) -> bool:
+                       price_override_discount_pct: Optional[int] = None,
+                       consolidated_voucher: int = 0, voucher_per_unit: int = 0) -> bool:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
@@ -4729,6 +6271,8 @@ class Database:
                        price_override_points = ?,
                        price_override_discount_pct = ?,
                        is_active = ?,
+                       consolidated_voucher = ?,
+                       voucher_per_unit = ?,
                        updated_at = CURRENT_TIMESTAMP
                  WHERE id = ?
                 ''',
@@ -4748,6 +6292,8 @@ class Database:
                     price_override_points,
                     price_override_discount_pct,
                     int(is_active or 0),
+                    int(consolidated_voucher or 0),
+                    int(voucher_per_unit or 0),
                     int(product_id or 0)
                 )
             )
@@ -4836,6 +6382,33 @@ class Database:
 
     def set_cashier_receipt_footer_text(self, text: str):
         self.set_setting('cashier_receipt_footer_text', (text or '').strip())
+
+    def get_cashier_timer_mode(self) -> str:
+        v = str(self.get_setting('cashier_timer_mode', 'none') or 'none').strip().lower()
+        if v not in ('timer', 'stopwatch', 'none'):
+            v = 'none'
+        return v
+
+    def set_cashier_timer_mode(self, mode: str):
+        mode = str(mode or '').strip().lower()
+        if mode not in ('timer', 'stopwatch', 'none'):
+            mode = 'none'
+        self.set_setting('cashier_timer_mode', mode)
+
+    def get_cashier_timer_minutes(self) -> int:
+        try:
+            return int(self.get_setting('cashier_timer_minutes', '3') or 3)
+        except Exception:
+            return 3
+
+    def set_cashier_timer_minutes(self, minutes: int):
+        try:
+            minutes = int(minutes)
+        except Exception:
+            minutes = 3
+        if minutes < 1:
+            minutes = 1
+        self.set_setting('cashier_timer_minutes', str(minutes))
 
     def get_cashier_require_rescan_confirm(self) -> bool:
         v = str(self.get_setting('cashier_require_rescan_confirm', '1') or '1').strip()
@@ -4967,8 +6540,27 @@ class Database:
             conn.close()
 
     def get_cashier_catalog(self) -> List[Dict[str, Any]]:
-        """מחזיר קטלוג לקופה: מוצרים פעילים עם וריאציות פעילות."""
+        """מחזיר קטלוג לקופה: מוצרים פעילים עם וריאציות פעילות.
+        אופטימיזציה: שליפת כל הוריאציות בשאילתה אחת במקום N שאילתות."""
         prods = self.get_all_products(active_only=True) or []
+        if not prods:
+            return []
+        # Batch-load all active variants in a single query
+        _vars_by_pid: dict = {}
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute('SELECT * FROM product_variants WHERE is_active = 1 ORDER BY sort_order, id')
+                for r in (cursor.fetchall() or []):
+                    rd = dict(r)
+                    _vpid = int(rd.get('product_id') or 0)
+                    if _vpid:
+                        _vars_by_pid.setdefault(_vpid, []).append(rd)
+            finally:
+                conn.close()
+        except Exception:
+            pass
         out: List[Dict[str, Any]] = []
         for p in prods:
             try:
@@ -4977,7 +6569,7 @@ class Database:
                 pid = 0
             if not pid:
                 continue
-            vars_ = self.get_product_variants(pid, active_only=True) or []
+            vars_ = _vars_by_pid.get(pid) or []
             if not vars_:
                 # fallback
                 vars_ = [{
@@ -5351,12 +6943,29 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute('DELETE FROM products WHERE id = ?', (int(product_id or 0),))
+            pid = int(product_id or 0)
+            # כיבוי FK זמני — מונע FOREIGN KEY constraint failed
+            try:
+                conn.execute('PRAGMA foreign_keys = OFF')
+            except Exception:
+                pass
+            # מחיקת רשומות מקושרות (FK) לפני מחיקת המוצר
+            for related_table in ('product_variants', 'scheduled_services', 'purchases_log', 'refunds_log'):
+                try:
+                    cursor.execute(f'DELETE FROM {related_table} WHERE product_id = ?', (pid,))
+                except Exception:
+                    pass
+            cursor.execute('DELETE FROM products WHERE id = ?', (pid,))
             try:
                 self._log_change(cursor, entity_type='product', entity_id=str(product_id), action_type='delete', payload={})
             except Exception:
                 pass
             conn.commit()
+            # הפעלה מחדש של FK
+            try:
+                conn.execute('PRAGMA foreign_keys = ON')
+            except Exception:
+                pass
             return cursor.rowcount > 0
         finally:
             conn.close()
@@ -5589,6 +7198,24 @@ class Database:
         conn.close()
         return (row and row['count'] > 0)
     
+    def get_students_with_hebrew_birthday(self, heb_day: int, heb_month: int) -> List[Dict[str, Any]]:
+        """שליפת תלמידים שיום ההולדת העברי שלהם חל היום (לפי יום וחודש עברי)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                SELECT id, first_name, last_name, class_name, gender,
+                       hebrew_birth_day, hebrew_birth_month, hebrew_birth_year
+                FROM students
+                WHERE hebrew_birth_day = ? AND hebrew_birth_month = ?
+                ORDER BY class_name, last_name, first_name
+            ''', (int(heb_day), int(heb_month)))
+            return [dict(r) for r in (cursor.fetchall() or [])]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
     def get_student_by_id(self, student_id: int) -> Optional[Dict[str, Any]]:
         """שליפת פרטי תלמיד לפי מזהה"""
         conn = self.get_connection()
@@ -5679,7 +7306,7 @@ class Database:
                 ''',
                 (str(entity_type or ''), str(entity_id or ''), str(action_type or ''), payload_json, event_id, station_id)
             )
-        except Exception:
+        except Exception as e1:
             try:
                 cursor.execute(
                     '''
@@ -5688,8 +7315,11 @@ class Database:
                     ''',
                     (str(entity_type or ''), str(entity_id or ''), str(action_type or ''), payload_json)
                 )
-            except Exception:
-                pass
+            except Exception as e2:
+                try:
+                    print(f"[DB] _log_change FAILED: {entity_type}/{entity_id}/{action_type} e1={e1} e2={e2}")
+                except Exception:
+                    pass
     
     def get_recent_validations_count(self, student_id: int, minutes: int = 1) -> int:
         """ספירת תיקופים של תלמיד בדקות האחרונות"""
@@ -6006,7 +7636,7 @@ class Database:
     
     def update_student_points(self, student_id: int, points: int, 
                             reason: str = "", added_by: str = "") -> bool:
-        """עדכון נקודות תלמיד"""
+        """עדכון נקודות תלמיד — עטוף ב-BEGIN IMMEDIATE למניעת race conditions"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
@@ -6027,20 +7657,26 @@ class Database:
                 # לא חוסמים עדכון נקודות בגלל כשל בחישוב
                 pass
 
-            # שליפת הנקודות הקודמות
+            # BEGIN IMMEDIATE: נעילת כתיבה לפני קריאה — מונע lost updates
+            # כשמורה א' ומורה ב' מעדכנים את אותו תלמיד במקביל
+            try:
+                conn.execute('BEGIN IMMEDIATE')
+            except Exception:
+                pass
+
+            # שליפת הנקודות הקודמות (תחת נעילה!)
             cursor.execute('SELECT points FROM students WHERE id = ?', (student_id,))
             row = cursor.fetchone()
             old_points = row[0] if row else 0
             
-            # עדכון הנקודות
+            # עדכון הנקודות — דלתא (points + delta) במקום ערך מוחלט
+            # מונע אובדן נקודות כשמשנית וראשית מעדכנות במקביל
+            points_diff = points - old_points
             cursor.execute('''
                 UPDATE students 
-                SET points = ?, updated_at = CURRENT_TIMESTAMP
+                SET points = points + ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            ''', (points, student_id))
-            
-            # רישום בהיסטוריה
-            points_diff = points - old_points
+            ''', (points_diff, student_id))
             cursor.execute('''
                 INSERT INTO points_history (student_id, points_added, reason, added_by)
                 VALUES (?, ?, ?, ?)
@@ -6130,6 +7766,11 @@ class Database:
             
             conn.commit()
             conn.close()
+            # רענון מיידי של קאש כרטיסים כדי ששליפה הבאה תחזיר נקודות מעודכנות
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
             return True
         except Exception as e:
             conn.close()
@@ -6153,7 +7794,7 @@ class Database:
                        datetime(created_at, 'localtime') AS created_at
                   FROM points_log
                  WHERE student_id = ?
-                 ORDER BY datetime(created_at) ASC, id ASC
+                 ORDER BY created_at ASC, id ASC
             ''', (int(student_id),))
             rows = cursor.fetchall() or []
             out = [dict(r) for r in rows]
@@ -6267,6 +7908,62 @@ class Database:
                     pass
                 out2.append(d)
 
+            # --- שליפה מארכיון (נתונים ישנים שהועברו מה-DB הראשי) ---
+            main_plog_ids = set(int(r.get('id') or 0) for r in (out or []))
+            main_phist_ids = set(int(r.get('id') or 0) for r in (out2 or []))
+            arc_conn = self._get_archive_connection()
+            if arc_conn:
+                try:
+                    arc_cur = arc_conn.cursor()
+                    # points_log מארכיון
+                    arc_cur.execute('''
+                        SELECT id, student_id, old_points, new_points, delta, reason,
+                               actor_name, action_type,
+                               datetime(created_at, 'localtime') AS created_at
+                          FROM points_log WHERE student_id = ?
+                          ORDER BY created_at ASC, id ASC
+                    ''', (int(student_id),))
+                    for r in (arc_cur.fetchall() or []):
+                        d = dict(r)
+                        if int(d.get('id') or 0) not in main_plog_ids:
+                            out.append(d)
+                    # points_history מארכיון
+                    arc_cur.execute('''
+                        SELECT id, student_id, points_added AS delta, reason,
+                               added_by AS actor_name, '' AS action_type,
+                               datetime(added_at, 'localtime') AS created_at
+                          FROM points_history WHERE student_id = ?
+                          ORDER BY datetime(added_at) ASC, id ASC
+                    ''', (int(student_id),))
+                    for r in (arc_cur.fetchall() or []):
+                        d = dict(r)
+                        d['old_points'] = None
+                        d['new_points'] = None
+                        try:
+                            d['delta'] = int(d.get('delta') or 0)
+                        except Exception:
+                            d['delta'] = 0
+                        if int(d.get('id') or 0) not in main_phist_ids:
+                            # בדיקת כפילות מול sig
+                            ts2 = str(d.get('created_at') or '').strip()
+                            rs2 = str(d.get('reason') or '').strip()
+                            an2 = str(d.get('actor_name') or '').strip()
+                            if ts2 and (ts2, int(d.get('delta') or 0), rs2, an2) in sig_points_log:
+                                continue
+                            try:
+                                if not str(d.get('action_type') or '').strip():
+                                    d['action_type'] = _infer_action_type(d.get('reason'), d.get('actor_name'))
+                            except Exception:
+                                pass
+                            out2.append(d)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        arc_conn.close()
+                    except Exception:
+                        pass
+
             # merge & sort by timestamp
             merged = []
             for d in (out or []):
@@ -6313,7 +8010,7 @@ class Database:
 
             cursor.execute(
                 f'''
-                SELECT id, serial_number, class_name, first_name, last_name
+                SELECT id, serial_number, class_name, first_name, last_name, points
                   FROM students
                   {where_students}
                  ORDER BY class_name, last_name, first_name, serial_number, id
@@ -6344,6 +8041,41 @@ class Database:
             cursor.execute(sql, tuple(params_log))
             rows = [dict(r) for r in (cursor.fetchall() or [])]
 
+            # --- שליפה מארכיון ---
+            arc_conn = self._get_archive_connection()
+            if arc_conn:
+                try:
+                    # ארכיון: points_log בלבד (ללא JOIN ל-students כי students לא בארכיון)
+                    if allowed:
+                        student_ids_set = set(int(s.get('id') or 0) for s in students)
+                        if student_ids_set:
+                            ph = ','.join('?' * len(student_ids_set))
+                            arc_sql = (
+                                'SELECT student_id, '
+                                "date(datetime(created_at, 'localtime')) AS day, "
+                                'SUM(delta) AS delta_sum, COUNT(*) AS cnt '
+                                f'FROM points_log WHERE student_id IN ({ph}) '
+                                'GROUP BY student_id, day ORDER BY day ASC'
+                            )
+                            arc_rows = arc_conn.execute(arc_sql, list(student_ids_set)).fetchall()
+                            rows.extend([dict(r) for r in (arc_rows or [])])
+                    else:
+                        arc_sql = (
+                            'SELECT student_id, '
+                            "date(datetime(created_at, 'localtime')) AS day, "
+                            'SUM(delta) AS delta_sum, COUNT(*) AS cnt '
+                            'FROM points_log GROUP BY student_id, day ORDER BY day ASC'
+                        )
+                        arc_rows = arc_conn.execute(arc_sql).fetchall()
+                        rows.extend([dict(r) for r in (arc_rows or [])])
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        arc_conn.close()
+                    except Exception:
+                        pass
+
             day_set: set = set()
             by_student_day: Dict[int, Dict[str, int]] = {}
             has_row: set = set()
@@ -6364,7 +8096,8 @@ class Database:
                 if sid <= 0 or not day or cnt <= 0:
                     continue
                 day_set.add(day)
-                by_student_day.setdefault(sid, {})[day] = int(delta_sum)
+                existing = by_student_day.setdefault(sid, {}).get(day, 0)
+                by_student_day[sid][day] = existing + int(delta_sum)
                 has_row.add((sid, day))
 
             days = sorted(day_set)
@@ -6394,6 +8127,10 @@ class Database:
                         base[hdr] = ''
                     else:
                         base[hdr] = int(m.get(iso_day) or 0)
+                try:
+                    base["סה\"כ נקודות"] = int(s.get('points') or 0)
+                except Exception:
+                    base["סה\"כ נקודות"] = 0
                 out_rows.append(base)
 
             return out_rows, headers
@@ -6438,7 +8175,59 @@ class Database:
                 (actor, int(limit or 0))
             )
             rows = cursor.fetchall() or []
-            return [dict(r) for r in rows]
+            main_results = [dict(r) for r in rows]
+
+            # --- שליפה מארכיון ---
+            main_ids = set(int(r.get('id') or 0) for r in main_results)
+            arc_conn = self._get_archive_connection()
+            if arc_conn:
+                try:
+                    # ארכיון: points_log בלבד, ללא JOIN (students לא בארכיון)
+                    arc_rows = arc_conn.execute('''
+                        SELECT id, datetime(created_at, 'localtime') AS created_at,
+                               actor_name, action_type, reason, student_id,
+                               old_points, new_points, delta
+                          FROM points_log
+                         WHERE actor_name = ?
+                         ORDER BY datetime(created_at) DESC, id DESC
+                    ''', (actor,)).fetchall()
+                    # שליפת פרטי תלמידים מה-DB הראשי לפי student_id
+                    arc_sids = set()
+                    for ar in (arc_rows or []):
+                        try:
+                            arc_sids.add(int(ar['student_id'] or 0))
+                        except Exception:
+                            pass
+                    student_info = {}
+                    if arc_sids:
+                        ph = ','.join('?' * len(arc_sids))
+                        for sr in cursor.execute(f'SELECT id, serial_number, class_name, first_name, last_name FROM students WHERE id IN ({ph})', list(arc_sids)).fetchall():
+                            student_info[int(sr['id'])] = dict(sr)
+                    for ar in (arc_rows or []):
+                        d = dict(ar)
+                        if int(d.get('id') or 0) in main_ids:
+                            continue
+                        sid = int(d.get('student_id') or 0)
+                        si = student_info.get(sid, {})
+                        d['serial_number'] = si.get('serial_number')
+                        d['class_name'] = si.get('class_name')
+                        d['first_name'] = si.get('first_name')
+                        d['last_name'] = si.get('last_name')
+                        main_results.append(d)
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        arc_conn.close()
+                    except Exception:
+                        pass
+
+            # מיון סופי
+            try:
+                main_results.sort(key=lambda x: (str(x.get('created_at') or ''), int(x.get('id') or 0)), reverse=True)
+            except Exception:
+                pass
+            return main_results[:int(limit or 20000)]
         except Exception:
             return []
         finally:
@@ -6533,6 +8322,10 @@ class Database:
                 except Exception:
                     pass
             conn.commit()
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
         except Exception as e:
             try:
                 conn.rollback()
@@ -6558,8 +8351,14 @@ class Database:
                 WHERE id = ?
             ''', (card_number, student_id))
             try:
+                cursor.execute('SELECT * FROM students WHERE id = ?', (student_id,))
+                _row = cursor.fetchone()
+                if _row:
+                    _pl = {k: (str(_row[k]) if _row[k] is not None else '') for k in _row.keys() if k not in ('created_at', 'updated_at')}
+                else:
+                    _pl = {'card_number': card_number}
                 self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
-                                 payload={'card_number': card_number})
+                                 payload=_pl)
             except Exception:
                 pass
             
@@ -6582,8 +8381,14 @@ class Database:
                 WHERE id = ?
             ''', (photo_number if photo_number else None, student_id))
             try:
+                cursor.execute('SELECT * FROM students WHERE id = ?', (student_id,))
+                _row = cursor.fetchone()
+                if _row:
+                    _pl = {k: (str(_row[k]) if _row[k] is not None else '') for k in _row.keys() if k not in ('created_at', 'updated_at')}
+                else:
+                    _pl = {'photo_number': photo_number}
                 self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
-                                 payload={'photo_number': photo_number})
+                                 payload=_pl)
             except Exception:
                 pass
             
@@ -6606,8 +8411,14 @@ class Database:
                 WHERE id = ?
             ''', (serial_number, student_id))
             try:
+                cursor.execute('SELECT * FROM students WHERE id = ?', (student_id,))
+                _row = cursor.fetchone()
+                if _row:
+                    _pl = {k: (str(_row[k]) if _row[k] is not None else '') for k in _row.keys() if k not in ('created_at', 'updated_at')}
+                else:
+                    _pl = {'serial_number': serial_number}
                 self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
-                                 payload={'serial_number': serial_number})
+                                 payload=_pl)
             except Exception:
                 pass
             
@@ -6631,8 +8442,14 @@ class Database:
                 WHERE id = ?
             ''', (message if message else None, student_id))
             try:
+                cursor.execute('SELECT * FROM students WHERE id = ?', (student_id,))
+                _row = cursor.fetchone()
+                if _row:
+                    _pl = {k: (str(_row[k]) if _row[k] is not None else '') for k in _row.keys() if k not in ('created_at', 'updated_at')}
+                else:
+                    _pl = {'private_message': message}
                 self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='update',
-                                 payload={'private_message': message})
+                                 payload=_pl)
             except Exception:
                 pass
             
@@ -6675,6 +8492,12 @@ class Database:
         
         conn.commit()
         conn.close()
+        # איפוס מוני תיקופים/ימי לימוד
+        try:
+            self.save_setting('total_school_days', '0')
+            self.save_setting('_last_school_day', '')
+        except Exception:
+            pass
 
     def delete_student(self, student_id: int) -> bool:
         """מחיקת תלמיד יחיד וכל ההיסטוריה שלו."""
@@ -6682,17 +8505,47 @@ class Database:
         cursor = conn.cursor()
 
         try:
-            cursor.execute('DELETE FROM points_history WHERE student_id = ?', (student_id,))
-            cursor.execute('DELETE FROM swipe_log WHERE student_id = ?', (student_id,))
+            # כיבוי בדיקת FK כדי למנוע FOREIGN KEY constraint failed
+            try:
+                cursor.execute('PRAGMA foreign_keys = OFF')
+            except Exception:
+                pass
+            # מחיקת כל הרשומות הקשורות לתלמיד מכל הטבלאות
+            _related_tables = [
+                'points_history', 'points_log', 'swipe_log',
+                'card_blocks', 'card_validations', 'spam_alerts',
+                'purchases_log', 'refunds_log', 'activity_claims',
+                'time_bonus_given', 'service_reservations',
+                'cashier_responsibles', 'student_tiers',
+                'student_messages',
+            ]
+            for _tbl in _related_tables:
+                try:
+                    cursor.execute(f'DELETE FROM {_tbl} WHERE student_id = ?', (student_id,))
+                except Exception:
+                    pass
             cursor.execute('DELETE FROM students WHERE id = ?', (student_id,))
             try:
                 self._log_change(cursor, entity_type='student', entity_id=str(student_id), action_type='delete', payload={})
             except Exception:
                 pass
             conn.commit()
+            # הפעלת FK חזרה
+            try:
+                cursor.execute('PRAGMA foreign_keys = ON')
+            except Exception:
+                pass
             conn.close()
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
             return True
         except Exception as e:
+            try:
+                cursor.execute('PRAGMA foreign_keys = ON')
+            except Exception:
+                pass
             conn.close()
             print(f"שגיאה במחיקת תלמיד: {e}")
             return False
@@ -6706,8 +8559,20 @@ class Database:
                 INSERT INTO swipe_log (student_id, card_number, station_type)
                 VALUES (?, ?, ?)
             ''', (student_id, card_number if card_number else None, station_type))
+            # עדכון מונה מצטבר + תאריך תיקוף אחרון — נשמר לנצח גם כש-swipe_log מתנקה
+            try:
+                cursor.execute(
+                    'UPDATE students SET total_swipes = COALESCE(total_swipes, 0) + 1, last_swiped_at = CURRENT_TIMESTAMP WHERE id = ?',
+                    (int(student_id),))
+            except Exception:
+                pass
             conn.commit()
             conn.close()
+            # עדכון מונה ימי לימוד קבוע
+            try:
+                self._increment_school_days_if_new()
+            except Exception:
+                pass
             return True
         except Exception as e:
             conn.close()
@@ -6716,28 +8581,32 @@ class Database:
 
 
     def get_swipe_count_for_student(self, student_id: int, station_type: Optional[str] = None) -> int:
+        """סה"כ תיקופים לתלמיד — מהמונה המצטבר students.total_swipes."""
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            if station_type:
-                cursor.execute(
-                    'SELECT COUNT(*) FROM swipe_log WHERE student_id = ? AND station_type = ?',
-                    (int(student_id), str(station_type))
-                )
-            else:
-                cursor.execute(
-                    'SELECT COUNT(*) FROM swipe_log WHERE student_id = ?',
-                    (int(student_id),)
-                )
+            cursor.execute(
+                'SELECT COALESCE(total_swipes, 0) FROM students WHERE id = ?',
+                (int(student_id),))
             row = cursor.fetchone()
             if row:
-                try:
-                    return int(row[0] or 0)
-                except Exception:
-                    return 0
+                return int(row[0] or 0)
             return 0
         except Exception:
-            return 0
+            # fallback: ספירה מ-swipe_log
+            try:
+                if station_type:
+                    cursor.execute(
+                        'SELECT COUNT(*) FROM swipe_log WHERE student_id = ? AND station_type = ?',
+                        (int(student_id), str(station_type)))
+                else:
+                    cursor.execute(
+                        'SELECT COUNT(*) FROM swipe_log WHERE student_id = ?',
+                        (int(student_id),))
+                row = cursor.fetchone()
+                return int(row[0] or 0) if row else 0
+            except Exception:
+                return 0
         finally:
             conn.close()
 
@@ -6800,6 +8669,19 @@ class Database:
                     INSERT INTO swipe_log (student_id, card_number, station_type)
                     VALUES (?, ?, ?)
                 ''', (student_id, card_number if card_number else None, station_type))
+            # עדכון מונה מצטבר + תאריך תיקוף אחרון
+            try:
+                _swipe_ts = swiped_at or 'CURRENT_TIMESTAMP'
+                if swiped_at:
+                    cursor.execute(
+                        'UPDATE students SET total_swipes = COALESCE(total_swipes, 0) + 1, last_swiped_at = ? WHERE id = ?',
+                        (swiped_at, int(student_id)))
+                else:
+                    cursor.execute(
+                        'UPDATE students SET total_swipes = COALESCE(total_swipes, 0) + 1, last_swiped_at = CURRENT_TIMESTAMP WHERE id = ?',
+                        (int(student_id),))
+            except Exception:
+                pass
             conn.commit()
             conn.close()
             return True
@@ -6857,6 +8739,13 @@ class Database:
                     INSERT INTO swipe_log (student_id, card_number, station_type, swiped_at)
                     VALUES (?, ?, ?, ?)
                 ''', (int(student_id or 0), (card_number if card_number else None), str(station_type or 'public'), str(swiped_at)))
+                # עדכון מונה מצטבר רק ב-INSERT (לא ב-UPDATE)
+                try:
+                    cursor.execute(
+                        'UPDATE students SET total_swipes = COALESCE(total_swipes, 0) + 1 WHERE id = ?',
+                        (int(student_id or 0),))
+                except Exception:
+                    pass
 
             conn.commit()
             return True
@@ -6871,9 +8760,17 @@ class Database:
             conn.close()
 
     def get_total_school_days(self, station_type: str = "public") -> int:
+        """מספר ימי לימוד כולל — קודם כל מהמונה הקבוע בהגדרות,
+        fallback לספירת ימים ייחודיים מ-swipe_log."""
+        try:
+            saved = int(self.get_setting('total_school_days', '0') or 0)
+            if saved > 0:
+                return saved
+        except Exception:
+            pass
+        # fallback: ספירה מ-swipe_log (מדויקת רק ל-30 ימים אחרונים)
         conn = self.get_connection()
         cursor = conn.cursor()
-        
         try:
             cursor.execute('''
                 SELECT COUNT(DISTINCT DATE(swiped_at)) AS days
@@ -6887,11 +8784,36 @@ class Database:
         finally:
             conn.close()
         
-        if row and row[0] is not None:
-            return int(row[0])
-        return 0
+        days = int(row[0]) if row and row[0] is not None else 0
+        # שמירה ראשונית של המונה
+        if days > 0:
+            try:
+                self.save_setting('total_school_days', str(days))
+            except Exception:
+                pass
+        return days
+
+    def _increment_school_days_if_new(self):
+        """בדיקה אם היום הוא יום לימוד חדש (לא שבת) ועדכון המונה.
+        נקראת פעם ביום מ-log_swipe."""
+        import datetime
+        today = datetime.date.today()
+        if today.weekday() == 5:  # שבת
+            return
+        today_str = today.isoformat()
+        try:
+            last = self.get_setting('_last_school_day', '')
+            if last == today_str:
+                return  # כבר נספר היום
+            current = int(self.get_setting('total_school_days', '0') or 0)
+            self.save_setting('total_school_days', str(current + 1))
+            self.save_setting('_last_school_day', today_str)
+        except Exception:
+            pass
 
     def get_swipe_totals_for_students(self, student_ids: List[int], station_type: str = "public") -> Dict[int, int]:
+        """סה"כ תיקופים לכל תלמיד — משתמש במונה המצטבר students.total_swipes
+        שנשמר לנצח, גם אחרי שה-swipe_log מתנקה (30 יום)."""
         if not student_ids:
             return {}
         
@@ -6899,30 +8821,113 @@ class Database:
         cursor = conn.cursor()
         
         placeholders = ','.join('?' * len(student_ids))
-        params = list(student_ids) + [station_type]
         
         rows = []
         try:
             cursor.execute(f'''
-                SELECT student_id, COUNT(*) AS total_swipes
-                FROM swipe_log
-                WHERE student_id IN ({placeholders})
-                  AND station_type = ?
-                  AND strftime('%w', swiped_at) != '6'
-                GROUP BY student_id
-            ''', params)
+                SELECT id AS student_id, COALESCE(total_swipes, 0) AS total_swipes
+                FROM students
+                WHERE id IN ({placeholders})
+            ''', list(student_ids))
             rows = cursor.fetchall()
-        except Exception as e:
-            print(f"Error reading swipe_totals (DB corrupt?): {e}")
-            rows = []
+        except Exception:
+            # fallback: אם העמודה לא קיימת, ספור מ-swipe_log
+            try:
+                params = list(student_ids) + [station_type]
+                cursor.execute(f'''
+                    SELECT student_id, COUNT(*) AS total_swipes
+                    FROM swipe_log
+                    WHERE student_id IN ({placeholders})
+                      AND station_type = ?
+                    GROUP BY student_id
+                ''', params)
+                rows = cursor.fetchall()
+            except Exception as e:
+                print(f"Error reading swipe_totals: {e}")
+                rows = []
         finally:
             conn.close()
         
         totals: Dict[int, int] = {}
         for row in rows:
-            totals[row['student_id']] = row['total_swipes']
+            totals[row['student_id']] = int(row['total_swipes'] or 0)
         return totals
     
+    def get_last_teacher_updates_for_students(self, student_ids: List[int]) -> Dict[int, dict]:
+        """עדכון אחרון ע"י מורה/מנהל לכל תלמיד (לא כולל בונוסים/מערכת/קניות).
+        מחזיר {student_id: {'created_at': str, 'delta': int}} או {} אם אין."""
+        if not student_ids:
+            return {}
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            placeholders = ','.join('?' * len(student_ids))
+            cursor.execute(f'''
+                SELECT student_id, created_at, delta
+                FROM points_log
+                WHERE student_id IN ({placeholders})
+                  AND action_type IN ('\u05de\u05e0\u05d4\u05dc', '\u05de\u05d5\u05e8\u05d4', '\u05e2\u05d3\u05db\u05d5\u05df \u05de\u05d4\u05d9\u05e8', '\u05d1\u05d9\u05d8\u05d5\u05dc/\u05e9\u05d7\u05d6\u05d5\u05e8')
+                  AND id IN (
+                      SELECT MAX(id) FROM points_log
+                      WHERE student_id IN ({placeholders})
+                        AND action_type IN ('\u05de\u05e0\u05d4\u05dc', '\u05de\u05d5\u05e8\u05d4', '\u05e2\u05d3\u05db\u05d5\u05df \u05de\u05d4\u05d9\u05e8', '\u05d1\u05d9\u05d8\u05d5\u05dc/\u05e9\u05d7\u05d6\u05d5\u05e8')
+                      GROUP BY student_id
+                  )
+            ''', list(student_ids) + list(student_ids))
+            result = {}
+            for row in cursor.fetchall():
+                result[row['student_id']] = {
+                    'created_at': row['created_at'],
+                    'delta': int(row['delta'] or 0),
+                }
+            return result
+        except Exception:
+            return {}
+        finally:
+            conn.close()
+
+    def get_last_swipes_for_students(self, student_ids: List[int]) -> Dict[int, str]:
+        """תיקוף אחרון לכל תלמיד. מחזיר {student_id: swiped_at_str}.
+        משתמש ב-last_swiped_at מטבלת students (נשמר לנצח) עם fallback ל-swipe_log."""
+        if not student_ids:
+            return {}
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        result = {}
+        try:
+            placeholders = ','.join('?' * len(student_ids))
+            # מקור ראשי: last_swiped_at מטבלת students (לא נמחק עם הארכיון)
+            try:
+                cursor.execute(f'''
+                    SELECT id, last_swiped_at
+                    FROM students
+                    WHERE id IN ({placeholders}) AND last_swiped_at IS NOT NULL
+                ''', list(student_ids))
+                for row in cursor.fetchall():
+                    result[row['id']] = row['last_swiped_at'] or ''
+            except Exception:
+                pass
+            # fallback: swipe_log לתלמידים שאין להם last_swiped_at
+            missing = [sid for sid in student_ids if sid not in result]
+            if missing:
+                try:
+                    ph2 = ','.join('?' * len(missing))
+                    cursor.execute(f'''
+                        SELECT student_id, MAX(swiped_at) AS last_swipe
+                        FROM swipe_log
+                        WHERE student_id IN ({ph2})
+                        GROUP BY student_id
+                    ''', list(missing))
+                    for row in cursor.fetchall():
+                        result[row['student_id']] = row['last_swipe'] or ''
+                except Exception:
+                    pass
+            return result
+        except Exception:
+            return {}
+        finally:
+            conn.close()
+
     # ===== הגדרות =====
     
     def get_setting(self, key: str, default: str = None) -> str:
@@ -7272,17 +9277,19 @@ class Database:
         cur_min = _time_to_minutes(current_time)
         
         conn = self.get_connection()
-        cursor = conn.cursor()
+        try:
+            cursor = conn.cursor()
 
-        # נביא את כל הבונוסים הפעילים, ונסנן לפי טווח זמן בצורה מספרית
-        # כדי לתמוך גם בנתונים קיימים שמכילים שעות בפורמט H:MM.
-        cursor.execute('''
-            SELECT * FROM time_bonus_schedules
-            WHERE is_active = 1
-        ''')
-        
-        rows = cursor.fetchall()
-        conn.close()
+            # נביא את כל הבונוסים הפעילים, ונסנן לפי טווח זמן בצורה מספרית
+            # כדי לתמוך גם בנתונים קיימים שמכילים שעות בפורמט H:MM.
+            cursor.execute('''
+                SELECT * FROM time_bonus_schedules
+                WHERE is_active = 1
+            ''')
+            
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
 
         candidates: List[Dict[str, Any]] = [dict(r) for r in rows]
 
@@ -7905,6 +9912,23 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
 
+        # --- שליפה מארכיון ---
+        arc_conn = self._get_archive_connection()
+        if arc_conn:
+            try:
+                arc_rows = arc_conn.execute('''
+                    SELECT student_id, MIN(swiped_at) AS first_swipe
+                    FROM swipe_log
+                    WHERE DATE(swiped_at) = ? AND station_type = ? AND student_id IS NOT NULL
+                    GROUP BY student_id
+                ''', (given_date, station_type)).fetchall()
+                rows = list(rows or []) + list(arc_rows or [])
+            except Exception:
+                pass
+            finally:
+                try: arc_conn.close()
+                except Exception: pass
+
         out: Dict[int, str] = {}
         for r in rows:
             sid = r['student_id']
@@ -7924,7 +9948,10 @@ class Database:
                 except Exception:
                     time_str = ''
             if time_str:
-                out[int(sid)] = time_str
+                # שמירת הזמן המוקדם ביותר (main DB + archive)
+                existing = out.get(int(sid))
+                if existing is None or time_str < existing:
+                    out[int(sid)] = time_str
         return out
 
     def get_time_bonus_given_for_date(self, given_date: str) -> List[Dict[str, Any]]:
@@ -7940,7 +9967,25 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
 
-        return [dict(row) for row in rows]
+        results = [dict(row) for row in rows]
+        # --- שליפה מארכיון ---
+        main_ids = set(int(r.get('id') or 0) for r in results)
+        arc_conn = self._get_archive_connection()
+        if arc_conn:
+            try:
+                arc_rows = arc_conn.execute(
+                    'SELECT * FROM time_bonus_given WHERE given_date = ?',
+                    (given_date,)).fetchall()
+                for ar in (arc_rows or []):
+                    d = dict(ar)
+                    if int(d.get('id') or 0) not in main_ids:
+                        results.append(d)
+            except Exception:
+                pass
+            finally:
+                try: arc_conn.close()
+                except Exception: pass
+        return results
     
     def get_time_bonus_given_for_bonus(self, bonus_schedule_id: int) -> List[Dict[str, Any]]:
         """קבלת כל רישומי בונוס זמנים עבור בונוס מסוים (לכל התאריכים)."""
@@ -7955,7 +10000,25 @@ class Database:
         rows = cursor.fetchall()
         conn.close()
 
-        return [dict(row) for row in rows]
+        results = [dict(row) for row in rows]
+        # --- שליפה מארכיון ---
+        main_ids = set(int(r.get('id') or 0) for r in results)
+        arc_conn = self._get_archive_connection()
+        if arc_conn:
+            try:
+                arc_rows = arc_conn.execute(
+                    'SELECT * FROM time_bonus_given WHERE bonus_schedule_id = ?',
+                    (int(bonus_schedule_id),)).fetchall()
+                for ar in (arc_rows or []):
+                    d = dict(ar)
+                    if int(d.get('id') or 0) not in main_ids:
+                        results.append(d)
+            except Exception:
+                pass
+            finally:
+                try: arc_conn.close()
+                except Exception: pass
+        return results
     
     # ========================================
     # פונקציות ניהול מורים והרשאות
@@ -7993,6 +10056,10 @@ class Database:
                 pass
             conn.commit()
             conn.close()
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
             return teacher_id
         except Exception as e:
             conn.close()
@@ -8000,21 +10067,32 @@ class Database:
             return 0
     
     def get_teacher_by_card(self, card_number: str) -> Optional[Dict[str, Any]]:
-        """שליפת פרטי מורה לפי מספר כרטיס"""
+        """שליפת פרטי מורה לפי מספר כרטיס — עם קאש בזיכרון"""
+        card_number = str(card_number or '').strip()
+        if not card_number:
+            return None
+        # ניסיון מהקאש (רענון אוטומטי כל 30 שניות)
+        try:
+            self._refresh_card_cache()
+            cached = Database._teacher_card_cache.get(card_number)
+            if cached:
+                return dict(cached)
+        except Exception:
+            pass
+        # fallback: שאילתה ישירה ב-DB (כרטיס חדש / קאש לא מוכן)
         conn = self.get_connection()
         cursor = conn.cursor()
-        
-        # תמיכה בכמה כרטיסים לכל מורה
-        cursor.execute(
-            'SELECT * FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1',
-            (card_number, card_number, card_number)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return dict(row)
-        return None
+        try:
+            cursor.execute(
+                'SELECT * FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1',
+                (card_number, card_number, card_number)
+            )
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+        finally:
+            conn.close()
     
     def get_teacher_by_id(self, teacher_id: int) -> Optional[Dict[str, Any]]:
         """שליפת פרטי מורה לפי מזהה"""
@@ -8097,6 +10175,10 @@ class Database:
             
             conn.commit()
             conn.close()
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
             return True
         except Exception as e:
             conn.close()
@@ -8116,6 +10198,10 @@ class Database:
                 pass
             conn.commit()
             conn.close()
+            try:
+                Database.invalidate_card_cache()
+            except Exception:
+                pass
             return True
         except Exception as e:
             conn.close()
