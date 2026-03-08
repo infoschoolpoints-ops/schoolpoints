@@ -4773,6 +4773,41 @@ def _persist_ads_media(request: Request, tenant_id: str, upload: UploadFile) -> 
     return key
 
 
+def _save_uploaded_file(tenant_id: str, file_bytes: bytes, filename: str) -> str:
+    """Save uploaded file bytes to tenant assets dir and return relative path."""
+    if not file_bytes or not filename:
+        return ''
+    ext = ''
+    try:
+        ext = os.path.splitext(str(filename or ''))[1].lower()
+    except Exception:
+        ext = ''
+    if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.wav', '.mp3', '.ogg'):
+        ext = '.png'
+    safe_name = f"{uuid.uuid4().hex}{ext}"
+    rel_path = os.path.join('ads_media', safe_name)
+
+    # Try shared folder first
+    shared_folder = _get_shared_folder_for_tenant(tenant_id)
+    if shared_folder:
+        try:
+            dst = os.path.join(shared_folder, rel_path)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(dst, 'wb') as f:
+                f.write(file_bytes)
+            return rel_path
+        except Exception:
+            pass
+
+    # Local tenant assets fallback
+    assets_dir = os.path.join(DATA_DIR, 'tenants_assets', tenant_id, 'ads_media')
+    os.makedirs(assets_dir, exist_ok=True)
+    dst = os.path.join(assets_dir, safe_name)
+    with open(dst, 'wb') as f:
+        f.write(file_bytes)
+    return rel_path
+
+
 @app.get("/assets/{tenant_id}/{filename}")
 def get_tenant_asset(tenant_id: str, filename: str):
     # Serve tenant assets (if local)
@@ -12604,14 +12639,56 @@ def web_reports(request: Request):
         </div>
     </div>
 
-    <div class="export-section">
-        <div style="flex:1;">
+    <div class="export-section" style="flex-direction:column; gap:20px;">
+        <div>
             <h3 style="margin:0 0 5px 0;">ייצוא נתונים</h3>
-            <div style="color:#666; font-size:13px;">הורדת דוחות מלאים לקבצי אקסל (CSV)</div>
+            <div style="color:#666; font-size:13px;">הורדת דוחות מלאים לקבצי CSV</div>
         </div>
-        <a href="/web/export/download" target="_blank" style="text-decoration:none;">
-            <button class="blue" style="padding:10px 20px; border-radius:8px;">⬇️ רשימת תלמידים מלאה</button>
-        </a>
+
+        <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">
+            <a href="/web/export/download" target="_blank" style="text-decoration:none;">
+                <button class="blue" style="padding:10px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:bold; color:white; background:#3498db;">⬇️ רשימת תלמידים</button>
+            </a>
+        </div>
+
+        <div style="background:#f8f9fa; padding:16px; border-radius:10px; border:1px solid #eee; margin-top:5px;">
+            <h4 style="margin:0 0 10px 0;">📋 ייצוא נוכחות (בונוס זמנים)</h4>
+            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">
+                <div>
+                    <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">לפי תאריך</label>
+                    <input type="date" id="att-date" style="padding:8px; border:1px solid #ddd; border-radius:6px;">
+                </div>
+                <button onclick="exportAttByDate()" style="padding:8px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:bold; color:white; background:#2ecc71;">⬇️ ייצוא ליום</button>
+                <div style="border-left:1px solid #ddd; height:30px; margin:0 5px;"></div>
+                <div>
+                    <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">לפי בונוס</label>
+                    <select id="att-bonus" style="padding:8px; border:1px solid #ddd; border-radius:6px; min-width:150px;">
+                        <option value="">טוען...</option>
+                    </select>
+                </div>
+                <button onclick="exportAttByBonus()" style="padding:8px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:bold; color:white; background:#2ecc71;">⬇️ ייצוא לבונוס</button>
+                <div style="border-left:1px solid #ddd; height:30px; margin:0 5px;"></div>
+                <a href="/web/export/attendance" target="_blank" style="text-decoration:none;">
+                    <button style="padding:8px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:bold; color:white; background:#95a5a6;">⬇️ הכל</button>
+                </a>
+            </div>
+        </div>
+
+        <div style="background:#f8f9fa; padding:16px; border-radius:10px; border:1px solid #eee;">
+            <h4 style="margin:0 0 10px 0;">👨‍🏫 ייצוא פעולות לפי מורה</h4>
+            <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">
+                <div>
+                    <label style="font-size:12px; font-weight:600; display:block; margin-bottom:4px;">בחר מורה</label>
+                    <select id="ta-teacher" style="padding:8px; border:1px solid #ddd; border-radius:6px; min-width:180px;">
+                        <option value="">טוען...</option>
+                    </select>
+                </div>
+                <button onclick="exportTeacherActions()" style="padding:8px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:bold; color:white; background:#e67e22;">⬇️ ייצוא פעולות</button>
+                <a href="/web/export/teacher-actions?teacher_id=-1" target="_blank" style="text-decoration:none;">
+                    <button style="padding:8px 16px; border-radius:8px; border:none; cursor:pointer; font-weight:bold; color:white; background:#95a5a6;">⬇️ כל המורים</button>
+                </a>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -12657,7 +12734,52 @@ def web_reports(request: Request):
             return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         }
 
+        async function loadBonuses() {
+            try {
+                const res = await fetch('/api/reports/bonuses');
+                const data = await res.json();
+                const sel = document.getElementById('att-bonus');
+                sel.innerHTML = '<option value="">-- בחר בונוס --</option>';
+                (data.bonuses || []).forEach(b => {
+                    const label = (b.group_name || b.name || '').trim();
+                    sel.innerHTML += `<option value="${b.id}">${esc(label)}</option>`;
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadTeachers() {
+            try {
+                const res = await fetch('/api/reports/teachers');
+                const data = await res.json();
+                const sel = document.getElementById('ta-teacher');
+                sel.innerHTML = '<option value="">-- בחר מורה --</option>';
+                (data.teachers || []).forEach(t => {
+                    sel.innerHTML += `<option value="${t.id}">${esc(t.name || '')}</option>`;
+                });
+            } catch(e) { console.error(e); }
+        }
+
+        function exportAttByDate() {
+            const d = document.getElementById('att-date').value;
+            if (!d) { alert('נא לבחור תאריך'); return; }
+            window.open('/web/export/attendance?date=' + d, '_blank');
+        }
+
+        function exportAttByBonus() {
+            const b = document.getElementById('att-bonus').value;
+            if (!b) { alert('נא לבחור בונוס'); return; }
+            window.open('/web/export/attendance?bonus_id=' + b, '_blank');
+        }
+
+        function exportTeacherActions() {
+            const t = document.getElementById('ta-teacher').value;
+            if (!t) { alert('נא לבחור מורה'); return; }
+            window.open('/web/export/teacher-actions?teacher_id=' + t, '_blank');
+        }
+
         loadStats();
+        loadBonuses();
+        loadTeachers();
     </script>
     """
     return _basic_web_shell("דוחות", html_content, request=request)
@@ -12715,6 +12837,171 @@ def web_export_download(request: Request) -> Response:
         media_type='text/csv; charset=utf-8',
         headers={'Content-Disposition': 'attachment; filename="students_export.csv"'}
     )
+
+
+@app.get('/web/export/attendance')
+def web_export_attendance(request: Request) -> Response:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    target_date = request.query_params.get('date', '')
+    bonus_id = request.query_params.get('bonus_id', '')
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        if target_date:
+            sql = _sql_placeholder("""
+                SELECT g.given_date, g.given_at,
+                       s.serial_number, s.first_name, s.last_name, s.class_name, s.card_number,
+                       COALESCE(bs.group_name, bs.name, '') as bonus_name
+                  FROM time_bonus_given g
+                  JOIN students s ON g.student_id = s.id
+                  LEFT JOIN time_bonus_schedules bs ON g.bonus_schedule_id = bs.id
+                 WHERE g.given_date = ?
+                 ORDER BY s.class_name, s.last_name, s.first_name
+            """)
+            cur.execute(sql, (target_date,))
+        elif bonus_id:
+            sql = _sql_placeholder("""
+                SELECT g.given_date, g.given_at,
+                       s.serial_number, s.first_name, s.last_name, s.class_name, s.card_number,
+                       COALESCE(bs.group_name, bs.name, '') as bonus_name
+                  FROM time_bonus_given g
+                  JOIN students s ON g.student_id = s.id
+                  LEFT JOIN time_bonus_schedules bs ON g.bonus_schedule_id = bs.id
+                 WHERE g.bonus_schedule_id = ?
+                 ORDER BY g.given_date DESC, s.class_name, s.last_name
+            """)
+            cur.execute(sql, (int(bonus_id),))
+        else:
+            cur.execute("""
+                SELECT g.given_date, g.given_at,
+                       s.serial_number, s.first_name, s.last_name, s.class_name, s.card_number,
+                       COALESCE(bs.group_name, bs.name, '') as bonus_name
+                  FROM time_bonus_given g
+                  JOIN students s ON g.student_id = s.id
+                  LEFT JOIN time_bonus_schedules bs ON g.bonus_schedule_id = bs.id
+                 ORDER BY g.given_date DESC, s.class_name, s.last_name
+                 LIMIT 5000
+            """)
+        rows = cur.fetchall() or []
+    finally:
+        try: conn.close()
+        except: pass
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['תאריך', 'שעה', "מס' סידורי", 'שם משפחה', 'שם פרטי', 'כיתה', "מס' כרטיס", 'בונוס'])
+    for r in rows:
+        d = dict(r) if not isinstance(r, dict) else r
+        given_at = str(d.get('given_at') or '')
+        time_part = given_at[11:16] if len(given_at) > 15 else given_at
+        w.writerow([
+            d.get('given_date') or '', time_part,
+            d.get('serial_number') or '', d.get('last_name') or '', d.get('first_name') or '',
+            d.get('class_name') or '', d.get('card_number') or '', d.get('bonus_name') or '',
+        ])
+    data = buf.getvalue().encode('utf-8-sig')
+    fname = f"attendance_{target_date or 'all'}.csv"
+    return Response(content=data, media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="{fname}"'})
+
+
+@app.get('/web/export/teacher-actions')
+def web_export_teacher_actions(request: Request) -> Response:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        return guard
+    tenant_id = _web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    teacher_id = request.query_params.get('teacher_id', '')
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        if teacher_id and teacher_id != '-1':
+            try:
+                cur.execute(_sql_placeholder("SELECT name FROM teachers WHERE id=?"), (int(teacher_id),))
+                trow = cur.fetchone()
+                teacher_name = (dict(trow) if not isinstance(trow, dict) else trow).get('name', '') if trow else ''
+            except Exception:
+                teacher_name = ''
+            sql = _sql_placeholder("""
+                SELECT l.created_at, l.action_type, l.actor_name, l.reason, l.delta,
+                       l.old_points, l.new_points,
+                       s.first_name, s.last_name, s.class_name
+                  FROM points_log l
+                  LEFT JOIN students s ON l.student_id = s.id
+                 WHERE l.actor_name = ?
+                 ORDER BY l.id DESC LIMIT 5000
+            """)
+            cur.execute(sql, (teacher_name,))
+        else:
+            cur.execute("""
+                SELECT l.created_at, l.action_type, l.actor_name, l.reason, l.delta,
+                       l.old_points, l.new_points,
+                       s.first_name, s.last_name, s.class_name
+                  FROM points_log l
+                  LEFT JOIN students s ON l.student_id = s.id
+                 ORDER BY l.id DESC LIMIT 5000
+            """)
+        rows = cur.fetchall() or []
+    finally:
+        try: conn.close()
+        except: pass
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(['תאריך', 'סוג פעולה', 'מורה', 'תלמיד', 'כיתה', 'שינוי', 'לפני', 'אחרי', 'סיבה'])
+    for r in rows:
+        d = dict(r) if not isinstance(r, dict) else r
+        student = f"{d.get('first_name') or ''} {d.get('last_name') or ''}".strip()
+        w.writerow([
+            d.get('created_at') or '', d.get('action_type') or '', d.get('actor_name') or '',
+            student, d.get('class_name') or '',
+            d.get('delta') if d.get('delta') is not None else '',
+            d.get('old_points') if d.get('old_points') is not None else '',
+            d.get('new_points') if d.get('new_points') is not None else '',
+            d.get('reason') or '',
+        ])
+    data = buf.getvalue().encode('utf-8-sig')
+    return Response(content=data, media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="teacher_actions.csv"'})
+
+
+@app.get('/api/reports/teachers')
+def api_reports_teachers(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM teachers ORDER BY name")
+        rows = [dict(r) if not isinstance(r, dict) else r for r in (cur.fetchall() or [])]
+        return {'ok': True, 'teachers': rows}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.get('/api/reports/bonuses')
+def api_reports_bonuses(request: Request) -> Dict[str, Any]:
+    guard = _web_require_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='not authorized')
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, group_name FROM time_bonus_schedules ORDER BY name")
+        rows = [dict(r) if not isinstance(r, dict) else r for r in (cur.fetchall() or [])]
+        return {'ok': True, 'bonuses': rows}
+    finally:
+        try: conn.close()
+        except: pass
 
 
 @app.get('/api/logs')

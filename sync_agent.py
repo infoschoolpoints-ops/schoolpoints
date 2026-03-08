@@ -698,6 +698,172 @@ def _load_config(base_dir: str) -> Dict[str, Any]:
     return {}
 
 
+def _save_config(base_dir: str, cfg: Dict[str, Any]) -> bool:
+    """Save config dict to config.json (local + shared)."""
+    try:
+        config_file = _get_config_file_path(base_dir)
+        os.makedirs(os.path.dirname(config_file) or '.', exist_ok=True)
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=4)
+        shared = cfg.get('shared_folder') or cfg.get('network_root')
+        if shared and os.path.isdir(str(shared)):
+            try:
+                with open(os.path.join(shared, 'config.json'), 'w', encoding='utf-8') as f:
+                    json.dump(cfg, f, ensure_ascii=False, indent=4)
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        print(f"[CONFIG-BRIDGE] save failed: {e}")
+        return False
+
+
+_SETTINGS_TO_CONFIG = {
+    'system_settings': ['deployment_mode', 'logo_path', 'campaign_name', 'photos_folder', 'show_stats', 'show_student_photo'],
+    'display_settings': ['title_text', 'subtitle_text', 'logo_url', 'background_url', 'refresh_interval', 'font_size', 'dark_mode', 'show_clock', 'show_qr'],
+    'upgrades_settings': ['auto_update', 'channel'],
+}
+
+
+def _apply_cloud_settings_to_config(db_path: str, base_dir: str) -> int:
+    """Read settings from DB and merge into config.json. Returns keys updated."""
+    try:
+        conn = _connect(db_path)
+    except Exception:
+        return 0
+    updated = 0
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='settings'")
+            if not cur.fetchone():
+                return 0
+        except Exception:
+            return 0
+        cfg = _load_config(base_dir)
+        if not isinstance(cfg, dict):
+            cfg = {}
+        snap = json.dumps(cfg, ensure_ascii=False, sort_keys=True)
+        for db_key, config_keys in _SETTINGS_TO_CONFIG.items():
+            try:
+                cur.execute('SELECT value FROM settings WHERE key = ? LIMIT 1', (db_key,))
+                row = cur.fetchone()
+                if not row:
+                    continue
+                raw = row['value'] if isinstance(row, dict) else row[0]
+                data = json.loads(str(raw or '{}'))
+                if not isinstance(data, dict):
+                    continue
+                for ck in config_keys:
+                    if ck in data:
+                        cfg[ck] = data[ck]
+                        updated += 1
+            except Exception:
+                continue
+        # special_bonus nested items
+        try:
+            cur.execute("SELECT value FROM settings WHERE key='special_bonus' LIMIT 1")
+            row = cur.fetchone()
+            if row:
+                raw = row['value'] if isinstance(row, dict) else row[0]
+                data = json.loads(str(raw or '{}'))
+                items = data.get('items') if isinstance(data, dict) else None
+                if isinstance(items, list) and items and isinstance(items[0], dict):
+                    if 'enabled' in items[0]:
+                        cfg['bonus_enabled'] = items[0]['enabled']
+                    if 'points' in items[0]:
+                        cfg['bonus_points'] = items[0]['points']
+                    updated += 1
+        except Exception:
+            pass
+        if json.dumps(cfg, ensure_ascii=False, sort_keys=True) != snap:
+            _save_config(base_dir, cfg)
+            print(f"[CONFIG-BRIDGE] Updated {updated} keys from cloud")
+        else:
+            updated = 0
+    except Exception as e:
+        print(f"[CONFIG-BRIDGE] Error: {e}")
+        updated = 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return updated
+
+
+def _push_config_to_db_settings(db_path: str, base_dir: str) -> int:
+    """Push config.json values to DB settings table for cloud sync."""
+    cfg = _load_config(base_dir)
+    if not isinstance(cfg, dict):
+        return 0
+    try:
+        conn = _connect(db_path)
+    except Exception:
+        return 0
+    updated = 0
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute('''CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+        except Exception:
+            pass
+        for db_key, config_keys in _SETTINGS_TO_CONFIG.items():
+            val = {}
+            for ck in config_keys:
+                if ck in cfg:
+                    val[ck] = cfg[ck]
+            if not val:
+                continue
+            # Merge with existing DB value
+            try:
+                cur.execute('SELECT value FROM settings WHERE key=? LIMIT 1', (db_key,))
+                row = cur.fetchone()
+                if row:
+                    raw = row['value'] if isinstance(row, dict) else row[0]
+                    existing = json.loads(str(raw or '{}'))
+                    if isinstance(existing, dict):
+                        existing.update(val)
+                        val = existing
+            except Exception:
+                pass
+            jv = json.dumps(val, ensure_ascii=False)
+            try:
+                cur.execute(
+                    'INSERT INTO settings (key, value, updated_at) VALUES (?,?,CURRENT_TIMESTAMP) '
+                    'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+                    (db_key, jv))
+                updated += 1
+            except Exception:
+                try:
+                    cur.execute('UPDATE settings SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', (jv, db_key))
+                    updated += 1
+                except Exception:
+                    pass
+            # Record in change_log
+            try:
+                _ensure_change_log(conn)
+                cur.execute(
+                    "INSERT INTO change_log (entity_type, entity_id, action_type, payload_json, created_at) "
+                    "VALUES ('setting', ?, 'update', ?, datetime('now'))",
+                    (db_key, json.dumps({'key': db_key, 'value': jv}, ensure_ascii=False)))
+            except Exception:
+                pass
+        conn.commit()
+        if updated:
+            print(f"[CONFIG-BRIDGE] Pushed {updated} settings to DB")
+    except Exception as e:
+        print(f"[CONFIG-BRIDGE] Push error: {e}")
+        updated = 0
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return updated
+
+
 def _check_db_path_file(base_dir: str) -> Optional[str]:
     try:
         p = os.path.join(base_dir, 'db_path.txt')
@@ -2045,6 +2211,8 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
 
     last_file_sync = 0.0
     _file_sync_interval = 300  # 5 minutes normally; grows on 404
+    last_config_bridge = 0.0
+    _config_bridge_interval = 300  # 5 minutes
     # בעמדה ראשית (master) עם local sync, cloud pull/push פועל רגיל עם cloud credentials
     pull_enabled = bool(pull_url and api_key and tenant_id)
     try:
@@ -2191,6 +2359,21 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
             except Exception:
                 pass
             backoff = min(300, max(5, backoff * 2 if backoff else 5))
+
+        # --- CONFIG BRIDGE (every 5 min): sync DB settings ↔ config.json ---
+        try:
+            now_cb = time.time()
+            if now_cb - last_config_bridge > _config_bridge_interval:
+                last_config_bridge = now_cb
+                # Direction 1: cloud DB settings → config.json
+                _apply_cloud_settings_to_config(str(db_path), base_dir)
+                # Direction 2: config.json → DB settings (for cloud push)
+                _push_config_to_db_settings(str(db_path), base_dir)
+        except Exception as _cb_err:
+            try:
+                print(f"[CONFIG-BRIDGE] {_cb_err}")
+            except Exception:
+                pass
 
         sleep_s = max(5, int(interval_sec))
         if backoff:
