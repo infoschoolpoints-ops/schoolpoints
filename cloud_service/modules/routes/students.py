@@ -59,6 +59,8 @@ def web_students(request: Request):
                                 <th style="padding:12px;">שם פרטי</th>
                                 <th style="padding:12px; width:100px;">כיתה</th>
                                 <th style="padding:12px;">נקודות</th>
+                                <th style="padding:12px;">תיקוף אחרון</th>
+                                <th style="padding:12px;">יום הולדת</th>
                                 <th style="padding:12px;">הודעה פרטית</th>
                                 <th style="padding:12px;">מס' כרטיס</th>
                                 <th style="padding:12px;">ת"ז</th>
@@ -153,6 +155,17 @@ def web_students(request: Request):
             function esc(s) {
                 return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
             }
+            function fmtDate(d) {
+                if (!d) return '-';
+                try { return d.replace('T',' ').substring(0,16); } catch(e) { return d; }
+            }
+            const hMonths = ['','תשרי','חשון','כסלו','טבת','שבט','אדר','ניסן','אייר','סיון','תמוז','אב','אלול'];
+            function fmtBday(s) {
+                if (!s.hebrew_birth_day && !s.hebrew_birth_month) return '-';
+                let d = s.hebrew_birth_day || '?';
+                let m = hMonths[s.hebrew_birth_month] || '?';
+                return d + ' ' + m;
+            }
 
             function setSelected(id) {
                 selectedId = id;
@@ -177,7 +190,7 @@ def web_students(request: Request):
                     const data = await resp.json();
                     
                     if (!data.items || data.items.length === 0) {
-                        rowsEl.innerHTML = '<tr><td colspan="8" style="padding:20px; text-align:center;">לא נמצאו תלמידים</td></tr>';
+                        rowsEl.innerHTML = '<tr><td colspan="10" style="padding:20px; text-align:center;">לא נמצאו תלמידים</td></tr>';
                         statusEl.textContent = '0 תלמידים';
                         return;
                     }
@@ -191,6 +204,8 @@ def web_students(request: Request):
                             <td style="padding:12px;">${esc(s.first_name)}</td>
                             <td style="padding:12px;">${esc(s.class_name)}</td>
                             <td style="padding:12px; color:#2ecc71; font-weight:bold;">${s.points}</td>
+                            <td style="padding:12px; font-size:12px;">${fmtDate(s.last_swiped_at)}</td>
+                            <td style="padding:12px; font-size:12px;">${fmtBday(s)}</td>
                             <td style="padding:12px; opacity:0.8;">${esc(s.private_message)}</td>
                             <td style="padding:12px; direction:ltr; text-align:right;">${esc(s.card_number)}</td>
                             <td style="padding:12px;">${esc(s.id_number)}</td>
@@ -325,7 +340,7 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
     try:
         cur = conn.cursor()
         q_str = str(q or '').strip()
-        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked FROM students"
+        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month FROM students"
         params = []
         if q_str:
             sql += " WHERE (first_name LIKE ? OR last_name LIKE ? OR card_number LIKE ? OR class_name LIKE ? OR id_number LIKE ?)"
