@@ -565,6 +565,7 @@ class PublicStation:
         self.root.title("עמדה ציבורית - בדיקת נקודות")
 
         _debug_log('PublicStation.__init__ התחיל')
+        self._update_loading(3, 'טוען הגדרות...')
 
         # תיקיית בסיס של האפליקציה (תומך ב-UNC)
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -572,6 +573,7 @@ class PublicStation:
         self.app_config = self.load_app_config()
         cfg_restart = self.app_config if isinstance(self.app_config, dict) else {}
 
+        self._update_loading(8, 'בודק תצורת רשת...')
         if not self.ensure_shared_folder_config():
             try:
                 self.root.after(100, self.root.destroy)
@@ -592,6 +594,7 @@ class PublicStation:
             pass
 
         # הפעלת סנכרון רקע אוטומטי (Hybrid/Cloud בלבד)
+        self._update_loading(15, 'מאתחל סנכרון...')
         self._sync_agent_thread = None
         self._sync_agent_started = False
         try:
@@ -599,6 +602,7 @@ class PublicStation:
         except Exception:
             pass
 
+        self._update_loading(22, 'טוען צלילים...')
         try:
             self._sounds_cache_dir = self._get_local_sounds_cache_dir()
         except Exception:
@@ -704,6 +708,7 @@ class PublicStation:
         except Exception:
             self.agas_ttf_path = None
 
+        self._update_loading(35, 'בודק רישיון...')
         _debug_log('לפני בדיקת רישיון public')
         # בדיקת רישיון אחרי שהוגדרה/נשמרה תיקיית הרשת (כדי להשתמש באותו קובץ רישיון משותף)
         self.license_manager = LicenseManager(self.base_dir, "public")
@@ -747,6 +752,7 @@ class PublicStation:
             self._init_failed = True
             return
 
+        self._update_loading(45, 'פותח מסד נתונים...')
         _debug_log('לפני הגדרת מסך מלא ויצירת Database')
         # מסך מלא - רקע שחור לקריאות מעולה בשמש (רק אחרי שרישיון תקין)
         self.root.attributes('-fullscreen', True)
@@ -772,6 +778,7 @@ class PublicStation:
             self._init_failed = True
             return
 
+        self._update_loading(55, 'מגדיר מערכת...')
         _debug_log('Database נפתח בהצלחה')
 
         # ניסיון שני להפעלת שרת סנכרון — עכשיו עם db_path נכון
@@ -812,6 +819,7 @@ class PublicStation:
         self._admin_menu_open = False
         self._admin_menu_exit_deadline = None
 
+        self._update_loading(65, 'טוען הגדרות תצוגה...')
         # טעינת הגדרות צבעים
         self.color_ranges = self.load_color_settings()
         # טעינת הגדרות מטבעות (מבוססי נקודות)
@@ -836,6 +844,7 @@ class PublicStation:
         # רשימת הודעות שמאל ל-template1 (רשימת מחרוזות, כל אחת עד 2 שורות)
         self.left_messages_items = []
 
+        self._update_loading(75, 'מחשב פונטים...')
         _debug_log('אחרי טעינת בונוס, לפני חישוב פונטים')
         # חישוב גודל מסך והתאמת פונטים
         try:
@@ -889,6 +898,7 @@ class PublicStation:
 
         _debug_log(f'ui_font_family={self.ui_font_family}, scale={scale}')
 
+        self._update_loading(85, 'בונה ממשק...')
         self.setup_ui()
         self.bind_keyboard()
         self._init_cursor_auto_hide()
@@ -937,6 +947,34 @@ class PublicStation:
             _debug_log(
                 f'startup_metrics screen={sw}x{sh} win={w}x{h} used={self.screen_width}x{self.screen_height} tk_scaling={tk_scale} fpixels_1i={fpix}'
             )
+        except Exception:
+            pass
+
+        self._update_loading(100, 'מוכן!')
+        self._dismiss_loading()
+
+    def _update_loading(self, percent, status_text=''):
+        """עדכון מסך הטעינה — עיגול התקדמות + אחוזים + הודעת סטטוס"""
+        try:
+            ld = getattr(self.root, '_sp_loading', None)
+            if not ld:
+                return
+            extent = -int(360 * min(percent, 100) / 100)
+            ld['canvas'].itemconfigure(ld['arc'], extent=extent)
+            ld['canvas'].itemconfigure(ld['pct'], text=f'{int(percent)}%')
+            if status_text:
+                ld['status'].config(text=status_text)
+            self.root.update()
+        except Exception:
+            pass
+
+    def _dismiss_loading(self):
+        """הסרת מסך הטעינה — חושף את ממשק העמדה הציבורית"""
+        try:
+            ld = getattr(self.root, '_sp_loading', None)
+            if ld:
+                ld['frame'].destroy()
+                self.root._sp_loading = None
         except Exception:
             pass
 
@@ -9086,6 +9124,39 @@ def main():
                 pass
             return _orig_root_destroy(*a, **kw)
         root.destroy = _logged_destroy
+
+        # --- מסך טעינה מיידי (אותו חלון – ללא רגע ריק) ---
+        try:
+            root.attributes('-fullscreen', True)
+            root.configure(bg='#16213e')
+            root.update_idletasks()
+
+            _lf = tk.Frame(root, bg='#16213e')
+            _lf.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+            _lc = tk.Frame(_lf, bg='#16213e')
+            _lc.place(relx=0.5, rely=0.40, anchor='center')
+
+            # עיגול התקדמות
+            _sz, _pd = 150, 14
+            _cv = tk.Canvas(_lc, width=_sz, height=_sz, bg='#16213e', highlightthickness=0)
+            _cv.pack(pady=(0, 18))
+            _cv.create_oval(_pd, _pd, _sz - _pd, _sz - _pd, outline='#2d3a5e', width=8)
+            _arc = _cv.create_arc(_pd, _pd, _sz - _pd, _sz - _pd, start=90, extent=0, outline='#3498db', width=8, style='arc')
+            _pct = _cv.create_text(_sz // 2, _sz // 2, text='0%', font=('Arial', 24, 'bold'), fill='white')
+
+            tk.Label(_lc, text='\U0001F393', font=('Arial', 52), bg='#16213e', fg='white').pack(pady=(0, 2))
+            tk.Label(_lc, text='נקודה טובה', font=('Arial', 26, 'bold'), bg='#16213e', fg='white').pack(pady=(0, 14))
+            _st = tk.Label(_lc, text='מאתחל מערכת...', font=('Arial', 13), bg='#16213e', fg='#8899aa')
+            _st.pack(pady=5)
+
+            root._sp_loading = {
+                'frame': _lf, 'canvas': _cv, 'arc': _arc,
+                'pct': _pct, 'status': _st, 'sz': _sz, 'pd': _pd,
+            }
+            root.update()
+        except Exception:
+            pass
 
         try:
             app = PublicStation(root)

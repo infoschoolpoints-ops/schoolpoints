@@ -12286,28 +12286,28 @@ def web_time_bonus(request: Request):
     <!-- Modal -->
     <div id="modal-rule" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
       <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:450px; box-shadow:0 4px 20px rgba(0,0,0,0.2); direction:rtl;">
-        <h3 id="modal-title" style="margin-top:0;">כלל בונוס זמן</h3>
+        <h3 id="modal-title" style="margin-top:0; color:#2c3e50;">כלל בונוס זמן</h3>
         <input type="hidden" id="rule-id">
         <div class="form-group" style="margin-bottom:15px;">
-          <label style="display:block; margin-bottom:5px; font-weight:600;">שם הכלל (לדוגמה: שחרית)</label>
-          <input id="rule-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+          <label style="display:block; margin-bottom:5px; font-weight:600; color:#2c3e50;">שם הכלל (לדוגמה: שחרית)</label>
+          <input id="rule-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; color:#1f2d3a; background:#fff;">
         </div>
         <div style="display:flex; gap:10px; margin-bottom:15px;">
             <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:600;">התחלה</label>
-                <input type="time" id="rule-start" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
+                <label style="display:block; margin-bottom:5px; font-weight:600; color:#2c3e50;">התחלה</label>
+                <input type="time" id="rule-start" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; color:#1f2d3a; background:#fff;">
             </div>
             <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:600;">סיום</label>
-                <input type="time" id="rule-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
+                <label style="display:block; margin-bottom:5px; font-weight:600; color:#2c3e50;">סיום</label>
+                <input type="time" id="rule-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; color:#1f2d3a; background:#fff;">
             </div>
         </div>
         <div class="form-group" style="margin-bottom:15px;">
-          <label style="display:block; margin-bottom:5px; font-weight:600;">תוספת נקודות</label>
-          <input type="number" id="rule-points" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+          <label style="display:block; margin-bottom:5px; font-weight:600; color:#2c3e50;">תוספת נקודות</label>
+          <input type="number" id="rule-points" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; color:#1f2d3a; background:#fff;">
         </div>
         <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
-          <button class="gray" onclick="closeRuleModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
+          <button onclick="closeRuleModal()" style="padding:8px 16px; background:#95a5a6; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">ביטול</button>
           <button class="green" onclick="saveRule()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
         </div>
       </div>

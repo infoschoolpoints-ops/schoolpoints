@@ -721,6 +721,95 @@ class AdminStation:
             print(f"[ADMIN] Failed to start local sync server: {e}")
             pass
 
+    def _sync_pull_on_startup(self) -> None:
+        """שאיבת נתונים חדשים מהשרת מיד בעליית התוכנה — כדי שהטבלה תציג נתונים עדכניים"""
+        try:
+            import sync_agent
+            cfg = self.load_app_config() or {}
+
+            push_url = str(cfg.get('sync_push_url') or '').strip()
+            api_key = str(cfg.get('sync_api_key') or '').strip()
+            tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
+            station_id = str(cfg.get('sync_station_id') or '').strip()
+
+            # Local-sync client override
+            local_sync_enabled = False
+            try:
+                local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(cfg)
+            except Exception:
+                pass
+            local_sync_role = str(cfg.get('local_sync_role') or '').strip().lower()
+            if local_sync_enabled and local_sync_role == 'client':
+                try:
+                    local_url = sync_agent._local_sync_url_from_cfg(cfg)
+                    if local_url:
+                        push_url = local_url.rstrip('/') + '/sync/push'
+                        api_key = str(cfg.get('local_sync_key') or 'local').strip()
+                        tenant_id = str(cfg.get('local_sync_tenant_id') or 'local').strip()
+                except Exception:
+                    pass
+
+            mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
+            if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
+                return
+            if not push_url:
+                return
+
+            pull_url = sync_agent._pull_url_from_push(push_url, cfg)
+            if not pull_url or not api_key or not tenant_id:
+                return
+
+            db_path = getattr(self.db, 'db_path', None)
+            if not db_path:
+                return
+
+            conn = sync_agent._connect(db_path)
+            try:
+                sync_agent._ensure_change_log(conn)
+                sync_agent._ensure_sync_state(conn)
+                since_id_key = 'pull_since_id_local' if (local_sync_enabled and local_sync_role == 'client') else 'pull_since_id'
+                since_id_s = sync_agent._get_sync_state(conn, since_id_key, '0')
+                try:
+                    since_id = int(str(since_id_s or '0').strip() or '0')
+                except Exception:
+                    since_id = 0
+
+                resp = sync_agent.pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=since_id)
+                if isinstance(resp, dict) and resp.get('ok'):
+                    items = resp.get('items') or []
+                    _is_client = bool(local_sync_enabled and local_sync_role == 'client')
+                    applied = 0
+                    if isinstance(items, list) and items:
+                        _CHUNK = 50
+                        for _ci in range(0, len(items), _CHUNK):
+                            _chunk = items[_ci:_ci + _CHUNK]
+                            try:
+                                applied += sync_agent.apply_pull_events(conn, _chunk, is_local_client=_is_client, local_station_id=str(station_id or ''))
+                            except Exception:
+                                pass
+                    next_since = resp.get('next_since_id')
+                    try:
+                        next_since_i = int(next_since) if next_since is not None else since_id
+                    except Exception:
+                        next_since_i = since_id
+                    if next_since_i != since_id:
+                        sync_agent._set_sync_state(conn, since_id_key, str(next_since_i))
+                    items_count = len(items) if isinstance(items, list) else 0
+                    if applied > 0 or items_count > 0:
+                        print(f"[STARTUP-PULL] OK items={items_count} applied={applied} since_id={since_id} -> {next_since_i}")
+                    # Invalidate card cache so fresh data is used
+                    try:
+                        from database import Database as _DB
+                        _DB.invalidate_card_cache()
+                    except Exception:
+                        pass
+                else:
+                    print("[STARTUP-PULL] Pull failed or no response")
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[STARTUP-PULL] Error: {e}")
+
     def _maybe_start_sync_agent(self) -> None:
         print("[ADMIN] _maybe_start_sync_agent called")
         try:
@@ -3175,10 +3264,10 @@ class AdminStation:
 
     def sort_by_column(self, col, reverse=False):
         """מיון הטבלה לפי עמודה (לחיצה חוזרת מחליפה כיוון)"""
-        # אחרי מיון המשתמש צריך לראות את הסדר החדש לפני שרענון אוטומטי ידרוס אותו
+        # שמירת מצב המיון הנוכחי כדי שרענון אוטומטי ישחזר אותו
         try:
-            import time
-            self._suppress_auto_refresh_until = time.time() + 10.0
+            self._current_sort_col = col
+            self._current_sort_reverse = reverse
         except Exception:
             pass
         # איסוף ערכים לכל שורה
@@ -3203,6 +3292,24 @@ class AdminStation:
         
         # בלחיצה הבאה על אותה כותרת נהפוך את כיוון המיון
         self.tree.heading(col, command=lambda c=col: self.sort_by_column(c, not reverse))
+
+    def _apply_sort(self, col, reverse=False):
+        """החלת מיון על הטבלה הנוכחית בלי לשנות את מצב המיון השמור"""
+        try:
+            data = [(self.tree.set(item_id, col), item_id) for item_id in self.tree.get_children('')]
+            if col in ('נקודות', 'מס\' סידורי', 'סה"כ תיקופים', 'ממוצע תיקופים ליום'):
+                def key_func(t):
+                    try:
+                        return float(t[0])
+                    except (TypeError, ValueError):
+                        return 0.0
+            else:
+                key_func = lambda t: t[0]
+            data.sort(key=key_func, reverse=reverse)
+            for index, (_, item_id) in enumerate(data):
+                self.tree.move(item_id, '', index)
+        except Exception:
+            pass
 
     def on_student_select(self, event):
         """טיפול בבחירת תלמיד"""
@@ -6206,17 +6313,8 @@ class AdminStation:
             safe_print(traceback.format_exc())
     
     def auto_refresh_table(self):
-        """רענון אוטומטי של הטבלה כל 10 שניות (לקליטת עדכונים מהעמדה הציבורית)"""
+        """רענון אוטומטי של הטבלה כל 5 דקות (לקליטת עדכונים מהעמדה הציבורית)"""
         try:
-            # השהיית רענון אוטומטי לאחר אינטראקציה (מיון/בחירה) כדי לא לדרוס את מה שהמשתמש רואה
-            suppressed = False
-            try:
-                import time
-                until_ts = float(getattr(self, '_suppress_auto_refresh_until', 0.0) or 0.0)
-                if until_ts and time.time() < until_ts:
-                    suppressed = True
-            except Exception:
-                pass
             inline_editor = getattr(self, 'inline_editor', None)
             search_active = False
             try:
@@ -6227,8 +6325,16 @@ class AdminStation:
                     search_active = bool(self.search_var.get().strip())
             except Exception:
                 search_active = False
-            if (not suppressed) and inline_editor is None and not search_active:
+            if inline_editor is None and not search_active:
                 self.load_students(keep_selection=True)
+                # שחזור מיון נוכחי אם קיים
+                try:
+                    sort_col = getattr(self, '_current_sort_col', None)
+                    if sort_col:
+                        sort_rev = getattr(self, '_current_sort_reverse', False)
+                        self._apply_sort(sort_col, sort_rev)
+                except Exception:
+                    pass
         except Exception as e:
             safe_print(f"⚠️ שגיאה ברענון אוטומטי: {e}")
         
@@ -23804,6 +23910,12 @@ class AdminStation:
         # עדכון סטטוס כפתור בונוס
         self.update_bonus_button()
 
+        # שאיבת נתונים חדשים מהשרת לפני טעינת הטבלה
+        try:
+            self._sync_pull_on_startup()
+        except Exception:
+            pass
+
         # טעינה ראשונית - סינכרון מהיר + טעינת תלמידים
         self.initial_load()
 
@@ -23831,8 +23943,8 @@ class AdminStation:
         except Exception:
             _start_background_sync()
 
-        # רענון אוטומטי של הטבלה כל 10 שניות (לעדכונים מהעמדה הציבורית)
-        self.auto_refresh_interval = 10000  # 10 שניות
+        # רענון אוטומטי של הטבלה כל 5 דקות (לעדכונים מהעמדה הציבורית)
+        self.auto_refresh_interval = 300000  # 5 דקות
         try:
             self.auto_refresh_job = self.root.after(self.auto_refresh_interval, self.auto_refresh_table)
         except Exception:
@@ -24444,45 +24556,52 @@ body{font-family:Arial,'Segoe UI',Tahoma,sans-serif;direction:rtl;background:#ff
             pass
     
     def _force_sync_before_close(self):
-        """כפה סינכרון מיידי של כל השינויים הממתינים"""
+        """כפה סינכרון מיידי של כל השינויים הממתינים (change_log → שרת)"""
         try:
             import sync_agent
-            cfg = self.db.get_app_config()
-            if not cfg:
-                return
-                
+            cfg = self.load_app_config() or {}
+
             push_url = str(cfg.get('sync_push_url') or '').strip()
-            api_key = str(cfg.get('api_key') or '').strip()
-            tenant_id = str(cfg.get('tenant_id') or '').strip()
-            station_id = str(cfg.get('station_id') or '').strip()
-            
-            if not (push_url and api_key and tenant_id):
+            api_key = str(cfg.get('sync_api_key') or '').strip()
+            tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
+            station_id = str(cfg.get('sync_station_id') or '').strip()
+
+            # Local-sync client: push to local master
+            local_sync_enabled = False
+            try:
+                local_sync_enabled = sync_agent._local_sync_enabled_from_cfg(cfg)
+            except Exception:
+                pass
+            local_sync_role = str(cfg.get('local_sync_role') or '').strip().lower()
+            if local_sync_enabled and local_sync_role == 'client':
+                try:
+                    local_url = sync_agent._local_sync_url_from_cfg(cfg)
+                    if local_url:
+                        push_url = local_url.rstrip('/') + '/sync/push'
+                        api_key = str(cfg.get('local_sync_key') or 'local').strip()
+                        tenant_id = str(cfg.get('local_sync_tenant_id') or 'local').strip()
+                except Exception:
+                    pass
+
+            if not push_url:
+                print("[SYNC] No push_url — skipping pre-close sync")
                 return
-                
-            # קבל את כל השינויים הממתינים
-            changes = self.db.get_pending_changes(limit=1000) or []
-            if changes:
-                print(f"[SYNC] Pushing {len(changes)} pending changes before close...")
-                success = sync_agent.push_changes(
-                    push_url=push_url,
-                    changes=changes,
-                    api_key=api_key,
-                    tenant_id=tenant_id,
-                    station_id=station_id
-                )
-                if success:
-                    print("[SYNC] ✅ Successfully pushed changes before close")
-                    # סמן שינויים כנשלחו
-                    for change in changes:
-                        try:
-                            self.db.mark_change_synced(change.get('id'))
-                        except Exception:
-                            pass
-                else:
-                    print("[SYNC] ❌ Failed to push changes before close")
+
+            db_path = getattr(self.db, 'db_path', None)
+            if not db_path:
+                return
+
+            ok = sync_agent.run_once(
+                db_path, push_url,
+                api_key=api_key,
+                tenant_id=tenant_id,
+                station_id=station_id,
+                limit=2000
+            )
+            if ok:
+                print("[SYNC] ✅ Pre-close push completed")
             else:
-                print("[SYNC] No pending changes to push")
-                
+                print("[SYNC] ❌ Pre-close push failed")
         except Exception as e:
             print(f"[SYNC] Error in force sync: {e}")
 
@@ -24497,10 +24616,37 @@ body{font-family:Arial,'Segoe UI',Tahoma,sans-serif;direction:rtl;background:#ff
                 self._excel_export_job = None
         except Exception:
             pass
-            
-        # סינכרון מיידי לפני סגירה
+
+        # --- הודעת המתנה גלויה ---
+        _exit_dialog = None
+        _exit_label = None
         try:
-            if hasattr(self, '_sync_thread') and self._sync_thread:
+            _exit_dialog = tk.Toplevel(self.root)
+            _exit_dialog.title("סגירה")
+            _exit_dialog.overrideredirect(True)
+            _exit_dialog.attributes('-topmost', True)
+            _exit_dialog.configure(bg='#2c3e50')
+            _exit_label = tk.Label(
+                _exit_dialog,
+                text="⏳  שולח עדכונים לשרת לפני סגירה...",
+                font=('Arial', 14, 'bold'),
+                fg='white', bg='#2c3e50',
+                padx=40, pady=30
+            )
+            _exit_label.pack()
+            _exit_dialog.update_idletasks()
+            dw = _exit_dialog.winfo_reqwidth()
+            dh = _exit_dialog.winfo_reqheight()
+            sx = self.root.winfo_screenwidth()
+            sy = self.root.winfo_screenheight()
+            _exit_dialog.geometry(f"{dw}x{dh}+{(sx-dw)//2}+{(sy-dh)//2}")
+            _exit_dialog.update()
+        except Exception:
+            _exit_dialog = None
+
+        # סינכרון מיידי לפני סגירה (change_log → שרת)
+        try:
+            if getattr(self, '_sync_agent_started', False):
                 print("[SYNC] Forcing immediate sync before closing...")
                 self._force_sync_before_close()
         except Exception as e:
@@ -24517,19 +24663,13 @@ body{font-family:Arial,'Segoe UI',Tahoma,sans-serif;direction:rtl;background:#ff
         else:
             safe_print("ℹ️ אין שינויים - דילוג על ייצוא")
 
-        # Flush remote writes BEFORE destroy — עם הודעה גלויה (לא קפיאה)
+        # Flush remote writes BEFORE destroy
         try:
             from database import _RemoteSyncWorker
             with _RemoteSyncWorker._lock:
                 has_workers = len(_RemoteSyncWorker._instances) > 0
             print(f"[DB-SYNC] Pre-close: has_workers={has_workers}")
             if has_workers:
-                # הצגת הודעה למשתמש
-                try:
-                    self.show_status_message("⏳ מסנכרן שינויים לפני סגירה...", '#3498db', duration=10000)
-                    self.root.update_idletasks()
-                except Exception:
-                    pass
                 import threading
                 flush_done = threading.Event()
                 def _do_flush():
@@ -24552,13 +24692,19 @@ body{font-family:Arial,'Segoe UI',Tahoma,sans-serif;direction:rtl;background:#ff
                     except Exception:
                         break
                 print(f"[DB-SYNC] Pre-close flush done (completed={flush_done.is_set()})")
-                # סמן שה-flush בוצע — atexit לא צריך לחזור על זה
                 _RemoteSyncWorker._flushed_at_exit = True
         except Exception as e:
             try:
                 print(f"[DB-SYNC] Pre-close flush error: {e}")
             except Exception:
                 pass
+
+        # סגירת חלון ההמתנה
+        try:
+            if _exit_dialog:
+                _exit_dialog.destroy()
+        except Exception:
+            pass
 
         self.root.destroy()
         try:
