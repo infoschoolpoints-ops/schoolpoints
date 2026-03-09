@@ -78,6 +78,47 @@ def apply_rtl_and_alternating_colors(worksheet: Worksheet, has_header: bool = Tr
         worksheet.column_dimensions[column_letter].width = max(adjusted_width, 12)  # מינימום 12
 
 
+def add_class_page_breaks_and_freeze(worksheet: Worksheet, has_header: bool = True,
+                                     class_col_name: str = 'כיתה'):
+    """
+    הוספת מעברי עמוד בין כיתות שונות + הקפאת שורת כותרת + כותרת חוזרת בהדפסה.
+
+    Args:
+        worksheet: גיליון העבודה של openpyxl
+        has_header: האם השורה הראשונה היא כותרת
+        class_col_name: שם עמודת הכיתה בכותרת
+    """
+    from openpyxl.worksheet.pagebreak import Break
+
+    # הקפאת שורת כותרת (freeze panes)
+    if has_header:
+        worksheet.freeze_panes = 'A2'
+        # כותרת חוזרת בכל עמוד בהדפסה
+        worksheet.print_title_rows = '1:1'
+
+    # מציאת עמודת כיתה
+    class_col_idx = None
+    if has_header:
+        for cell in worksheet[1]:
+            if str(cell.value or '').strip() == class_col_name:
+                class_col_idx = cell.column
+                break
+
+    if class_col_idx is None:
+        return
+
+    # מעבר על השורות וזיהוי מעברי כיתה
+    start_row = 2 if has_header else 1
+    prev_class = None
+    for row_num in range(start_row, worksheet.max_row + 1):
+        cell_value = str(worksheet.cell(row=row_num, column=class_col_idx).value or '').strip()
+        if prev_class is not None and cell_value != prev_class and cell_value:
+            # מעבר עמוד לפני השורה הזו (אחרי השורה הקודמת)
+            worksheet.row_breaks.append(Break(id=row_num - 1))
+        if cell_value:
+            prev_class = cell_value
+
+
 def apply_rtl_styling_simple(worksheet: Worksheet):
     """
     מעצב גיליון Excel עם כיוון RTL בלבד (ללא צבעים)

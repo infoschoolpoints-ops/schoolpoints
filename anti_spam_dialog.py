@@ -35,7 +35,7 @@ except Exception:
     apply_rtl_and_alternating_colors = None
 
 
-def open_anti_spam_dialog(parent, load_config_func, save_config_func):
+def open_anti_spam_dialog(parent, load_config_func, save_config_func, db=None):
     """פתיחת חלון ניהול חסימות אנטי-ספאם"""
     
     dialog = tk.Toplevel(parent)
@@ -53,7 +53,7 @@ def open_anti_spam_dialog(parent, load_config_func, save_config_func):
         {'type': 'warning', 'count': 10, 'minutes': 1, 'duration': 0,
          'message': 'שים לב! תיקפת {count} פעמים בדקה האחרונה. אם תמשיך, הכרטיס ייחסם.'},
         {'type': 'warning', 'count': 15, 'minutes': 1, 'duration': 0,
-         'message': 'אזהרה! זו ההתראה השנייה. אם תמשיך, הכרטיס ייחסם.'},
+         'message': 'אזהרה! זו התראה השנייה. אם תמשיך, הכרטיס ייחסם.'},
         {'type': 'block', 'count': 20, 'minutes': 1, 'duration': 60,
          'message': 'הכרטיס נחסם לשעה עקב ניצול יתר. תוכל לחזור בעוד {time_left}.'},
         {'type': 'block', 'count': 30, 'minutes': 1, 'duration': 1440,
@@ -84,6 +84,9 @@ def open_anti_spam_dialog(parent, load_config_func, save_config_func):
         try:
             if not Database:
                 return None
+            # השתמש ב-DB שהועבר או צור חדש
+            if db:
+                return db
             return Database()
         except Exception:
             return None

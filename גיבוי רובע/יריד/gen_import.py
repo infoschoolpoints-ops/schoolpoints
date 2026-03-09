@@ -1,0 +1,214 @@
+# -*- coding: utf-8 -*-
+"""Generate the fair import template for SchoolPoints cashier."""
+import openpyxl
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+import sys
+
+wb = openpyxl.Workbook()
+ws = wb.active
+ws.title = 'Sheet1'
+ws.sheet_view.rightToLeft = True
+
+# ---- STYLES ----
+header_font = Font(name='Arial', bold=True, size=11, color='FFFFFF')
+header_fill = PatternFill(start_color='2F5496', end_color='2F5496', fill_type='solid')
+normal_font = Font(name='Arial', size=10)
+light_fill = PatternFill(start_color='F2F7FB', end_color='F2F7FB', fill_type='solid')
+center_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+thin_border = Border(
+    left=Side(style='thin'), right=Side(style='thin'),
+    top=Side(style='thin'), bottom=Side(style='thin')
+)
+
+# Column headers - must match the import template exactly
+headers = [
+    '\u05e9\u05dd \u05e4\u05e0\u05d9\u05de\u05d9',        # A
+    '\u05e9\u05dd \u05ea\u05e6\u05d5\u05d2\u05d4',        # B
+    '\u05de\u05d6\u05d4\u05d4 \u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d4',  # C
+    '\u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d4',         # D
+    '\u05de\u05d7\u05d9\u05e8 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea',      # E
+    '\u05db\u05de\u05d5\u05ea \u05de\u05dc\u05d0\u05d9',        # F
+    '\u05ea\u05d9\u05d0\u05d5\u05e8',           # G
+    '\u05e4\u05e2\u05d9\u05dc',              # H
+    '\u05e0\u05ea\u05d9\u05d1 \u05ea\u05de\u05d5\u05e0\u05d4',       # I
+    '\u05db\u05d9\u05ea\u05d5\u05ea \u05de\u05d5\u05e8\u05e9\u05d5\u05ea',     # J
+    '\u05e1\u05e3 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea',        # K
+    '\u05de\u05e7\u05e1 \u05dc\u05ea\u05dc\u05de\u05d9\u05d3',       # L
+    '\u05de\u05e7\u05e1 \u05dc\u05db\u05d9\u05ea\u05d4',        # M
+    '\u05de\u05d7\u05d9\u05e8 \u05de\u05d5\u05ea\u05e0\u05d4',       # N
+    '\u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 1',        # O
+    '\u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 2',        # P
+    '\u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 3',        # Q
+    '\u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 4',        # R
+    '\u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 5',        # S
+]
+
+r = 1
+for c, h in enumerate(headers, 1):
+    cell = ws.cell(row=r, column=c, value=h)
+    cell.font = header_font
+    cell.fill = header_fill
+    cell.alignment = center_align
+    cell.border = thin_border
+
+# -------------------------------------------------------
+# Categories:
+# 1 = \u05d7\u05e0\u05d5\u05ea \u05de\u05d5\u05e6\u05e8\u05d9\u05dd - \u05e4\u05e8\u05e1 \u05d9\u05e7\u05e8
+# 2 = \u05d7\u05e0\u05d5\u05ea \u05de\u05d5\u05e6\u05e8\u05d9\u05dd - \u05e4\u05e8\u05e1 \u05d1\u05d9\u05e0\u05d5\u05e0\u05d9
+# 3 = \u05d7\u05e0\u05d5\u05ea \u05de\u05d5\u05e6\u05e8\u05d9\u05dd - \u05e4\u05e8\u05e1 \u05d6\u05d5\u05dc
+# 4 = \u05d3\u05d5\u05db\u05e0\u05d9 \u05de\u05d6\u05d5\u05df
+# 5 = \u05d3\u05d5\u05db\u05e0\u05d9 \u05e4\u05e2\u05d9\u05dc\u05d5\u05ea
+# 6 = \u05de\u05db\u05d9\u05e8\u05d4 \u05e1\u05d9\u05e0\u05d9\u05ea
+# 7 = \u05d8\u05e8\u05de\u05e4\u05d5\u05dc\u05d9\u05e0\u05d5\u05ea
+# -------------------------------------------------------
+
+products = []
+
+# ===== EXPENSIVE STORE ITEMS (cat 1) =====
+# (name, display, price, stock, max_per_student, min_points_required)
+expensive = [
+    ('\u05d8\u05d9\u05e9\u05d8\u05e8\u05de\u05d9\u05d9\u05dc_\u05e9\u05d7\u05d5\u05e8', '\u05d8\u05d9\u05e9\u05d8\u05e8\u05de\u05d9\u05d9\u05dc \u05e9\u05d7\u05d5\u05e8', 350, 5, 1, 1400),
+    ('\u05e9\u05e2\u05d5\u05df_\u05de\u05d7\u05e9\u05d1\u05d5\u05df', '\u05e9\u05e2\u05d5\u05df \u05de\u05d7\u05e9\u05d1\u05d5\u05df', 200, 48, 1, 900),
+    ('\u05e0\u05d7\u05e9_\u05e6\u05e4\u05e6\u05e4\u05d4', '\u05e0\u05d7\u05e9 \u05e6\u05e4\u05e6\u05e4\u05d4 \u05e4\u05e9\u05d5\u05d8 \u05e7\u05d8\u05df', 280, 1, 1, 1100),
+    ('\u05d7\u05d5\u05ea\u05de\u05d5\u05ea', '\u05d7\u05d5\u05ea\u05de\u05d5\u05ea', 250, 4, 1, 1000),
+    ('\u05d7\u05dc\u05d9\u05e4\u05ea_\u05d4\u05e6\u05dc\u05d4', '\u05d7\u05dc\u05d9\u05e4\u05ea \u05d4\u05e6\u05dc\u05d4 \u05e2\u05dd \u05db\u05d5\u05d1\u05e2', 200, 3, 1, 900),
+]
+for name, display, price, stock, max_stu, min_pts in expensive:
+    products.append((name, display, '1', '\u05d7\u05e0\u05d5\u05ea - \u05e4\u05e8\u05e1 \u05d9\u05e7\u05e8', price, stock, '', max_stu, min_pts))
+
+# ===== MEDIUM STORE ITEMS (cat 2) =====
+# (name, display, price, stock, max_per_student, min_points_required)
+medium = [
+    ('\u05db\u05d3\u05d5\u05e8_\u05de\u05d1\u05d5\u05da_\u05d2\u05d3\u05d5\u05dc', '\u05db\u05d3\u05d5\u05e8 \u05de\u05d1\u05d5\u05da \u05d2\u05d3\u05d5\u05dc', 160, 12, 2, 500),
+    ('\u05db\u05d5\u05d1\u05e2_\u05db\u05d1\u05d0\u05d9', '\u05db\u05d5\u05d1\u05e2 \u05db\u05d1\u05d0\u05d9', 160, 3, 2, 500),
+    ('\u05de\u05e7\u05dc_\u05e1\u05d1\u05d0', '\u05de\u05e7\u05dc \u05e1\u05d1\u05d0', 140, 12, 2, 450),
+    ('\u05de\u05e1\u05db\u05d4_\u05d2\u05d5\u05de\u05d9', '\u05de\u05e1\u05db\u05d4 \u05d2\u05d5\u05de\u05d9', 140, 10, 2, 450),
+    ('\u05e7\u05e1\u05dd', '\u05e7\u05e1\u05dd', 100, 6, 2, 350),
+    ('\u05db\u05d5\u05d1\u05e2_\u05e9\u05e2\u05e8\u05d5\u05ea_\u05e6\u05d1\u05e2\u05d5\u05e0\u05d9', '\u05db\u05d5\u05d1\u05e2 \u05e9\u05e2\u05e8\u05d5\u05ea \u05e6\u05d1\u05e2\u05d5\u05e0\u05d9', 100, 8, 2, 350),
+    ('\u05d8\u05d8\u05e8\u05d9\u05e1', '\u05d8\u05d8\u05e8\u05d9\u05e1', 100, 20, 3, 350),
+    ('\u05ea\u05d7\u05e4\u05d5\u05e9\u05ea_\u05e0\u05de\u05e8', '\u05ea\u05d7\u05e4\u05d5\u05e9\u05ea \u05e0\u05de\u05e8 3 \u05d7\u05dc\u05e7\u05d9\u05dd', 100, 3, 2, 350),
+    ('\u05dc\u05d2\u05d5_\u05d0\u05d5\u05d8\u05d5_\u05de\u05e9\u05d8\u05e8\u05d4', '\u05dc\u05d2\u05d5 \u05d0\u05d5\u05d8\u05d5 \u05de\u05e9\u05d8\u05e8\u05d4', 100, 6, 2, 350),
+    ('\u05db\u05d5\u05d1\u05e2_\u05de\u05e8\u05d5\u05e7\u05d0\u05d9', '\u05db\u05d5\u05d1\u05e2 \u05de\u05e8\u05d5\u05e7\u05d0\u05d9', 80, 10, 3, 300),
+    ('\u05d3\u05d5\u05de\u05d9\u05e0\u05d5', '\u05d3\u05d5\u05de\u05d9\u05e0\u05d5', 80, 20, 3, 300),
+    ('\u05e6\u05e4\u05e6\u05e4\u05d4_\u05d2\u05d3\u05d5\u05dc\u05d4', '\u05e6\u05e4\u05e6\u05e4\u05d4 \u05d2\u05d3\u05d5\u05dc\u05d4', 80, 30, 3, 300),
+    ('\u05e9\u05dc\u05d2', '\u05e9\u05dc\u05d2', 80, 96, 3, 300),
+    ('\u05d7\u05d5\u05d8\u05d9\u05dd', '\u05d7\u05d5\u05d8\u05d9\u05dd', 80, 24, 3, 300),
+    ('\u05d6\u05e7\u05df_\u05e9\u05d7\u05d5\u05e8', '\u05d6\u05e7\u05df \u05e9\u05d7\u05d5\u05e8', 80, 20, 3, 300),
+    ('\u05d6\u05d9\u05e7\u05d5\u05e7\u05d9\u05dd', '\u05d6\u05d9\u05e7\u05d5\u05e7\u05d9\u05dd', 80, 20, 3, 300),
+]
+for name, display, price, stock, max_stu, min_pts in medium:
+    products.append((name, display, '2', '\u05d7\u05e0\u05d5\u05ea - \u05e4\u05e8\u05e1 \u05d1\u05d9\u05e0\u05d5\u05e0\u05d9', price, stock, '', max_stu, min_pts))
+
+# ===== CHEAP STORE ITEMS (cat 3) =====
+cheap = [
+    ('\u05e2\u05d9\u05e0\u05d9\u05d9\u05dd_\u05de\u05e9\u05e7\u05e4\u05d9\u05d9\u05dd', '\u05e2\u05d9\u05e0\u05d9\u05d9\u05dd \u05de\u05e9\u05e7\u05e4\u05d9\u05d9\u05dd \u05e0\u05d5\u05e4\u05dc\u05d5\u05ea', 60, 7),
+    ('\u05e9\u05e8\u05d1\u05d9\u05d8_\u05de\u05dc\u05da', '\u05e9\u05e8\u05d1\u05d9\u05d8 \u05de\u05dc\u05da', 60, 7),
+    ('\u05d0\u05e8\u05e0\u05e7', '\u05d0\u05e8\u05e0\u05e7', 60, 7),
+    ('\u05e1\u05e4\u05de\u05d9\u05dd', '\u05e1\u05e4\u05de\u05d9\u05dd', 50, 5),
+    ('\u05e1\u05d2\u05e8\u05e0\u05d4_\u05de\u05d9\u05dd', '\u05e1\u05d2\u05e8\u05e0\u05d4 \u05de\u05d9\u05dd \u05e9\u05e4\u05e8\u05d9\u05e5', 50, 18),
+    ('\u05de\u05d8\u05d5\u05e1_\u05d9\u05d3\u05e0\u05d9', '\u05de\u05d8\u05d5\u05e1 \u05d9\u05d3\u05e0\u05d9', 50, 60),
+    ('\u05e4\u05d8\u05d9\u05e9\u05d5\u05e0\u05d9\u05dd_\u05e7\u05d8\u05e0\u05d9\u05dd', '\u05e4\u05d8\u05d9\u05e9\u05d5\u05e0\u05d9\u05dd \u05e7\u05d8\u05e0\u05d9\u05dd', 40, 48),
+    ('\u05de\u05e2\u05d5\u05d3\u05d3\u05d5\u05ea', '\u05de\u05e2\u05d5\u05d3\u05d3\u05d5\u05ea', 40, 48),
+    ('\u05e8\u05d5\u05d1\u05d4_\u05de\u05d9\u05dd_\u05e7\u05d8\u05df', '\u05e8\u05d5\u05d1\u05d4 \u05de\u05d9\u05dd \u05e7\u05d8\u05df', 35, 36),
+    ('\u05d1\u05d9\u05dc\u05d9\u05d0\u05e8\u05d3_\u05e7\u05d8\u05e0\u05d8\u05df', '\u05d1\u05d9\u05dc\u05d9\u05d0\u05e8\u05d3 \u05e7\u05d8\u05e0\u05d8\u05df', 30, 40),
+    ('\u05e6\u05e4\u05e6\u05e4\u05d4', '\u05e6\u05e4\u05e6\u05e4\u05d4', 25, 70),
+    ('\u05d8\u05d9\u05e1\u05df', '\u05d8\u05d9\u05e1\u05df', 25, 50),
+    ('\u05e2\u05d8_\u05de\u05e8\u05d2\u05dc\u05d9\u05dd', '\u05e2\u05d8 \u05de\u05e8\u05d2\u05dc\u05d9\u05dd', 25, 50),
+    ('\u05de\u05d8\u05e8_\u05de\u05d3\u05d9\u05d3\u05d4', '\u05de\u05d8\u05e8 \u05de\u05d3\u05d9\u05d3\u05d4', 20, 35),
+    ('\u05e6\u05d9\u05e0\u05d5\u05e8_\u05e9\u05e8\u05e9\u05d5\u05e8', '\u05e6\u05d9\u05e0\u05d5\u05e8 \u05e9\u05e8\u05e9\u05d5\u05e8 \u05e0\u05e4\u05ea\u05d7', 20, 200),
+    ('\u05d3\u05d5\u05e7\u05d9\u05dd', '\u05d3\u05d5\u05e7\u05d9\u05dd', 20, 20),
+    ('\u05d0\u05e3_\u05d0\u05d3\u05d5\u05dd', '\u05d0\u05e3 \u05d0\u05d3\u05d5\u05dd', 20, 25),
+    ('\u05e7\u05e4\u05d9\u05e5_\u05e4\u05dc\u05e1\u05d8\u05d9\u05e7', '\u05e7\u05e4\u05d9\u05e5 \u05e4\u05dc\u05e1\u05d8\u05d9\u05e7 \u05e4\u05e9\u05d5\u05d8', 20, 24),
+    ('\u05de\u05e1\u05db\u05d5\u05ea_\u05d3\u05e7\u05d5\u05ea', '\u05de\u05e1\u05db\u05d5\u05ea \u05d3\u05e7\u05d5\u05ea', 20, 80),
+    ('\u05e4\u05e0\u05e1_\u05d0\u05e6\u05d1\u05e2', '\u05e4\u05e0\u05e1 \u05d0\u05e6\u05d1\u05e2', 20, 32),
+    ('\u05e4\u05e8\u05d5\u05e4\u05dc\u05d5\u05e8_\u05de\u05e2\u05d5\u05e4\u05e3', '\u05e4\u05e8\u05d5\u05e4\u05dc\u05d5\u05e8 \u05de\u05e2\u05d5\u05e4\u05e3', 20, 80),
+]
+for name, display, price, stock in cheap:
+    products.append((name, display, '3', '\u05d7\u05e0\u05d5\u05ea - \u05e4\u05e8\u05e1 \u05d6\u05d5\u05dc', price, stock, '', '', 0))
+
+# ===== FOOD (cat 4) - 1 per student =====
+food = [
+    ('\u05d0\u05d9\u05d9\u05e1_\u05e7\u05e4\u05d4', '\u05d0\u05d9\u05d9\u05e1 \u05e7\u05e4\u05d4', 30, '', '\u05de\u05e0\u05d4 \u05d0\u05d7\u05ea \u05dc\u05ea\u05dc\u05de\u05d9\u05d3', 1),
+    ('\u05e4\u05d5\u05e4\u05e7\u05d5\u05e8\u05df', '\u05e4\u05d5\u05e4\u05e7\u05d5\u05e8\u05df', 30, '', '\u05de\u05e0\u05d4 \u05d0\u05d7\u05ea \u05dc\u05ea\u05dc\u05de\u05d9\u05d3', 1),
+    ('\u05dc\u05d7\u05de\u05e0\u05d9\u05d4_\u05e0\u05e7\u05e0\u05d9\u05e7', '\u05dc\u05d7\u05de\u05e0\u05d9\u05d4 + \u05e0\u05e7\u05e0\u05d9\u05e7', 35, '', '\u05de\u05e0\u05d4 \u05d0\u05d7\u05ea \u05dc\u05ea\u05dc\u05de\u05d9\u05d3', 1),
+    ('\u05d9\u05de\u05d1\u05de\u05d1\u05dd', '\u05d9\u05de\u05d1\u05de\u05d1\u05dd / \u05e9\u05e2\u05e8\u05d5\u05ea \u05e1\u05d1\u05ea\u05d0', 25, '', '\u05de\u05e0\u05d4 \u05d0\u05d7\u05ea \u05dc\u05ea\u05dc\u05de\u05d9\u05d3', 1),
+]
+for name, display, price, stock, desc, max_stu in food:
+    products.append((name, display, '4', '\u05d3\u05d5\u05db\u05e0\u05d9 \u05de\u05d6\u05d5\u05df', price, stock, desc, max_stu, 0))
+
+# ===== ACTIVITY BOOTHS (cat 5) - universal voucher, max 13 =====
+# One universal voucher product
+products.append((
+    '\u05db\u05e8\u05d8\u05d9\u05e1_\u05e4\u05e2\u05d9\u05dc\u05d5\u05ea',
+    '\u05db\u05e8\u05d8\u05d9\u05e1 \u05d3\u05d5\u05db\u05df \u05e4\u05e2\u05d9\u05dc\u05d5\u05ea',
+    '5', '\u05d3\u05d5\u05db\u05e0\u05d9 \u05e4\u05e2\u05d9\u05dc\u05d5\u05ea',
+    25, '',
+    '\u05db\u05e8\u05d8\u05d9\u05e1 \u05d0\u05d5\u05e0\u05d9\u05d1\u05e8\u05e1\u05dc\u05d9 \u05dc\u05db\u05e0\u05d9\u05e1\u05d4 \u05dc\u05db\u05dc \u05d3\u05d5\u05db\u05df \u05e4\u05e2\u05d9\u05dc\u05d5\u05ea (10 \u05d3\u05d5\u05db\u05e0\u05d9\u05dd)',
+    13, 0
+))
+
+# ===== CHINESE SALE (cat 6) - universal raffle ticket, max 11 =====
+products.append((
+    '\u05db\u05e8\u05d8\u05d9\u05e1_\u05d4\u05d2\u05e8\u05dc\u05d4',
+    '\u05db\u05e8\u05d8\u05d9\u05e1 \u05d4\u05d2\u05e8\u05dc\u05d4 - \u05de\u05db\u05d9\u05e8\u05d4 \u05e1\u05d9\u05e0\u05d9\u05ea',
+    '6', '\u05de\u05db\u05d9\u05e8\u05d4 \u05e1\u05d9\u05e0\u05d9\u05ea',
+    25, '',
+    '\u05db\u05e8\u05d8\u05d9\u05e1 \u05d4\u05d2\u05e8\u05dc\u05d4 \u05d0\u05d5\u05e0\u05d9\u05d1\u05e8\u05e1\u05dc\u05d9 - \u05d4\u05ea\u05dc\u05de\u05d9\u05d3 \u05d9\u05d7\u05dc\u05d9\u05d8 \u05d0\u05d9\u05e4\u05d4 \u05dc\u05e9\u05d9\u05dd \u05d0\u05ea \u05d4\u05db\u05e8\u05d8\u05d9\u05e1',
+    11, 0
+))
+
+# ===== TRAMPOLINES (cat 7) - max 5 =====
+products.append((
+    '\u05e1\u05d9\u05d1\u05d5\u05d1_\u05d8\u05e8\u05de\u05e4\u05d5\u05dc\u05d9\u05e0\u05d4',
+    '\u05e1\u05d9\u05d1\u05d5\u05d1 \u05d8\u05e8\u05de\u05e4\u05d5\u05dc\u05d9\u05e0\u05d4 (10 \u05d3\u05e7\u05d5\u05ea)',
+    '7', '\u05d8\u05e8\u05de\u05e4\u05d5\u05dc\u05d9\u05e0\u05d5\u05ea',
+    50, '',
+    '\u05e1\u05d9\u05d1\u05d5\u05d1 \u05d0\u05d7\u05d3 \u05e9\u05dc 10 \u05d3\u05e7\u05d5\u05ea \u05d1\u05d8\u05e8\u05de\u05e4\u05d5\u05dc\u05d9\u05e0\u05d4',
+    5, 0
+))
+
+# Write all rows
+r = 2
+for i, prod in enumerate(products):
+    name, display, cat_id, cat_name, price, stock, desc, max_stu, min_pts = prod
+    row_data = [
+        name,           # A - \u05e9\u05dd \u05e4\u05e0\u05d9\u05de\u05d9
+        display,        # B - \u05e9\u05dd \u05ea\u05e6\u05d5\u05d2\u05d4
+        cat_id,         # C - \u05de\u05d6\u05d4\u05d4 \u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d4
+        cat_name,       # D - \u05e7\u05d8\u05d2\u05d5\u05e8\u05d9\u05d4
+        price,          # E - \u05de\u05d7\u05d9\u05e8 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea
+        stock if stock != '' else '',  # F - \u05db\u05de\u05d5\u05ea \u05de\u05dc\u05d0\u05d9
+        desc,           # G - \u05ea\u05d9\u05d0\u05d5\u05e8
+        '\u05db\u05df',            # H - \u05e4\u05e2\u05d9\u05dc
+        '',             # I - \u05e0\u05ea\u05d9\u05d1 \u05ea\u05de\u05d5\u05e0\u05d4
+        '',             # J - \u05db\u05d9\u05ea\u05d5\u05ea \u05de\u05d5\u05e8\u05e9\u05d5\u05ea
+        min_pts if min_pts else 0,  # K - \u05e1\u05e3 \u05e0\u05e7\u05d5\u05d3\u05d5\u05ea
+        max_stu if max_stu != '' else '',  # L - \u05de\u05e7\u05e1 \u05dc\u05ea\u05dc\u05de\u05d9\u05d3
+        '',             # M - \u05de\u05e7\u05e1 \u05dc\u05db\u05d9\u05ea\u05d4
+        '',             # N - \u05de\u05d7\u05d9\u05e8 \u05de\u05d5\u05ea\u05e0\u05d4
+        '',             # O - \u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 1
+        '',             # P - \u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 2
+        '',             # Q - \u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 3
+        '',             # R - \u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 4
+        '',             # S - \u05d5\u05e8\u05d9\u05d0\u05e6\u05d9\u05d4 5
+    ]
+    for c, val in enumerate(row_data, 1):
+        cell = ws.cell(row=r, column=c, value=val)
+        cell.font = normal_font
+        cell.alignment = center_align
+        cell.border = thin_border
+        if i % 2 == 1:
+            cell.fill = light_fill
+    r += 1
+
+# Column widths
+widths = {'A': 22, 'B': 30, 'C': 14, 'D': 22, 'E': 14, 'F': 12, 'G': 50,
+          'H': 8, 'I': 15, 'J': 15, 'K': 12, 'L': 14, 'M': 12, 'N': 14,
+          'O': 12, 'P': 12, 'Q': 12, 'R': 12, 'S': 12}
+for col, w in widths.items():
+    ws.column_dimensions[col].width = w
+
+out_path = r'C:\מיצד\SchoolPoints\גיבוי רובע\יריד\תבנית ייבוא מוצרים.xlsx'
+wb.save(out_path)
+print(f'Saved: {out_path}')
+print(f'Total products: {len(products)}')

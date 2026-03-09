@@ -26,7 +26,7 @@ from typing import Optional
 from datetime import datetime
 import csv
 from datetime import date, timedelta
-from jewish_calendar import hebrew_date_from_gregorian_str
+from jewish_calendar import hebrew_date_from_gregorian_str, hebrew_day_display_list, hebrew_day_from_display, hebrew_year_display, hebrew_year_from_display, hebrew_year_display_list
 import traceback
 
 try:
@@ -59,7 +59,36 @@ PDF = '\u202c'  # Pop Directional Formatting
 
 UNIVERSAL_MASTER_CODE = "05276247440527624744"
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.4"
+
+def _format_relative_dt(dt_str, delta=None):
+    """Format datetime as relative: 'today 11:28 +5' / 'yesterday 17:48' / '17.2 14:30'."""
+    if not dt_str:
+        return ''
+    try:
+        from datetime import datetime, date, timezone
+        dt_utc = datetime.strptime(str(dt_str)[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+        dt = dt_utc.astimezone().replace(tzinfo=None)  # המרה לשעון מקומי
+        today = date.today()
+        time_s = dt.strftime('%H:%M')
+        if dt.date() == today:
+            prefix = f'היום {time_s}'
+        elif (today - dt.date()).days == 1:
+            prefix = f'אתמול {time_s}'
+        elif (today - dt.date()).days == 2:
+            prefix = f'שלשום {time_s}'
+        else:
+            prefix = f'{dt.day}.{dt.month} {time_s}'
+        if delta is not None and int(delta) != 0:
+            sign = '+' if int(delta) > 0 else ''
+            return f'\u202b{prefix} {sign}{int(delta)}\u202c'
+        return f'\u202b{prefix}\u202c'
+    except Exception:
+        return str(dt_str)[:16] if dt_str else ''
+
+def _format_relative_swipe(dt_str):
+    """Format swipe datetime as relative: 'today 11:28' / 'yesterday 17:48' / '17.2 14:30'."""
+    return _format_relative_dt(dt_str, delta=None)
 
 def fix_rtl_text(text):
     """תיקון כיוון טקסט עברי עם סימני קריאה בצד הנכון"""
@@ -280,110 +309,17 @@ class AdminStation:
         self._sync_agent_thread = None
         self._sync_agent_started = False
         
-        # בדיקה אם זו עמדה משנית (local-sync client) - אם כן, מפעילים סינכרון מיד
-        self._should_start_local_sync_server = False
-        try:
-            cfg = self.app_config or {}
-            import sync_agent
-            if sync_agent._local_sync_enabled_from_cfg(cfg):
-                shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
-                host = sync_agent._unc_host(str(shared_folder or '').strip())
-                if host and not sync_agent._is_local_host(host):
-                    # עמדה משנית - מפעילים סינכרון מיד
-                    print(f"[ADMIN] Starting sync agent for secondary station (host={host})")
-                    self._maybe_start_sync_agent()
-                elif host and sync_agent._is_local_host(host):
-                    # עמדה ראשית - נזכור להפעיל local sync server אחרי שה-DB יהיה מוכן
-                    print(f"[ADMIN] Will start local sync server for primary station (host={host})")
-                    self._should_start_local_sync_server = True
-        except Exception as e:
-            print(f"[ADMIN] Error starting background services: {e}")
-            pass
+        # דחיית כל הפעולות הכבדות לאחר הפעלת הממשק
+        self._deferred_init_tasks = []
         
-        # רישוי מערכת – רק לאחר שהוגדרה תיקיית הרשת/הגדרות האפליקציה
-        self.license_manager = license_manager or LicenseManager(self.base_dir, "admin")
+        # אתחול DB מידי - הכרחי לפני מסך התחברות
+        self._init_database_immediate()
         
-        self.db = None
-        last_db_err = None
-        for attempt in range(3):
-            try:
-                self.db = Database()
-                last_db_err = None
-                break
-            except sqlite3.OperationalError as e:
-                last_db_err = e
-                msg = str(e).lower()
-                if ('locked' in msg or 'busy' in msg) and attempt < 2:
-                    try:
-                        time.sleep(0.6 + 0.6 * attempt)
-                    except Exception:
-                        pass
-                    continue
-                break
-            except Exception as e:
-                last_db_err = e
-                break
-        if self.db is None:
-            err_msg = str(last_db_err or 'שגיאה בפתיחת מסד הנתונים')
-            low = err_msg.lower()
-            if 'readonly' in low or 'read-only' in low:
-                user_msg = (
-                    'מסד הנתונים פתוח לקריאה בלבד.\n'
-                    'בדוק הרשאות לשיתוף \\ או שמסומן כ-Read Only.\n'
-                    'יש לוודא שאין תוכנה אחרת שפותחת את הקובץ ללא הרשאות כתיבה.'
-                )
-            elif 'locked' in low or 'busy' in low:
-                user_msg = (
-                    'מסד הנתונים נעול על ידי תחנה אחרת.\n'
-                    'סגור עמדות פעילות / תוכנות שמשתמשות בקובץ ונסה שוב.'
-                )
-            else:
-                user_msg = f'שגיאה בפתיחת מסד הנתונים:\n{err_msg}'
-            try:
-                messagebox.showerror('שגיאת מסד נתונים', user_msg, parent=self.root)
-            except Exception:
-                pass
-            try:
-                self.root.after(100, self.root.destroy)
-            except Exception:
-                pass
-            return
+        # הוספת משימות לביצוע מאוחר
+        self._deferred_init_tasks.append(lambda: self._init_sync_services())
+        self._deferred_init_tasks.append(lambda: self._init_license_manager())
+        self._deferred_init_tasks.append(lambda: self._init_background_services())
 
-        # הפעלת local sync server בעמדה ראשית (אחרי שה-DB מוכן)
-        if getattr(self, '_should_start_local_sync_server', False):
-            print("[ADMIN] Starting local sync server now that DB is ready")
-            self._maybe_start_local_sync_server()
-
-        # השמעת צלילים בעמדת ניהול (בדיקות/תצוגה מקדימה) - אתחול עצל
-        self._admin_sound_manager = None
-        
-        # הרצת המרת נתונים אוטומטית (פעם אחת בלבד)
-        try:
-            self.db.migrate_comma_separated_data()
-        except Exception as e:
-            print(f"שגיאה בהמרת נתונים: {e}")
-        
-        self.importer = ExcelImporter(self.db)
-        
-        # מורה מחובר (None = טרם התחבר, teacher_dict = מורה רגיל, {'is_admin': 1} = מנהל)
-        self.current_teacher = None
-        self.teacher_classes_cache = []  # cache של כיתות המורה
-
-        try:
-            import time
-            self._last_activity_ts = float(time.time())
-        except Exception:
-            self._last_activity_ts = 0.0
-        self._idle_lock_ms = 5 * 60 * 1000
-        self._idle_check_job = None
-        self._login_active = False
-        self._lock_message_shown = False
-
-        self._undo_stack = []
-        self._redo_stack = []
-        self._undo_max_actions = 100
-        self._applying_undo_redo = False
-        
         # הסתרה מיידית של חלון השורש כדי למנוע הבהוב/חלון רגעי לפני מסך ההתחברות
         try:
             self.root.withdraw()
@@ -392,15 +328,274 @@ class AdminStation:
 
         # הצגת מסך התחברות
         self.show_login_screen()
+        
+        # הפעלת משימות מדוחות ברקע
+        self.root.after(200, self._execute_deferred_tasks)
 
-    def _is_local_sync_server_running(self, port: int) -> bool:
+    def _execute_deferred_tasks(self):
+        """ביצוע משימות אתחול מדוחות"""
+        for i, task in enumerate(self._deferred_init_tasks):
+            try:
+                self.root.after(i * 100, task)  # הפרשה של 100ms בין משימות
+            except Exception as e:
+                print(f"Error scheduling deferred task {i}: {e}")
+
+    def _init_database_immediate(self):
+        """אתחול מסד נתונים מידי - הכרחי לפני התחברות"""
+        try:
+            print("[ADMIN] Initializing database immediately...")
+            self.db = None
+            last_db_err = None
+            
+            for attempt in range(3):
+                try:
+                    self.db = Database()
+                    last_db_err = None
+                    print("[ADMIN] Database initialized successfully")
+                    break
+                except sqlite3.OperationalError as e:
+                    last_db_err = e
+                    msg = str(e).lower()
+                    if ('locked' in msg or 'busy' in msg) and attempt < 2:
+                        try:
+                            time.sleep(0.6 + 0.6 * attempt)
+                        except Exception:
+                            pass
+                        continue
+                    break
+                except Exception as e:
+                    last_db_err = e
+                    break
+                    
+            if self.db is None:
+                err_msg = str(last_db_err or 'שגיאה בפתיחת מסד הנתונים')
+                low = err_msg.lower()
+                if 'readonly' in low or 'read-only' in low:
+                    user_msg = (
+                        'מסד הנתונים פתוח לקריאה בלבד.\n'
+                        'בדוק הרשאות לשיתוף \\ או שמסומן כ-Read Only.\n'
+                        'יש לוודא שאין תוכנה אחרת שפותחת את הקובץ ללא הרשאות כתיבה.'
+                    )
+                elif 'locked' in low or 'busy' in low:
+                    user_msg = (
+                        'מסד הנתונים נעול על ידי תחנה אחרת.\n'
+                        'סגור עמדות פעילות / תוכנות שמשתמשות בקובץ ונסה שוב.'
+                    )
+                else:
+                    user_msg = f'שגיאה בפתיחת מסד הנתונים:\n{err_msg}'
+                    
+                try:
+                    messagebox.showerror('שגיאת מסד נתונים', user_msg, parent=self.root)
+                except Exception:
+                    pass
+                try:
+                    self.root.after(100, self.root.destroy)
+                except Exception:
+                    pass
+                return
+                
+        except Exception as e:
+            print(f"[ADMIN] Error in _init_database_immediate: {e}")
+            messagebox.showerror('שגיאה', f'שגיאה באתחול מסד נתונים:\n{str(e)}')
+            self.root.after(100, self.root.destroy)
+
+    def _init_sync_services(self):
+        """אתחול שירותי סנכרון"""
+        try:
+            self._should_start_local_sync_server = False
+            cfg = getattr(self, 'app_config', {}) or {}
+            import sync_agent
+            if sync_agent._local_sync_enabled_from_cfg(cfg):
+                shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
+                host = sync_agent._unc_host(str(shared_folder or '').strip())
+                if host and not sync_agent._is_local_host(host):
+                    print(f"[ADMIN] Starting sync agent for secondary station (host={host})")
+                    self._maybe_start_sync_agent()
+                elif host and sync_agent._is_local_host(host):
+                    print(f"[ADMIN] Will start local sync server for primary station (host={host})")
+                    self._should_start_local_sync_server = True
+        except Exception as e:
+            print(f"[ADMIN] Error in _init_sync_services: {e}")
+
+    def _init_license_manager(self):
+        """אתחול מנהל רישיונות"""
+        try:
+            self.license_manager = LicenseManager(self.base_dir, "admin")
+        except Exception as e:
+            print(f"[ADMIN] Error in _init_license_manager: {e}")
+
+    def _init_database(self):
+        """אתחול מסד נתונים"""
+        try:
+            self.db = None
+            for attempt in range(3):
+                try:
+                    self.db = Database()
+                    break
+                except Exception as e:
+                    if attempt < 2:
+                        time.sleep(0.6)
+                    else:
+                        raise e
+        except Exception as e:
+            print(f"[ADMIN] Error in _init_database: {e}")
+            messagebox.showerror('שגיאת מסד נתונים', str(e))
+            self.root.after(100, self.root.destroy)
+
+    def _init_background_services(self):
+        """אתחול שירותי רקע"""
+        try:
+            if getattr(self, '_should_start_local_sync_server', False):
+                print("[ADMIN] Starting local sync server in background")
+                self._maybe_start_local_sync_server()
+            
+            self._admin_sound_manager = None
+            try:
+                self.db.migrate_comma_separated_data()
+            except Exception as e:
+                print(f"שגיאה בהמרת נתונים: {e}")
+            
+            self.importer = ExcelImporter(self.db)
+            # לא לאפס את current_teacher כאן - הוא כבר הוגדר בהתחברות
+            # self.current_teacher = None  # השורה הזו גורמת לבעיה
+            if not hasattr(self, 'teacher_classes_cache'):
+                self.teacher_classes_cache = []
+            
+            try:
+                import time
+                self._last_activity_ts = float(time.time())
+            except Exception:
+                self._last_activity_ts = 0.0
+            self._idle_lock_ms = 5 * 60 * 1000
+            self._idle_check_job = None
+            self._login_active = False
+            self._lock_message_shown = False
+            
+            self._undo_stack = []
+            self._redo_stack = []
+            self._undo_max_actions = 100
+            self._applying_undo_redo = False
+            
+            # איפוס סנכרון בעמדה ראשית אם נדרש
+            self._maybe_reset_sync_state()
+        except Exception as e:
+            print(f"[ADMIN] Error in _init_background_services: {e}")
+
+    def _maybe_reset_sync_state(self):
+        """איפוס סטטוס סנכרון אם יש חוסר סנכרון"""
+        try:
+            if not self.db or not getattr(self, '_should_start_local_sync_server', False):
+                return
+                
+            # בדיקה אם יש שינויים שלא סונכרנו - שימוש בפונקציה הנכונה
+            try:
+                max_id = self.db.get_max_change_id()  # הפונקציה הנכונה
+                if max_id > 4300:  # אם יש הרבה שינויים, אולי צריך איפוס
+                    print(f"[ADMIN] High change ID detected: {max_id}. Consider resetting sync state on secondary stations.")
+            except AttributeError:
+                # אם הפונקציה לא קיימת, נדלג
+                print("[ADMIN] get_max_change_id not available, skipping sync state check")
+        except Exception as e:
+            print(f"[ADMIN] Error checking sync state: {e}")
+
+    def reset_secondary_station_sync(self):
+        """איפוס סנכרון עבור עמדות משניות - לשימוש במקרה חירום"""
+        try:
+            if not self.db:
+                messagebox.showerror("שגיאה", "מסד הנתונים לא זמין")
+                return
+                
+            if not messagebox.askyesno("איפוס סנכרון", 
+                "פעולה זו תאפס את מצב הסנכרון בכל העמדות המשניות.\n\n" +
+                "העמדות המשניות יצטרכו להפעיל מחדש כדי לקבל את כל השינויים.\n\n" +
+                "האם להמשיך?"):
+                return
+                
+            # איפוס סטטוס ה-bootstrap
+            self.db._set_sync_state('bootstrap_snapshot_done', '0')
+            messagebox.showinfo("איפוס סנכרון", 
+                "סטטוס הסנכרון אופס.\n\n" +
+                "הפעל מחדש את כל העמדות המשניות כדי שיסתנכרנו מחדש.")
+                
+        except Exception as e:
+            messagebox.showerror("שגיאה", f"לא ניתן לאפס את הסנכרון:\n{str(e)}")
+
+    def _start_background_services(self):
+        """הפעלת שירותי רקע לאחר עליית הממשק"""
+        try:
+            # הפעלת local sync server בעמדה ראשית
+            if getattr(self, '_should_start_local_sync_server', False):
+                print("[ADMIN] Starting local sync server in background")
+                self._maybe_start_local_sync_server()
+            
+            # השמעת צלילים בעמדת ניהול - אתחול עצל
+            self._admin_sound_manager = None
+            
+            # הרצת המרת נתונים אוטומטית
+            try:
+                self.db.migrate_comma_separated_data()
+            except Exception as e:
+                print(f"שגיאה בהמרת נתונים: {e}")
+            
+            self.importer = ExcelImporter(self.db)
+            
+            # אתחול משתנים נוספים
+            # לא לאפס את current_teacher כאן - הוא כבר הוגדר בהתחברות
+            # self.current_teacher = None
+            if not hasattr(self, 'teacher_classes_cache'):
+                self.teacher_classes_cache = []
+            
+            try:
+                import time
+                self._last_activity_ts = float(time.time())
+            except Exception:
+                self._last_activity_ts = 0.0
+            self._idle_lock_ms = 5 * 60 * 1000
+            self._idle_check_job = None
+            self._login_active = False
+            self._lock_message_shown = False
+            
+            self._undo_stack = []
+            self._redo_stack = []
+            self._undo_max_actions = 100
+            self._applying_undo_redo = False
+            
+        except Exception as e:
+            print(f"Error starting background services: {e}")
+
+    def _is_local_sync_server_running(self, port: int, validate_pull: bool = False) -> bool:
         try:
             url = f"http://127.0.0.1:{int(port)}/sync/status"
             req = urllib.request.Request(url, headers={'Accept': 'application/json'})
             with urllib.request.urlopen(req, timeout=0.5) as resp:
                 data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
-                return bool(data.get('ok'))
+                if not bool(data.get('ok')):
+                    return False
         except Exception:
+            return False
+        if not validate_pull:
+            return True
+        # Validate server can actually serve pulls (not just status)
+        try:
+            cfg = self.load_app_config() or {}
+            api_key = str(cfg.get('local_sync_key') or 'local').strip()
+            url2 = f"http://127.0.0.1:{int(port)}/sync/pull?since_id=999999999&limit=1"
+            req2 = urllib.request.Request(url2, headers={'Accept': 'application/json', 'api-key': api_key})
+            with urllib.request.urlopen(req2, timeout=2) as resp2:
+                data2 = json.loads(resp2.read().decode('utf-8', errors='ignore') or '{}')
+                if data2.get('ok'):
+                    return True
+                else:
+                    try:
+                        print(f"[ADMIN] Sync server pull validation FAILED: {data2}")
+                    except Exception:
+                        pass
+                    return False
+        except Exception as e:
+            try:
+                print(f"[ADMIN] Sync server pull validation ERROR: {e}")
+            except Exception:
+                pass
             return False
 
     def _maybe_start_local_sync_server(self) -> None:
@@ -462,13 +657,34 @@ class AdminStation:
             port = 8765
         print(f"[ADMIN] port={port}")
 
-        if self._is_local_sync_server_running(port):
-            print("[ADMIN] Local sync server already running")
+        if self._is_local_sync_server_running(port, validate_pull=True):
+            print("[ADMIN] Local sync server already running and healthy")
             try:
                 self._local_sync_server_started = True
             except Exception:
                 pass
             return
+        elif self._is_local_sync_server_running(port, validate_pull=False):
+            # Server responds to status but pull fails - stale server!
+            print("[ADMIN] Stale sync server detected (status OK but pull FAILS) - sending reconnect")
+            try:
+                reconnect_url = f"http://127.0.0.1:{int(port)}/sync/reconnect"
+                req = urllib.request.Request(reconnect_url, headers={'Accept': 'application/json'})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
+                    print(f"[ADMIN] Reconnect response: {data}")
+                    if data.get('ok'):
+                        # Verify pull works now
+                        import time as _time
+                        _time.sleep(0.5)
+                        if self._is_local_sync_server_running(port, validate_pull=True):
+                            print("[ADMIN] Sync server recovered after reconnect!")
+                            self._local_sync_server_started = True
+                            return
+                        else:
+                            print("[ADMIN] Sync server still failing after reconnect")
+            except Exception as re_err:
+                print(f"[ADMIN] Reconnect failed: {re_err}")
 
         try:
             api_key = str(cfg.get('local_sync_key') or 'local').strip()
@@ -1472,10 +1688,36 @@ class AdminStation:
         self._teacher_stats_points_label = None
         self._teacher_stats_max_allowed_label = None
 
-        if not is_admin:
-            self._teacher_stats_frame = tk.Frame(button_frame2 or button_frame, bg='#f0f0f0')
-            self._teacher_stats_frame.pack(side=tk.RIGHT, padx=8)
+        # פאנל חיפוש + סטטיסטיקות באותה שורה
+        search_frame = tk.Frame(self.root, bg='#f0f0f0')
+        search_frame.pack(fill=tk.X, padx=10, pady=5)
+        search_frame.columnconfigure(0, weight=1)
+        search_frame.columnconfigure(1, weight=0)
 
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add('write', self.on_search_var_changed)
+
+        tk.Label(
+            search_frame,
+            text="חיפוש:",
+            font=('Arial', 9),
+            bg='#f0f0f0'
+        ).grid(row=0, column=2, sticky='e', padx=3)
+
+        self.search_entry = tk.Entry(
+            search_frame,
+            textvariable=self.search_var,
+            font=('Arial', 9),
+            width=30,
+            justify='right'
+        )
+        self.search_entry.grid(row=0, column=1, sticky='e', padx=5)
+
+        # שורת סטטיסטיקות — באותה שורה כמו החיפוש
+        self._teacher_stats_frame = tk.Frame(search_frame, bg='#f0f0f0')
+        self._teacher_stats_frame.grid(row=0, column=0, sticky='w', padx=4)
+
+        if not is_admin:
             # Filter button - only show if teacher has more than 1 class
             self._teacher_filter_button = tk.Button(
                 self._teacher_stats_frame,
@@ -1510,72 +1752,86 @@ class AdminStation:
                 fg='#95a5a6'
             ).pack(side=tk.LEFT, padx=2)
 
-            self._teacher_stats_lowest_label = tk.Label(
+        # לייבלים משותפים — גם למנהל וגם למורה
+        self._teacher_stats_lowest_label = tk.Label(
+            self._teacher_stats_frame,
+            text=fix_rtl_text('הנמוך ביותר: ...'),
+            font=('Arial', 9),
+            bg='#f0f0f0',
+            fg='#2c3e50',
+            anchor='e'
+        )
+        self._teacher_stats_lowest_label.pack(side=tk.LEFT, padx=6)
+
+        tk.Label(
+            self._teacher_stats_frame,
+            text='|',
+            font=('Arial', 9),
+            bg='#f0f0f0',
+            fg='#95a5a6'
+        ).pack(side=tk.LEFT, padx=2)
+
+        self._teacher_stats_highest_label = tk.Label(
+            self._teacher_stats_frame,
+            text=fix_rtl_text('הגבוה ביותר: ...'),
+            font=('Arial', 9),
+            bg='#f0f0f0',
+            fg='#2c3e50',
+            anchor='e'
+        )
+        self._teacher_stats_highest_label.pack(side=tk.LEFT, padx=6)
+
+        tk.Label(
+            self._teacher_stats_frame,
+            text='|',
+            font=('Arial', 9),
+            bg='#f0f0f0',
+            fg='#95a5a6'
+        ).pack(side=tk.LEFT, padx=2)
+
+        self._teacher_stats_overall_label = tk.Label(
+            self._teacher_stats_frame,
+            text=fix_rtl_text('ממוצע כללי: ...'),
+            font=('Arial', 9),
+            bg='#f0f0f0',
+            fg='#2c3e50',
+            anchor='e'
+        )
+        self._teacher_stats_overall_label.pack(side=tk.LEFT, padx=6)
+
+        tk.Label(
+            self._teacher_stats_frame,
+            text='|',
+            font=('Arial', 9),
+            bg='#f0f0f0',
+            fg='#95a5a6'
+        ).pack(side=tk.LEFT, padx=2)
+
+        self._teacher_stats_max_allowed_label = tk.Label(
+            self._teacher_stats_frame,
+            text=fix_rtl_text('מקסימום אפשרי: ...'),
+            font=('Arial', 9),
+            bg='#f0f0f0',
+            fg='#2c3e50',
+            anchor='e'
+        )
+        self._teacher_stats_max_allowed_label.pack(side=tk.LEFT, padx=6)
+
+        # כפתור ▼ לפירוט כיתות — מנהלים בלבד
+        self._teacher_stats_dropdown_btn = None
+        self._class_details_dropdown_win = None
+        self._class_details_per_class_data = []
+        if is_admin:
+            self._teacher_stats_dropdown_btn = tk.Label(
                 self._teacher_stats_frame,
-                text=fix_rtl_text('הנמוך ביותר: ...'),
-                font=('Arial', 9),
+                text='▼',
+                font=('Arial', 9, 'bold'),
                 bg='#f0f0f0',
-                fg='#2c3e50',
-                anchor='e'
+                fg='#2980b9',
+                cursor='hand2',
             )
-            self._teacher_stats_lowest_label.pack(side=tk.LEFT, padx=6)
-
-            # Separator
-            tk.Label(
-                self._teacher_stats_frame,
-                text='|',
-                font=('Arial', 9),
-                bg='#f0f0f0',
-                fg='#95a5a6'
-            ).pack(side=tk.LEFT, padx=2)
-
-            self._teacher_stats_highest_label = tk.Label(
-                self._teacher_stats_frame,
-                text=fix_rtl_text('הגבוה ביותר: ...'),
-                font=('Arial', 9),
-                bg='#f0f0f0',
-                fg='#2c3e50',
-                anchor='e'
-            )
-            self._teacher_stats_highest_label.pack(side=tk.LEFT, padx=6)
-
-            # Separator
-            tk.Label(
-                self._teacher_stats_frame,
-                text='|',
-                font=('Arial', 9),
-                bg='#f0f0f0',
-                fg='#95a5a6'
-            ).pack(side=tk.LEFT, padx=2)
-
-            self._teacher_stats_overall_label = tk.Label(
-                self._teacher_stats_frame,
-                text=fix_rtl_text('ממוצע כללי: ...'),
-                font=('Arial', 9),
-                bg='#f0f0f0',
-                fg='#2c3e50',
-                anchor='e'
-            )
-            self._teacher_stats_overall_label.pack(side=tk.LEFT, padx=6)
-
-            # Separator
-            tk.Label(
-                self._teacher_stats_frame,
-                text='|',
-                font=('Arial', 9),
-                bg='#f0f0f0',
-                fg='#95a5a6'
-            ).pack(side=tk.LEFT, padx=2)
-
-            self._teacher_stats_max_allowed_label = tk.Label(
-                self._teacher_stats_frame,
-                text=fix_rtl_text('מקסימום אפשרי: ...'),
-                font=('Arial', 9),
-                bg='#f0f0f0',
-                fg='#2c3e50',
-                anchor='e'
-            )
-            self._teacher_stats_max_allowed_label.pack(side=tk.LEFT, padx=6)
+            self._teacher_stats_dropdown_btn.pack(side=tk.LEFT, padx=(2, 6))
+            self._teacher_stats_dropdown_btn.bind('<Button-1>', lambda e: self._toggle_class_details_dropdown())
 
         try:
             self.root.bind_all('<Control-z>', self.undo_last_points_action)
@@ -1589,32 +1845,7 @@ class AdminStation:
         except Exception:
             pass
         
-        # פאנל חיפוש - קומפקטי
-        search_frame = tk.Frame(self.root, bg='#f0f0f0')
-        search_frame.pack(fill=tk.X, padx=10, pady=5)
-        search_frame.columnconfigure(0, weight=1)
-        search_frame.columnconfigure(1, weight=0)
-        
-        tk.Label(search_frame, text="", bg='#f0f0f0').grid(row=0, column=0, sticky='we')
-        tk.Label(
-            search_frame,
-            text="חיפוש:",
-            font=('Arial', 9),
-            bg='#f0f0f0'
-        ).grid(row=0, column=2, sticky='e', padx=3)
-        
-        self.search_var = tk.StringVar()
-        self.search_var.trace_add('write', self.on_search_var_changed)
-        
-        # שדה חיפוש – נשמר כ-attrib כדי שנוכל להחזיר אליו פוקוס אחרי ניקוי אוטומטי
-        self.search_entry = tk.Entry(
-            search_frame,
-            textvariable=self.search_var,
-            font=('Arial', 9),
-            width=30,
-            justify='right'
-        )
-        self.search_entry.grid(row=0, column=1, sticky='e', padx=5)
+        # (פאנל חיפוש הועבר למעלה — ליד שורת הסטטיסטיקות)
         
         # טבלת תלמידים עם שורות מסומנות
         table_frame = tk.Frame(self.root)
@@ -1641,7 +1872,7 @@ class AdminStation:
                  background=[('selected', '#3498db')])
         
         # Treeview - מימין לשמאל (בלי ID!)
-        columns = ('נקודות', 'הודעה פרטית', 'מס\' כרטיס', 'כיתה', 'ת"ז', 'שם פרטי', 'שם משפחה', 'תמונה', 'מס\' סידורי', 'סה"כ תיקופים', 'ממוצע תיקופים ליום')
+        columns = ('נקודות', 'הודעה פרטית', 'עדכון אחרון', 'תיקוף אחרון', 'מס\' כרטיס', 'כיתה', 'ת"ז', 'שם פרטי', 'שם משפחה', 'תמונה', 'מס\' סידורי', 'סה"כ תיקופים', 'ממוצע תיקופים ליום', 'מגדר', 'יום הולדת עברי')
         self.tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -1669,21 +1900,38 @@ class AdminStation:
         self.tree.column('נקודות', width=60, anchor='center')
         self.tree.column('תמונה', width=40, anchor='center')
         self.tree.column('מס\' סידורי', width=20, anchor='center')
+        self.tree.column('עדכון אחרון', width=120, anchor='center')
+        self.tree.column('תיקוף אחרון', width=100, anchor='center')
         self.tree.column('סה"כ תיקופים', width=80, anchor='center')
         self.tree.column('ממוצע תיקופים ליום', width=110, anchor='center')
+        self.tree.column('מגדר', width=40, anchor='center')
+        self.tree.column('יום הולדת עברי', width=110, anchor='center')
 
-        self.tree['displaycolumns'] = (
-            'ממוצע תיקופים ליום',
+        # עמודות שניתנות להסתרה/הצגה ע"י לחיצה ימנית על הכותרת
+        self._toggleable_columns = [
+            'עדכון אחרון',
+            'תיקוף אחרון',
             'סה"כ תיקופים',
-            'נקודות',
-            'הודעה פרטית',
-            'מס\' כרטיס',
-            'כיתה',
-            'שם פרטי',
-            'שם משפחה',
-            'תמונה',
-            'מס\' סידורי'
+            'ממוצע תיקופים ליום',
+            'מגדר',
+            'יום הולדת עברי',
+        ]
+        self._is_admin_user = bool(
+            getattr(self, 'current_teacher', None)
+            and self.current_teacher.get('is_admin') == 1
         )
+        self._hidden_columns = set()
+        try:
+            _saved = self.db.get_setting('admin_hidden_columns', '')
+            if _saved:
+                self._hidden_columns = set(_saved.split(','))
+            else:
+                # ברירת מחדל: הסתרת עמודות חדשות שלא כולם צריכים
+                self._hidden_columns = {'מגדר', 'יום הולדת עברי'}
+        except Exception:
+            pass
+
+        self._rebuild_displaycolumns()
         
         # כותרות
         for col in columns:
@@ -2036,6 +2284,75 @@ class AdminStation:
         self.tree.bind('<Home>', lambda e: _jump_selection(False))
         self.tree.bind('<End>', lambda e: _jump_selection(True))
 
+        # לחיצה ימנית על כותרת הטבלה - בחירת עמודות
+        self.tree.bind('<Button-3>', self._on_header_right_click)
+
+    # -------- column visibility --------
+
+    def _rebuild_displaycolumns(self):
+        """בניית רשימת עמודות מוצגות לפי _hidden_columns."""
+        all_ordered = [
+            'יום הולדת עברי',
+            'מגדר',
+            'ממוצע תיקופים ליום',
+            'סה"כ תיקופים',
+            'תיקוף אחרון',
+            'עדכון אחרון',
+            'נקודות',
+            'הודעה פרטית',
+            "מס' כרטיס",
+            'כיתה',
+            'שם פרטי',
+            'שם משפחה',
+            'תמונה',
+            "מס' סידורי",
+        ]
+        visible = [c for c in all_ordered if c not in self._hidden_columns]
+        try:
+            self.tree['displaycolumns'] = tuple(visible)
+        except Exception:
+            pass
+
+    def _on_header_right_click(self, event):
+        """תפריט לחיצה ימנית על כותרת - בחירת עמודות להצגה."""
+        try:
+            region = self.tree.identify_region(event.x, event.y)
+            if region != 'heading':
+                return
+        except Exception:
+            return
+
+        menu = tk.Menu(self.tree, tearoff=0, font=('Arial', 10))
+        for col_name in self._toggleable_columns:
+            is_visible = col_name not in self._hidden_columns
+            prefix = '\u2714 ' if is_visible else '    '
+            menu.add_command(
+                label=prefix + col_name,
+                command=lambda c=col_name: self._toggle_column(c),
+            )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _toggle_column(self, col_name: str):
+        if col_name in self._hidden_columns:
+            self._hidden_columns.discard(col_name)
+        else:
+            self._hidden_columns.add(col_name)
+        self._rebuild_displaycolumns()
+        # שמירה ברקע כדי לא להקפיא את הממשק
+        import threading
+        def _save():
+            try:
+                val = ','.join(sorted(self._hidden_columns)) if self._hidden_columns else ''
+                self.db.set_setting('admin_hidden_columns', val)
+            except Exception:
+                pass
+        threading.Thread(target=_save, daemon=True).start()
+
+    # -------- end column visibility --------
+
     def _attach_entry_edit_menu(self, entry: tk.Entry):
         """הוספת תפריט קליק ימני וקיצורי עריכה לשדה טקסט בודד שורה (Entry)."""
         menu = tk.Menu(entry, tearoff=0)
@@ -2159,9 +2476,28 @@ class AdminStation:
 
             if student_id:
                 self.has_changes = True
-                self.load_students()
-                self.export_to_excel_now()
-                self.show_status_message("✓ תלמיד נוסף בהצלחה")
+                try:
+                    self.load_students()
+                except Exception as _ls_err:
+                    try:
+                        print(f"[ADMIN] load_students after add_student error: {_ls_err}")
+                    except Exception:
+                        pass
+                # גלילה לתלמיד החדש בטבלה
+                try:
+                    for _item_id, _sid in self.student_ids.items():
+                        if _sid == student_id:
+                            self.tree.selection_set(_item_id)
+                            self.tree.see(_item_id)
+                            self.tree.focus(_item_id)
+                            break
+                except Exception:
+                    pass
+                try:
+                    self.export_to_excel_now()
+                except Exception:
+                    pass
+                self.show_status_message(f"✓ תלמיד נוסף בהצלחה (#{student_id})")
                 dialog.destroy()
             else:
                 messagebox.showerror("שגיאה", "לא ניתן להוסיף תלמיד חדש")
@@ -2204,9 +2540,9 @@ class AdminStation:
 
         dialog = tk.Toplevel(self.root)
         dialog.title("עריכת תלמיד")
-        dialog.geometry("520x420")
+        dialog.geometry("520x540")
         try:
-            dialog.minsize(520, 420)
+            dialog.minsize(520, 540)
         except Exception:
             pass
         dialog.configure(bg='#ecf0f1')
@@ -2232,6 +2568,53 @@ class AdminStation:
         photo_entry = _row(dialog, "מס'/נתיב תמונה:", student.get('photo_number') or "")
         serial_initial = "" if student.get('serial_number') in (None, 0) else str(student.get('serial_number'))
         serial_entry = _row(dialog, "מס' סידורי:", serial_initial)
+
+        # מגדר
+        gender_row = tk.Frame(dialog, bg='#ecf0f1')
+        gender_row.pack(fill=tk.X, pady=4, padx=10)
+        tk.Label(gender_row, text="מגדר:", font=('Arial', 10), bg='#ecf0f1', anchor='e', width=14).pack(side=tk.RIGHT, padx=5)
+        gender_var = tk.StringVar(value=str(student.get('gender') or ''))
+        gender_options = {'': '— לא הוגדר —', 'M': 'בן', 'F': 'בת'}
+        gender_display = {v: k for k, v in gender_options.items()}
+        gender_cb = ttk.Combobox(gender_row, textvariable=tk.StringVar(), values=list(gender_options.values()),
+                                  state='readonly', width=22, justify='right')
+        gender_cb.set(gender_options.get(gender_var.get(), '— לא הוגדר —'))
+        gender_cb.pack(side=tk.RIGHT, padx=5)
+
+        # יום הולדת עברי
+        bday_row = tk.Frame(dialog, bg='#ecf0f1')
+        bday_row.pack(fill=tk.X, pady=4, padx=10)
+        tk.Label(bday_row, text="יום הולדת עברי:", font=('Arial', 10), bg='#ecf0f1', anchor='e', width=14).pack(side=tk.RIGHT, padx=5)
+
+        heb_months_list = [
+            '', 'תשרי', 'חשון', 'כסלו', 'טבת', 'שבט', 'אדר',
+            "אדר ב'", 'ניסן', 'אייר', 'סיון', 'תמוז', 'אב', 'אלול'
+        ]
+        heb_month_to_num = {
+            'תשרי': 7, 'חשון': 8, 'כסלו': 9, 'טבת': 10, 'שבט': 11, 'אדר': 12,
+            "אדר ב'": 13, 'ניסן': 1, 'אייר': 2, 'סיון': 3, 'תמוז': 4, 'אב': 5, 'אלול': 6
+        }
+        heb_num_to_month = {v: k for k, v in heb_month_to_num.items()}
+
+        cur_bday = int(student.get('hebrew_birth_day') or 0)
+        cur_bmonth = int(student.get('hebrew_birth_month') or 0)
+        cur_byear = int(student.get('hebrew_birth_year') or 0)
+
+        _day_display_list = hebrew_day_display_list()
+        _year_display_list = hebrew_year_display_list(5750, 5800)
+
+        bday_day_var = tk.StringVar(value=_day_display_list[cur_bday] if 0 < cur_bday <= 30 else '')
+        bday_month_var = tk.StringVar(value=heb_num_to_month.get(cur_bmonth, ''))
+        bday_year_var = tk.StringVar(value=hebrew_year_display(cur_byear) if cur_byear else '')
+
+        day_cb = ttk.Combobox(bday_row, textvariable=bday_day_var, values=_day_display_list, state='readonly', width=5, justify='center')
+        day_cb.pack(side=tk.RIGHT, padx=2)
+
+        month_cb = ttk.Combobox(bday_row, textvariable=bday_month_var, values=heb_months_list, state='readonly', width=8, justify='center')
+        month_cb.pack(side=tk.RIGHT, padx=2)
+
+        year_cb = ttk.Combobox(bday_row, textvariable=bday_year_var, values=_year_display_list, state='readonly', width=8, justify='center')
+        year_cb.pack(side=tk.RIGHT, padx=2)
 
         btn_frame = tk.Frame(dialog, bg='#ecf0f1')
         btn_frame.pack(pady=10)
@@ -2267,6 +2650,33 @@ class AdminStation:
                     messagebox.showwarning("אזהרה", "מס' סידורי חייב להיות מספר שלם")
                     return
 
+            # מגדר
+            gender_sel = gender_cb.get()
+            gender_val = gender_display.get(gender_sel, '')
+
+            # יום הולדת עברי
+            hb_day = None
+            hb_month = None
+            hb_year = None
+            try:
+                d = bday_day_var.get().strip()
+                if d:
+                    hb_day = hebrew_day_from_display(d) or None
+            except Exception:
+                pass
+            try:
+                m = bday_month_var.get().strip()
+                if m:
+                    hb_month = heb_month_to_num.get(m)
+            except Exception:
+                pass
+            try:
+                y = bday_year_var.get().strip()
+                if y:
+                    hb_year = hebrew_year_from_display(y) or None
+            except Exception:
+                pass
+
             if not self.db.update_student_basic(
                 student_id=student_id,
                 last_name=last_name,
@@ -2276,6 +2686,10 @@ class AdminStation:
                 card_number=card,
                 photo_number=photo,
                 serial_number=serial_number,
+                hebrew_birth_day=hb_day,
+                hebrew_birth_month=hb_month,
+                hebrew_birth_year=hb_year,
+                gender=gender_val or None,
             ):
                 messagebox.showerror("שגיאה", "לא ניתן לעדכן את פרטי התלמיד")
                 return
@@ -2356,6 +2770,11 @@ class AdminStation:
             self.cancel_inline_edit()
         except Exception:
             pass
+        # ניקוי קאש סטטיסטיקות כדי שעדכון אחרון ותיקוף אחרון יתרעננו
+        try:
+            self._swipe_stats_cache = None
+        except Exception:
+            pass
         # שמירת הבחירה הנוכחית
         selected_student_id = None
         if keep_selection:
@@ -2425,21 +2844,35 @@ class AdminStation:
             cache_ts = float(cache.get('ts', 0.0)) if isinstance(cache, dict) else 0.0
             cache_key = cache.get('key') if isinstance(cache, dict) else None
             cur_key = (len(student_ids_list), student_ids_list[0] if student_ids_list else None, student_ids_list[-1] if student_ids_list else None)
-            if isinstance(cache, dict) and cache_key == cur_key and (now - cache_ts) < 60.0:
+            if isinstance(cache, dict) and cache_key == cur_key and (now - cache_ts) < 300.0:
                 swipe_totals = cache.get('swipe_totals') or {}
                 total_days = int(cache.get('total_days') or 0)
+                last_updates = cache.get('last_updates') or {}
+                last_swipes = cache.get('last_swipes') or {}
             else:
                 swipe_totals = self.db.get_swipe_totals_for_students(student_ids_list)
                 total_days = self.db.get_total_school_days()
+                try:
+                    last_updates = self.db.get_last_teacher_updates_for_students(student_ids_list)
+                except Exception:
+                    last_updates = {}
+                try:
+                    last_swipes = self.db.get_last_swipes_for_students(student_ids_list)
+                except Exception:
+                    last_swipes = {}
                 self._swipe_stats_cache = {
                     'ts': now,
                     'key': cur_key,
                     'swipe_totals': swipe_totals,
                     'total_days': total_days,
+                    'last_updates': last_updates,
+                    'last_swipes': last_swipes,
                 }
         except Exception:
             swipe_totals = self.db.get_swipe_totals_for_students(student_ids_list)
             total_days = self.db.get_total_school_days()
+            last_updates = {}
+            last_swipes = {}
 
         item_to_select = None
         
@@ -2470,9 +2903,31 @@ class AdminStation:
             else:
                 avg_swipes = 0
 
+            # עדכון אחרון (מורה/מנהל)
+            upd = last_updates.get(student['id'])
+            last_update_str = _format_relative_dt(upd['created_at'], upd['delta']) if upd else ''
+
+            # תיקוף אחרון
+            last_swipe_str = _format_relative_swipe(last_swipes.get(student['id'], ''))
+
+            # מגדר ויום הולדת עברי
+            _g = str(student.get('gender') or '').strip()
+            gender_disp = {'M': 'בן', 'F': 'בת'}.get(_g, '')
+            _hbd = student.get('hebrew_birth_day') or ''
+            _hbm = student.get('hebrew_birth_month')
+            _hby = student.get('hebrew_birth_year') or ''
+            hb_str = ''
+            if _hbd and _hbm:
+                _hm_names = {1:'ניסן',2:'אייר',3:'סיון',4:'תמוז',5:'אב',6:'אלול',7:'תשרי',8:'חשון',9:'כסלו',10:'טבת',11:'שבט',12:'אדר',13:"אדר ב'"}
+                hb_str = f"{_hbd} {_hm_names.get(int(_hbm), str(_hbm))}"
+                if _hby:
+                    hb_str += f" {_hby}"
+
             item_id = self.tree.insert('', tk.END, values=(
                 student['points'],
                 private_msg,
+                last_update_str,
+                last_swipe_str,
                 student['card_number'] if student['card_number'] else '',
                 str(student.get('class_name', '') or ''),
                 student['id_number'],
@@ -2481,7 +2936,9 @@ class AdminStation:
                 photo_icon,
                 serial_display,
                 total_swipes,
-                avg_swipes
+                avg_swipes,
+                gender_disp,
+                hb_str,
             ), tags=(tag,))
             
             # שמירת מיפוי item_id -> student_id
@@ -2614,12 +3071,20 @@ class AdminStation:
         student_ids_list = [s['id'] for s in students]
         swipe_totals = self.db.get_swipe_totals_for_students(student_ids_list)
         total_days = self.db.get_total_school_days()
+        try:
+            last_updates = self.db.get_last_teacher_updates_for_students(student_ids_list)
+        except Exception:
+            last_updates = {}
+        try:
+            last_swipes = self.db.get_last_swipes_for_students(student_ids_list)
+        except Exception:
+            last_swipes = {}
 
         for idx, student in enumerate(students):
             tag = 'evenrow' if idx % 2 == 0 else 'oddrow'
             
             # קיצור הודעה פרטית אם ארוכה
-            private_msg = student.get('private_message', '') or ''
+            private_msg = _strip_asterisk_annotations(student.get('private_message', '') or '')
             if len(private_msg) > 30:
                 private_msg = private_msg[:27] + '...'
             
@@ -2641,14 +3106,23 @@ class AdminStation:
             else:
                 avg_swipes = 0
 
+            # עדכון אחרון (מורה/מנהל)
+            upd = last_updates.get(student['id'])
+            last_update_str = _format_relative_dt(upd['created_at'], upd['delta']) if upd else ''
+
+            # תיקוף אחרון
+            last_swipe_str = _format_relative_swipe(last_swipes.get(student['id'], ''))
+
             item_id = self.tree.insert('', tk.END, values=(
                 student['points'],
                 private_msg,
+                last_update_str,
+                last_swipe_str,
                 student['card_number'] if student['card_number'] else '',
-                _strip_asterisk_annotations(student.get('class_name', '') or ''),
+                str(student.get('class_name', '') or ''),
                 student['id_number'],
-                _strip_asterisk_annotations(student.get('first_name', '') or ''),
-                _strip_asterisk_annotations(student.get('last_name', '') or ''),
+                str(student.get('first_name', '') or ''),
+                str(student.get('last_name', '') or ''),
                 photo_icon,
                 serial_display,
                 total_swipes,
@@ -2742,11 +3216,11 @@ class AdminStation:
         if selection:
             item = self.tree.item(selection[0])
             values = item['values']
-            # values: (נקודות, הודעה פרטית, מס' כרטיס, כיתה, ת"ז, שם פרטי, שם משפחה)
+            # values: (נקודות, הודעה פרטית, עדכון אחרון, תיקוף אחרון, מס' כרטיס, כיתה, ת"ז, שם פרטי, שם משפחה, תמונה, מס' סידורי, סה"כ תיקופים, ממוצע תיקופים ליום)
             
             # מילוי השדות
             self.card_entry.delete(0, tk.END)
-            self.card_entry.insert(0, values[2])  # מס' כרטיס
+            self.card_entry.insert(0, values[4])  # מס' כרטיס
             
             self.on_update_type_changed(values=values)
             
@@ -3828,47 +4302,177 @@ class AdminStation:
         return self.update_photo()
 
     def import_excel(self):
-        """ייבוא קובץ Excel"""
+        """ייבוא קובץ Excel — בחירה בין ייבוא מלא לסלקטיבי"""
         if not self.ensure_can_modify():
             return
-        # תיקייה התחלתית - שם שקובץ האקסל נמצא
         excel_dir = os.path.dirname(self.excel_path)
         file_path = filedialog.askopenfilename(
             title="בחר קובץ Excel",
             filetypes=[("Excel files", "*.xlsx *.xls")],
             initialdir=excel_dir
         )
-        
         if not file_path:
             return
 
-        # שאלה האם למחוק נתונים קיימים (כולל איפוס תיקופים והיסטוריית נקודות)
+        # דיאלוג בחירת סוג ייבוא
+        mode_dlg = tk.Toplevel(self.root)
+        mode_dlg.title("בחירת סוג ייבוא")
+        mode_dlg.geometry("420x200")
+        mode_dlg.configure(bg='#ecf0f1')
+        mode_dlg.transient(self.root)
+        mode_dlg.grab_set()
+        mode_dlg.resizable(False, False)
+
+        hdr = tk.Frame(mode_dlg, bg='#2c3e50', height=44)
+        hdr.pack(fill=tk.X)
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="כיצד לייבא?", font=('Arial', 13, 'bold'),
+                 bg='#2c3e50', fg='white').pack(pady=10)
+
+        body = tk.Frame(mode_dlg, bg='#ecf0f1')
+        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        result = {'mode': None}
+
+        def _full():
+            result['mode'] = 'full'
+            mode_dlg.destroy()
+
+        def _selective():
+            result['mode'] = 'selective'
+            mode_dlg.destroy()
+
+        tk.Button(body, text="📥 ייבוא מלא\n(דריסת כל הנתונים או עדכון קיימים)",
+                  command=_full, font=('Arial', 10), bg='#27ae60', fg='white',
+                  padx=14, pady=8, justify='center', wraplength=300).pack(fill=tk.X, pady=(4, 6))
+        tk.Button(body, text="✅ ייבוא סלקטיבי\n(בחירת שדות ספציפיים לעדכון)",
+                  command=_selective, font=('Arial', 10), bg='#3498db', fg='white',
+                  padx=14, pady=8, justify='center', wraplength=300).pack(fill=tk.X, pady=(0, 4))
+
+        mode_dlg.wait_window()
+
+        if result['mode'] == 'full':
+            self._import_excel_full(file_path)
+        elif result['mode'] == 'selective':
+            self._import_excel_selective(file_path)
+
+    def _import_excel_full(self, file_path):
+        """ייבוא מלא (המשך הלוגיקה המקורית)"""
         clear = messagebox.askyesno(
             "ייבוא מ-Excel",
-            "האם למחוק את כל התלמידים וההיסטוריה שלהם לפני הייבוא?\n" \
+            "האם למחוק את כל התלמידים וההיסטוריה שלהם לפני הייבוא?\n"
             "הפעולה תאפס גם את כל התיקופים והיסטוריית הנקודות."
         )
-
         try:
             imported, errors = self.importer.import_from_excel(file_path, clear)
-
             if errors:
                 error_msg = "\n".join(errors[:10])
                 messagebox.showwarning(
                     "ייבוא הושלם עם שגיאות",
-                    f"יובאו {imported} תלמידים.\n\nשגיאות:\n{error_msg}"
-                )
+                    f"יובאו {imported} תלמידים.\n\nשגיאות:\n{error_msg}")
             else:
-                messagebox.showinfo(
-                    "הצלחה",
-                    f"יובאו {imported} תלמידים בהצלחה!"
-                )
-
+                messagebox.showinfo("הצלחה", f"יובאו {imported} תלמידים בהצלחה!")
             self.has_changes = True
             self.load_students()
-
         except Exception as e:
             messagebox.showerror("שגיאה", f"שגיאה בייבוא הקובץ:\n{str(e)}")
+
+    def _import_excel_selective(self, file_path):
+        """דיאלוג ייבוא סלקטיבי — בחירת שדות עם checkboxes"""
+        info = self.importer.read_excel_info(file_path)
+        if 'error' in info:
+            messagebox.showerror("שגיאה", f"שגיאה בקריאת הקובץ:\n{info['error']}")
+            return
+        available = info.get('available_fields', [])
+        row_count = info.get('row_count', 0)
+        if not available:
+            messagebox.showinfo("ייבוא סלקטיבי", "לא נמצאו שדות לייבוא בקובץ זה.")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("ייבוא סלקטיבי מ-Excel")
+        dlg.geometry("480x520")
+        dlg.configure(bg='#ecf0f1')
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        hdr = tk.Frame(dlg, bg='#3498db', height=50)
+        hdr.pack(fill=tk.X)
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="ייבוא סלקטיבי", font=('Arial', 13, 'bold'),
+                 bg='#3498db', fg='white').pack(pady=12)
+
+        body = tk.Frame(dlg, bg='#ecf0f1')
+        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        tk.Label(body, text=f"נמצאו {row_count} שורות תקינות בקובץ.",
+                 font=('Arial', 10), bg='#ecf0f1', anchor='e').pack(anchor='e', pady=(0, 4))
+        tk.Label(body, text="זיהוי תלמידים: לפי שם פרטי + שם משפחה.",
+                 font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d', anchor='e').pack(anchor='e', pady=(0, 10))
+
+        tk.Label(body, text="בחר שדות לייבוא (רק שדות אלו יעודכנו):",
+                 font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e').pack(anchor='e', pady=(0, 6))
+
+        cb_vars = {}
+        for display_name, field_key in available:
+            var = tk.BooleanVar(value=True)
+            cb_vars[field_key] = var
+            tk.Checkbutton(body, text=display_name, variable=var,
+                           font=('Arial', 10), bg='#ecf0f1', anchor='e',
+                           activebackground='#ecf0f1').pack(anchor='e', padx=10, pady=1)
+
+        sep = tk.Frame(body, bg='#bdc3c8', height=1)
+        sep.pack(fill=tk.X, pady=10)
+
+        add_new_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(body, text="הוסף תלמידים חדשים שלא נמצאו במערכת",
+                       variable=add_new_var, font=('Arial', 10), bg='#ecf0f1',
+                       anchor='e', activebackground='#ecf0f1').pack(anchor='e', padx=10, pady=2)
+
+        # כפתורי בחר/בטל הכל
+        sel_frame = tk.Frame(body, bg='#ecf0f1')
+        sel_frame.pack(anchor='e', pady=(6, 0))
+        tk.Button(sel_frame, text="בחר הכל",
+                  command=lambda: [v.set(True) for v in cb_vars.values()],
+                  font=('Arial', 9), bg='#bdc3c7', padx=8, pady=2).pack(side=tk.RIGHT, padx=3)
+        tk.Button(sel_frame, text="בטל הכל",
+                  command=lambda: [v.set(False) for v in cb_vars.values()],
+                  font=('Arial', 9), bg='#bdc3c7', padx=8, pady=2).pack(side=tk.RIGHT, padx=3)
+
+        btn_frame = tk.Frame(dlg, bg='#ecf0f1')
+        btn_frame.pack(fill=tk.X, padx=20, pady=15)
+
+        def _do_import():
+            selected = {k for k, v in cb_vars.items() if v.get()}
+            if not selected:
+                messagebox.showwarning("ייבוא סלקטיבי", "יש לבחור לפחות שדה אחד.")
+                return
+            dlg.destroy()
+            try:
+                upd, add, skip, errs = self.importer.selective_import(
+                    file_path, selected, add_new=add_new_var.get())
+                parts = []
+                if upd: parts.append(f"עודכנו: {upd}")
+                if add: parts.append(f"נוספו: {add}")
+                if skip: parts.append(f"דולגו (לא נמצאו): {skip}")
+                summary = "\n".join(parts) if parts else "לא בוצעו שינויים."
+                if errs:
+                    summary += "\n\nשגיאות:\n" + "\n".join(errs[:10])
+                    messagebox.showwarning("ייבוא סלקטיבי הושלם", summary)
+                else:
+                    messagebox.showinfo("הצלחה", summary)
+                self.has_changes = True
+                self.load_students()
+            except Exception as e:
+                messagebox.showerror("שגיאה", f"שגיאה בייבוא סלקטיבי:\n{str(e)}")
+
+        tk.Button(btn_frame, text="📥 ייבא", command=_do_import,
+                  font=('Arial', 11, 'bold'), bg='#27ae60', fg='white',
+                  padx=20, pady=8).pack(side=tk.LEFT, padx=8)
+        tk.Button(btn_frame, text="✖ ביטול", command=dlg.destroy,
+                  font=('Arial', 11), bg='#95a5a6', fg='white',
+                  padx=20, pady=8).pack(side=tk.LEFT, padx=8)
     
     def ask_export_options(self):
         return self._ask_export_options_impl()
@@ -4682,8 +5286,6 @@ class AdminStation:
     
     def export_excel(self):
         """ייצוא לקובץ Excel – תלמידים רגיל או נוכחות (בונוס זמנים) מאותו חלון."""
-        if not self.ensure_can_modify():
-            return
 
         # הגבלת מורה – כיתות מורשות (לכל סוגי הייצוא)
         try:
@@ -4930,11 +5532,12 @@ class AdminStation:
 
                     try:
                         from openpyxl import load_workbook
-                        from excel_styling import apply_rtl_and_alternating_colors
+                        from excel_styling import apply_rtl_and_alternating_colors, add_class_page_breaks_and_freeze
                         wb = load_workbook(file_path)
                         for ws in wb.worksheets:
                             try:
                                 apply_rtl_and_alternating_colors(ws, has_header=True)
+                                add_class_page_breaks_and_freeze(ws, has_header=True)
                             except Exception:
                                 pass
                         wb.save(file_path)
@@ -5020,10 +5623,11 @@ class AdminStation:
                     df.to_excel(file_path, index=False)
                     try:
                         from openpyxl import load_workbook
-                        from excel_styling import apply_rtl_and_alternating_colors
+                        from excel_styling import apply_rtl_and_alternating_colors, add_class_page_breaks_and_freeze
                         wb = load_workbook(file_path)
                         ws = wb.active
                         apply_rtl_and_alternating_colors(ws, has_header=True)
+                        add_class_page_breaks_and_freeze(ws, has_header=True)
                         wb.save(file_path)
                     except Exception:
                         pass
@@ -5156,9 +5760,16 @@ class AdminStation:
             scrollbar_x.pack(side=tk.BOTTOM, fill=tk.X)
             tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+            # גלילה לעמודה הימנית (RTL) — עם דיליי כדי שה-Treeview יסיים לרנדר
+            def _scroll_to_right():
+                try:
+                    tree.xview_moveto(1.0)
+                except Exception:
+                    pass
             try:
                 preview_dialog.update_idletasks()
                 tree.xview_moveto(1.0)
+                preview_dialog.after(150, _scroll_to_right)
             except Exception:
                 pass
             
@@ -5654,8 +6265,6 @@ class AdminStation:
             is_admin = bool(int(t.get('is_admin', 0) or 0) == 1)
         except Exception:
             is_admin = False
-        if is_admin:
-            return
 
         if not getattr(self, '_teacher_stats_frame', None):
             return
@@ -5667,11 +6276,12 @@ class AdminStation:
             teacher_id = 0
 
         classes = []
-        try:
-            classes = self.teacher_classes_cache or (self.db.get_teacher_classes(teacher_id) if teacher_id else [])
-        except Exception:
-            classes = []
-        classes = [str(c).strip() for c in (classes or []) if str(c).strip()]
+        if not is_admin:
+            try:
+                classes = self.teacher_classes_cache or (self.db.get_teacher_classes(teacher_id) if teacher_id else [])
+            except Exception:
+                classes = []
+            classes = [str(c).strip() for c in (classes or []) if str(c).strip()]
 
         # Get ALL classes stats for overall/min/max calculation
         try:
@@ -5692,9 +6302,22 @@ class AdminStation:
             except Exception:
                 tp = 0
             avg = (float(tp) / float(sc)) if sc > 0 else 0.0
-            all_per_class.append((cname, avg))
+            all_per_class.append((cname, avg, sc, tp))
 
-        # overall average = average of ALL class averages (unweighted)
+        # סינון נתוני כיתות — מורה רואה רק את הכיתות שלו
+        if is_admin:
+            visible_per_class = list(all_per_class)
+        else:
+            teacher_class_set = set([str(c).strip() for c in (classes or []) if str(c).strip()])
+            visible_per_class = [x for x in all_per_class if x[0] in teacher_class_set] if teacher_class_set else []
+
+        # שמירת נתוני כיתות לפירוט ב-dropdown (מסונן לפי הרשאות)
+        try:
+            self._class_details_per_class_data = list(visible_per_class)
+        except Exception:
+            pass
+
+        # overall average = average of ALL class averages (unweighted) — always global
         overall_avg = 0.0
         if all_per_class:
             try:
@@ -5702,49 +6325,50 @@ class AdminStation:
             except Exception:
                 overall_avg = 0.0
 
-        # Find highest and lowest from ALL classes
+        # Find highest and lowest — from ALL classes (global stats)
         best_avg = None
         worst_avg = None
-        for cname, avg in all_per_class:
+        for cname, avg, _sc, _tp in all_per_class:
             if best_avg is None or avg > best_avg:
                 best_avg = avg
             if worst_avg is None or avg < worst_avg:
                 worst_avg = avg
 
-        # Get teacher's subscribed classes stats
-        try:
-            if teacher_id:
-                teacher_rows = self.db.get_teacher_classes_stats(teacher_id) or []
-            else:
-                teacher_rows = []
-        except Exception:
-            teacher_rows = []
-
-        # Show only subscribed classes in "הכיתה שלך"
-        subscribed = set([str(c).strip() for c in (classes or []) if str(c).strip()])
+        # "הכיתות שלך" — only for teachers
         your_parts = []
-        for r in (teacher_rows or []):
-            cname = str(r.get('class_name') or '').strip()
-            try:
-                sc = int(r.get('students_count') or 0)
-            except Exception:
-                sc = 0
-            try:
-                tp = int(r.get('total_points') or 0)
-            except Exception:
-                tp = 0
-            avg = (float(tp) / float(sc)) if sc > 0 else 0.0
-            if cname and cname in subscribed:
-                your_parts.append(f"{cname}: {int(round(avg))} נק׳")
-        
-        your_text_full = ' | '.join(your_parts) if your_parts else '(אין כיתות)'
+        your_text = ''
         your_text_truncated = False
-        your_text = your_text_full
-        
-        # Truncate only if too long (estimate ~150 chars for reasonable display)
-        if len(your_text) > 150:
-            your_text = your_text[:147] + '...'
-            your_text_truncated = True
+        if not is_admin:
+            # Get teacher's subscribed classes stats
+            try:
+                if teacher_id:
+                    teacher_rows = self.db.get_teacher_classes_stats(teacher_id) or []
+                else:
+                    teacher_rows = []
+            except Exception:
+                teacher_rows = []
+
+            subscribed = set([str(c).strip() for c in (classes or []) if str(c).strip()])
+            for r in (teacher_rows or []):
+                cname = str(r.get('class_name') or '').strip()
+                try:
+                    sc = int(r.get('students_count') or 0)
+                except Exception:
+                    sc = 0
+                try:
+                    tp = int(r.get('total_points') or 0)
+                except Exception:
+                    tp = 0
+                avg = (float(tp) / float(sc)) if sc > 0 else 0.0
+                if cname and cname in subscribed:
+                    your_parts.append(f"{cname}: {int(round(avg))} נק׳")
+            
+            your_text_full = ' | '.join(your_parts) if your_parts else '(אין כיתות)'
+            your_text = your_text_full
+            
+            if len(your_text) > 150:
+                your_text = your_text[:147] + '...'
+                your_text_truncated = True
 
         try:
             if self._teacher_stats_overall_label is not None:
@@ -5800,6 +6424,154 @@ class AdminStation:
                     self._teacher_filter_button.pack_forget()
         except Exception:
             pass
+
+    def _toggle_class_details_dropdown(self):
+        """פתיחה/סגירה של חלונית פירוט כיתות מתחת לכפתור ▼"""
+        try:
+            if getattr(self, '_class_details_dropdown_win', None) is not None:
+                try:
+                    self._class_details_dropdown_win.destroy()
+                except Exception:
+                    pass
+                self._class_details_dropdown_win = None
+                try:
+                    self._teacher_stats_dropdown_btn.config(text='▼')
+                except Exception:
+                    pass
+                return
+        except Exception:
+            pass
+
+        data = getattr(self, '_class_details_per_class_data', []) or []
+        if not data:
+            return
+
+        # מיון לפי שם כיתה
+        try:
+            data_sorted = sorted(data, key=lambda x: str(x[0] or ''))
+        except Exception:
+            data_sorted = list(data)
+
+        # חישוב מינ' ומקס' לכל כיתה (כאן הממוצע הוא avg, מינ' ומקס' הם מבין הכיתות)
+        avgs = [x[1] for x in data_sorted if x[2] > 0]
+        global_min = int(round(min(avgs))) if avgs else 0
+        global_max = int(round(max(avgs))) if avgs else 0
+
+        btn = getattr(self, '_teacher_stats_dropdown_btn', None)
+        if btn is None:
+            return
+
+        # מיקום החלונית מתחת לכפתור
+        try:
+            bx = btn.winfo_rootx()
+            by = btn.winfo_rooty() + btn.winfo_height()
+        except Exception:
+            bx, by = 100, 100
+
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.configure(bg='#ffffff', highlightbackground='#bdc3c7', highlightthickness=1)
+        win.attributes('-topmost', True)
+
+        # כותרת
+        header_frame = tk.Frame(win, bg='#2c3e50')
+        header_frame.pack(fill=tk.X)
+        for col_text in ['כיתה', 'תלמידים', 'ממוצע נק׳']:
+            tk.Label(
+                header_frame,
+                text=fix_rtl_text(col_text),
+                font=('Arial', 9, 'bold'),
+                bg='#2c3e50',
+                fg='white',
+                width=12,
+                anchor='center'
+            ).pack(side=tk.RIGHT, padx=1, pady=2)
+
+        # שורות נתונים
+        for i, item in enumerate(data_sorted):
+            cname = str(item[0] or '').strip()
+            avg_val = item[1]
+            sc = item[2]
+            row_bg = '#f7f9fc' if i % 2 == 0 else '#ffffff'
+
+            row_frame = tk.Frame(win, bg=row_bg)
+            row_frame.pack(fill=tk.X)
+
+            # צבע ממוצע: ירוק אם גבוה, אדום אם נמוך
+            avg_int = int(round(avg_val))
+            if avgs and avg_val >= global_max:
+                avg_fg = '#27ae60'
+            elif avgs and avg_val <= global_min:
+                avg_fg = '#e74c3c'
+            else:
+                avg_fg = '#2c3e50'
+
+            tk.Label(
+                row_frame, text=fix_rtl_text(cname or '-'),
+                font=('Arial', 9), bg=row_bg, fg='#2c3e50',
+                width=12, anchor='center'
+            ).pack(side=tk.RIGHT, padx=1, pady=1)
+            tk.Label(
+                row_frame, text=str(sc),
+                font=('Arial', 9), bg=row_bg, fg='#7f8c8d',
+                width=12, anchor='center'
+            ).pack(side=tk.RIGHT, padx=1, pady=1)
+            tk.Label(
+                row_frame, text=str(avg_int),
+                font=('Arial', 9, 'bold'), bg=row_bg, fg=avg_fg,
+                width=12, anchor='center'
+            ).pack(side=tk.RIGHT, padx=1, pady=1)
+
+        # שורת סיכום
+        total_students = sum(x[2] for x in data_sorted)
+        overall_avg = (sum(x[1] for x in data_sorted) / len(data_sorted)) if data_sorted else 0
+        sum_frame = tk.Frame(win, bg='#ecf0f1')
+        sum_frame.pack(fill=tk.X)
+        tk.Label(
+            sum_frame, text=fix_rtl_text('סה״כ'),
+            font=('Arial', 9, 'bold'), bg='#ecf0f1', fg='#2c3e50',
+            width=12, anchor='center'
+        ).pack(side=tk.RIGHT, padx=1, pady=2)
+        tk.Label(
+            sum_frame, text=str(total_students),
+            font=('Arial', 9, 'bold'), bg='#ecf0f1', fg='#2c3e50',
+            width=12, anchor='center'
+        ).pack(side=tk.RIGHT, padx=1, pady=2)
+        tk.Label(
+            sum_frame, text=str(int(round(overall_avg))),
+            font=('Arial', 9, 'bold'), bg='#ecf0f1', fg='#2980b9',
+            width=12, anchor='center'
+        ).pack(side=tk.RIGHT, padx=1, pady=2)
+
+        win.update_idletasks()
+        w = win.winfo_reqwidth()
+        h = win.winfo_reqheight()
+
+        # מיקום — יישור ימני לכפתור, כלפי מטה
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = max(0, min(bx, screen_w - w))
+        y = min(by, screen_h - h)
+        win.geometry(f'+{x}+{y}')
+
+        self._class_details_dropdown_win = win
+        try:
+            self._teacher_stats_dropdown_btn.config(text='▲')
+        except Exception:
+            pass
+
+        # סגירה בלחיצה מחוץ לחלונית
+        def _on_focus_out(event):
+            try:
+                if self._class_details_dropdown_win is not None:
+                    self._class_details_dropdown_win.destroy()
+                    self._class_details_dropdown_win = None
+                    self._teacher_stats_dropdown_btn.config(text='▼')
+            except Exception:
+                pass
+
+        win.bind('<FocusOut>', _on_focus_out)
+        win.focus_set()
 
     def open_teacher_class_filter_dialog(self):
         """פתיחת חלון סינון כיתות למורה"""
@@ -7288,11 +8060,12 @@ class AdminStation:
         try:
             import messages_manager
 
-            # פתיחת מנהל ההודעות כחלון משנה בתוך אותה ריצה
+            # פתיחת מנהל הודעות כחלון משנה בתוך אותו ריצה
             dialog = tk.Toplevel(self.root)
             dialog.transient(self.root)
             dialog.grab_set()
-            messages_manager.MessagesManager(dialog)
+            # העברת ה-DB הקיים ל-MessagesManager
+            messages_manager.MessagesManager(dialog, self.db)
 
         except Exception as e:
             messagebox.showerror("שגיאה", f"לא ניתן לפתוח מנהל הודעות:\n{e}")
@@ -8589,6 +9362,7 @@ class AdminStation:
         except Exception:
             pass
         dialog.configure(bg='#ecf0f1')
+        dialog.overrideredirect(False)  # מפורשות מאפשר מזעור
         dialog.transient(self.root)
         dialog.grab_set()
         dialog.resizable(True, True)
@@ -10264,6 +11038,10 @@ class AdminStation:
                 reason = str(getattr(self.db, 'emergency_reason', '') or '').strip().lower()
                 if reason == 'readonly':
                     system_mode_status_text = 'חירום (DB לקריאה בלבד)'
+                elif reason == 'locked':
+                    system_mode_status_text = 'חירום (DB נעול)'
+                elif reason == 'unreachable':
+                    system_mode_status_text = 'חירום (DB לא נגיש)'
         except Exception:
             pass
 
@@ -10278,6 +11056,7 @@ class AdminStation:
             dialog2 = tk.Toplevel(self.root)
             dialog2.title('הגדרות ראשוניות')
             dialog2.configure(bg='#ecf0f1')
+            dialog2.overrideredirect(False)  # מפורשות מאפשר מזעור
             dialog2.transient(self.root)
             dialog2.grab_set()
             nonlocal license_status_label
@@ -13381,8 +14160,8 @@ class AdminStation:
         list_frame = tk.Frame(products_tab, bg='#ecf0f1')
         list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        columns = ('type', 'active', 'name', 'display_name', 'category', 'price', 'stock', 'image')
-        tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=16)
+        columns = ('type', 'active', 'name', 'display_name', 'category', 'price', 'stock', 'consolidated', 'image')
+        tree = ttk.Treeview(list_frame, columns=columns, show='headings', height=16, selectmode='extended')
         tree.heading('type', text='סוג')
         tree.heading('active', text='פעיל')
         tree.heading('name', text='שם פנימי')
@@ -13390,6 +14169,7 @@ class AdminStation:
         tree.heading('category', text='קטגוריה')
         tree.heading('price', text='מחיר')
         tree.heading('stock', text='מלאי')
+        tree.heading('consolidated', text='שובר מרוכז')
         tree.heading('image', text='תמונה')
 
         tree.column('type', width=80, anchor='center')
@@ -13399,7 +14179,8 @@ class AdminStation:
         tree.column('category', width=140, anchor='e')
         tree.column('price', width=80, anchor='center')
         tree.column('stock', width=90, anchor='center')
-        tree.column('image', width=220, anchor='e')
+        tree.column('consolidated', width=90, anchor='center')
+        tree.column('image', width=70, anchor='center')
 
         tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
@@ -13418,6 +14199,22 @@ class AdminStation:
                     except Exception:
                         return 0
             return 0
+
+        def _get_selected_product_ids() -> list:
+            """מחזיר רשימת כל ה-IDs שנבחרו (בחירה מרובה)."""
+            sel = tree.selection()
+            if not sel:
+                return []
+            pids = []
+            for iid in sel:
+                tags = tree.item(iid).get('tags') or ()
+                for t in tags:
+                    if isinstance(t, str) and t.startswith('pid:'):
+                        try:
+                            pids.append(int(t.split(':', 1)[1]))
+                        except Exception:
+                            pass
+            return pids
 
         def _load_rows(select_pid: int = 0):
             try:
@@ -13441,11 +14238,25 @@ class AdminStation:
                 name = str(r.get('name') or '').strip()
                 display_name = str(r.get('display_name') or '').strip()
                 cat_name = str(r.get('category_name') or '').strip()
-                price = str(int(r.get('price_points', 0) or 0))
+                # Check if product has variants — show ~ marker instead of base price
+                has_variants = False
+                try:
+                    pvars = self.db.get_product_variants(pid, active_only=True) or []
+                    if pvars:
+                        has_variants = True
+                except Exception:
+                    pvars = []
+                if has_variants:
+                    prices = [int(v.get('price_points', 0) or 0) for v in pvars]
+                    mn, mx = min(prices), max(prices)
+                    price = f"~{mn}-{mx}" if mn != mx else f"~{mn}"
+                else:
+                    price = str(int(r.get('price_points', 0) or 0))
                 stock_val = r.get('stock_qty', None)
                 stock = '∞' if stock_val is None else str(stock_val)
                 img = str(r.get('image_path') or '').strip()
                 img_display = '🖼' if img else ''
+                consolidated_txt = '✓' if int(r.get('consolidated_voucher', 0) or 0) == 1 else ''
 
                 kind = '🛍 מוצר'
                 try:
@@ -13455,7 +14266,7 @@ class AdminStation:
                 except Exception:
                     kind = '🛍 מוצר'
 
-                iid = tree.insert('', 'end', values=(kind, active_txt, name, display_name, cat_name, price, stock, img_display), tags=(f"pid:{pid}",))
+                iid = tree.insert('', 'end', values=(kind, active_txt, name, display_name, cat_name, price, stock, consolidated_txt, img_display), tags=(f"pid:{pid}",))
                 if select_pid and pid == int(select_pid):
                     to_select = iid
             if to_select:
@@ -13547,8 +14358,10 @@ class AdminStation:
             tk.Button(rimg, text='בחר…', command=_browse_img, font=('Arial', 9, 'bold'), bg='#3498db', fg='white', padx=10, pady=3).pack(side=tk.RIGHT, padx=6)
 
             r2 = _row('מחיר נקודות:')
-            tk.Entry(r2, textvariable=price_var, font=('Arial', 11), justify='right', width=10).pack(side=tk.RIGHT, padx=6)
-            tk.Label(r2, text=fix_rtl_text('(ניתן לרשום 0 עבור זיכוי)'), bg='#ecf0f1', fg='#7f8c8d', font=('Arial', 9)).pack(side=tk.RIGHT, padx=6)
+            price_entry = tk.Entry(r2, textvariable=price_var, font=('Arial', 11), justify='right', width=10)
+            price_entry.pack(side=tk.RIGHT, padx=6)
+            price_hint_label = tk.Label(r2, text=fix_rtl_text('(ניתן לרשום 0 עבור זיכוי)'), bg='#ecf0f1', fg='#7f8c8d', font=('Arial', 9))
+            price_hint_label.pack(side=tk.RIGHT, padx=6)
 
             r3 = _row('מלאי:')
             tk.Entry(r3, textvariable=stock_var, font=('Arial', 11), justify='right', width=10).pack(side=tk.RIGHT, padx=6)
@@ -13556,6 +14369,16 @@ class AdminStation:
 
             r4 = _row('דגלים:')
             tk.Checkbutton(r4, text=fix_rtl_text('פעיל'), variable=active_var, bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
+
+            # שדה שובר מרוכז
+            r5 = _row('שובר מרוכז:')
+            consolidated_voucher_var = tk.IntVar(value=int(existing.get('consolidated_voucher', 0) or 0))
+            tk.Checkbutton(r5, text=fix_rtl_text('מוצר זה הוא שובר מרוכז'), variable=consolidated_voucher_var, bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
+
+            # שדה שובר לכל יחידה
+            r5b = _row('שובר ליחידה:')
+            voucher_per_unit_var = tk.IntVar(value=int(existing.get('voucher_per_unit', 0) or 0))
+            tk.Checkbutton(r5b, text=fix_rtl_text('הדפסת שובר נפרד לכל יחידה שנרכשה'), variable=voucher_per_unit_var, bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
 
             rules_box = tk.LabelFrame(body, text=fix_rtl_text('זמינות/הגבלות (אופציונלי)'), bg='#ecf0f1', font=('Arial', 10, 'bold'))
             rules_box.pack(fill=tk.X, pady=(10, 0), anchor='e')
@@ -13733,6 +14556,23 @@ class AdminStation:
 
             variants_entries = []  # list of {'frame','name_var','price_var','stock_var'}
 
+            def _update_price_entry_state():
+                """Grey out global price when variants exist."""
+                try:
+                    has_variants = len(variants_entries) > 0
+                    if has_variants:
+                        price_entry.configure(state='normal')
+                        price_var.set('~')
+                        price_entry.configure(state='disabled')
+                        price_hint_label.configure(text=fix_rtl_text('(מחיר נקבע בוריאציות)'))
+                    else:
+                        price_entry.configure(state='normal')
+                        if str(price_var.get() or '').strip() == '~':
+                            price_var.set('0')
+                        price_hint_label.configure(text=fix_rtl_text('(ניתן לרשום 0 עבור זיכוי)'))
+                except Exception:
+                    pass
+
             def _add_variant_row(v: dict = None):
                 v = v or {}
                 rowf = tk.Frame(variants_rows_frame, bg='#ecf0f1')
@@ -13756,10 +14596,12 @@ class AdminStation:
                         variants_entries[:] = [x for x in variants_entries if x.get('frame') is not rowf]
                     except Exception:
                         pass
+                    _update_price_entry_state()
 
                 tk.Button(rowf, text='✖', command=_remove, font=('Arial', 9, 'bold'), bg='#95a5a6', fg='white', padx=8, pady=2).pack(side=tk.RIGHT, padx=(0, 4))
 
                 variants_entries.append({'frame': rowf, 'name_var': namev, 'price_var': pricev, 'stock_var': stockv})
+                _update_price_entry_state()
 
             # טען וריאציות קיימות בעריכה
             try:
@@ -13788,7 +14630,8 @@ class AdminStation:
                 except Exception:
                     pass
                 try:
-                    price = int(str(price_var.get() or '0').strip())
+                    price_raw = str(price_var.get() or '0').strip()
+                    price = 0 if price_raw == '~' else int(price_raw)
                 except Exception:
                     price = 0
                 sraw = str(stock_var.get() or '').strip()
@@ -13800,6 +14643,18 @@ class AdminStation:
                     except Exception:
                         messagebox.showerror('שגיאה', 'מלאי חייב להיות מספר או ריק')
                         return
+
+                # שדה שובר מרוכז
+                try:
+                    consolidated_voucher = int(consolidated_voucher_var.get() or 0)
+                except Exception:
+                    consolidated_voucher = 0
+
+                # שדה שובר לכל יחידה
+                try:
+                    voucher_per_unit = int(voucher_per_unit_var.get() or 0)
+                except Exception:
+                    voucher_per_unit = 0
 
                 variants_out = []
                 try:
@@ -13835,6 +14690,8 @@ class AdminStation:
                     'stock_qty': stock,
                     'deduct_points': 1,
                     'is_active': 1 if int(active_var.get() or 0) == 1 else 0,
+                    'consolidated_voucher': consolidated_voucher,
+                    'voucher_per_unit': voucher_per_unit,
                     'allowed_classes': str(allowed_classes_var.get() or '').strip(),
                     'min_points_required': (int(str(min_points_var.get() or '0').strip() or '0') if str(min_points_var.get() or '').strip() else 0),
                     'max_per_student': (int(str(mps_var.get()).strip()) if str(mps_var.get() or '').strip() else None),
@@ -13898,6 +14755,8 @@ class AdminStation:
                     price_override_points=None,
                     price_override_discount_pct=data.get('price_override_discount_pct', None),
                     is_active=data['is_active'],
+                    consolidated_voucher=data.get('consolidated_voucher', 0),
+                    voucher_per_unit=data.get('voucher_per_unit', 0),
                 )
             except Exception as e:
                 messagebox.showerror('שגיאה', str(e))
@@ -14004,6 +14863,7 @@ class AdminStation:
             qp_custom_var = tk.StringVar(value=str((existing or {}).get('queue_priority_custom') or ''))
             allowed_classes_var = tk.StringVar(value=str((existing or {}).get('allowed_classes') or ''))
             min_points_var = tk.StringVar(value=str(int((existing or {}).get('min_points_required', 0) or 0)))
+            class_grouping_var = tk.IntVar(value=1 if int((existing or {}).get('class_grouping', 0) or 0) == 1 else 0)
 
             dates_existing = []
             try:
@@ -14220,6 +15080,10 @@ class AdminStation:
 
             r5 = _row('שיבוץ אוטומטי:')
             tk.Checkbutton(r5, text=fix_rtl_text('ברירת מחדל לשיבוץ אוטומטי'), variable=auto_var, bg='#ecf0f1').pack(side=tk.RIGHT, padx=6)
+
+            r5b = _row('תור כיתתי:')
+            tk.Checkbutton(r5b, text=fix_rtl_text('קיבוץ תלמידים מאותה כיתה לאותו סלוט'), variable=class_grouping_var, bg='#ecf0f1').pack(side=tk.RIGHT, padx=6)
+            tk.Label(r5b, text=fix_rtl_text('(אם אין מספיק לכיתה שלמה — ערבוב)'), bg='#ecf0f1', fg='#7f8c8d', font=('Arial', 9)).pack(side=tk.RIGHT, padx=6)
 
             r6 = _row('מקסימום לתלמיד:')
             tk.Entry(r6, textvariable=mps_var, font=('Arial', 11), justify='right', width=10).pack(side=tk.RIGHT, padx=6)
@@ -14772,6 +15636,8 @@ class AdminStation:
                             price_override_points=None,
                             price_override_discount_pct=po_pct,
                             is_active=int(cur_active),
+                            consolidated_voucher=int(cur_prod.get('consolidated_voucher', 0) or 0),
+                            voucher_per_unit=int(cur_prod.get('voucher_per_unit', 0) or 0),
                         )
                         if not ok_prod:
                             messagebox.showwarning('אזהרה', 'לא נשמרו שינויים במוצר (קטגוריה/תמונה). נסה שוב.', parent=dlg)
@@ -14913,6 +15779,7 @@ class AdminStation:
                         queue_priority_custom=str(qp_custom_var.get() or '').strip(),
                         allowed_classes=allowed_cls,
                         min_points_required=min_pts,
+                        class_grouping=int(class_grouping_var.get() or 0),
                         is_active=int(is_active),
                     )
                     self.db.set_scheduled_service_dates(service_id=int(sid), dates_greg=dates_list)
@@ -15271,6 +16138,8 @@ class AdminStation:
                     price_override_points=None,
                     price_override_discount_pct=data.get('price_override_discount_pct', None),
                     is_active=data['is_active'],
+                    consolidated_voucher=data.get('consolidated_voucher', 0),
+                    voucher_per_unit=data.get('voucher_per_unit', 0),
                 )
             except Exception as e:
                 messagebox.showerror('שגיאה', str(e))
@@ -15283,17 +16152,24 @@ class AdminStation:
                 _load_rows(select_pid=pid)
 
         def delete_product():
-            pid = _get_selected_product_id()
-            if not pid:
-                messagebox.showwarning('אזהרה', 'בחר מוצר למחיקה')
+            pids = _get_selected_product_ids()
+            if not pids:
+                messagebox.showwarning('אזהרה', 'בחר מוצר אחד או יותר למחיקה')
                 return
-            if not messagebox.askyesno('מחיקה', 'למחוק את המוצר שנבחר?'):
+            if len(pids) == 1:
+                msg = 'למחוק את המוצר שנבחר?'
+            else:
+                msg = f'למחוק {len(pids)} מוצרים שנבחרו?'
+            if not messagebox.askyesno('מחיקה', msg):
                 return
-            try:
-                self.db.delete_product(pid)
-            except Exception as e:
-                messagebox.showerror('שגיאה', str(e))
-                return
+            errors = []
+            for pid in pids:
+                try:
+                    self.db.delete_product(pid)
+                except Exception as e:
+                    errors.append(f'ID {pid}: {e}')
+            if errors:
+                messagebox.showerror('שגיאות', f'נמחקו {len(pids)-len(errors)} מוצרים.\nשגיאות:\n' + '\n'.join(errors[:5]))
             _load_rows()
 
         def toggle_active():
@@ -15319,6 +16195,8 @@ class AdminStation:
                     stock_qty=r.get('stock_qty', None),
                     deduct_points=int(r.get('deduct_points', 1) or 0),
                     is_active=int(new_active),
+                    consolidated_voucher=int(r.get('consolidated_voucher', 0) or 0),
+                    voucher_per_unit=int(r.get('voucher_per_unit', 0) or 0),
                 )
             except Exception as e:
                 messagebox.showerror('שגיאה', str(e))
@@ -15526,18 +16404,27 @@ class AdminStation:
         tk.Button(btns, text='⬇ מטה', command=lambda: _move_selected(1), font=('Arial', 10, 'bold'), bg='#7f8c8d', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
         tk.Button(btns, text='📤 ייצוא רכישות', command=_export_purchases_log, font=('Arial', 10, 'bold'), bg='#2980b9', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
         tk.Button(btns, text='✅ פעיל/כבוי', command=toggle_active, font=('Arial', 10, 'bold'), bg='#16a085', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
-        tk.Button(btns, text='🗑 מחק', command=delete_product, font=('Arial', 10, 'bold'), bg='#e74c3c', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
+        tk.Button(btns, text='🗑 מחק נבחרים', command=delete_product, font=('Arial', 10, 'bold'), bg='#e74c3c', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
+        tk.Button(btns, text='☑ בחר הכל', command=lambda: tree.selection_set(tree.get_children()), font=('Arial', 10, 'bold'), bg='#8e44ad', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
 
         # Categories tab (list only; CRUD buttons added separately)
         cat_list_frame = tk.Frame(categories_tab, bg='#ecf0f1')
         cat_list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        cat_cols = ('active', 'name')
+        cat_cols = ('active', 'catalog', 'name', 'mps', 'mpc', 'minpts')
         cat_tree = ttk.Treeview(cat_list_frame, columns=cat_cols, show='headings', height=16)
         cat_tree.heading('active', text='פעיל')
+        cat_tree.heading('catalog', text='קטלוג')
         cat_tree.heading('name', text='שם קטגוריה')
-        cat_tree.column('active', width=70, anchor='center')
-        cat_tree.column('name', width=360, anchor='e')
+        cat_tree.heading('mps', text='מקס/תלמיד')
+        cat_tree.heading('mpc', text='מקס/כיתה')
+        cat_tree.heading('minpts', text='סף נקודות')
+        cat_tree.column('active', width=55, anchor='center')
+        cat_tree.column('catalog', width=55, anchor='center')
+        cat_tree.column('name', width=220, anchor='e')
+        cat_tree.column('mps', width=80, anchor='center')
+        cat_tree.column('mpc', width=80, anchor='center')
+        cat_tree.column('minpts', width=80, anchor='center')
         cat_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         cat_sb = ttk.Scrollbar(cat_list_frame, orient=tk.VERTICAL, command=cat_tree.yview)
         cat_sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -15561,8 +16448,15 @@ class AdminStation:
                 if not cid:
                     continue
                 active_txt = 'כן' if int(r.get('is_active', 1) or 0) == 1 else 'לא'
+                catalog_txt = 'כן' if int(r.get('show_in_catalog', 1) or 0) == 1 else 'לא'
                 name = str(r.get('name') or '').strip()
-                iid = cat_tree.insert('', 'end', values=(active_txt, name), tags=(f"cid:{cid}",))
+                _mps = r.get('max_items_per_student')
+                mps_txt = str(_mps) if _mps is not None and str(_mps).strip() != '' else '∞'
+                _mpc = r.get('max_items_per_class')
+                mpc_txt = str(_mpc) if _mpc is not None and str(_mpc).strip() != '' else '∞'
+                _minp = int(r.get('min_points_required', 0) or 0)
+                minp_txt = str(_minp) if _minp > 0 else '-'
+                iid = cat_tree.insert('', 'end', values=(active_txt, catalog_txt, name, mps_txt, mpc_txt, minp_txt), tags=(f"cid:{cid}",))
                 if select_cid and cid == int(select_cid):
                     to_select = iid
             if to_select:
@@ -15603,17 +16497,86 @@ class AdminStation:
                     continue
             return {}
 
+        def _open_category_dialog(existing: dict = None):
+            existing = existing or {}
+            cdlg = tk.Toplevel(dialog)
+            cdlg.title('עריכת קטגוריה' if existing.get('id') else 'הוספת קטגוריה')
+            cdlg.configure(bg='#ecf0f1')
+            cdlg.transient(dialog)
+            cdlg.grab_set()
+            cdlg.resizable(False, False)
+            cat_result = {'ok': False}
+
+            cbody = tk.Frame(cdlg, bg='#ecf0f1')
+            cbody.pack(fill=tk.BOTH, expand=True, padx=16, pady=14)
+
+            def _cr(label):
+                r = tk.Frame(cbody, bg='#ecf0f1')
+                r.pack(fill=tk.X, pady=5)
+                tk.Label(r, text=fix_rtl_text(label), bg='#ecf0f1', font=('Arial', 10, 'bold'), width=16, anchor='e').pack(side=tk.RIGHT, padx=6)
+                return r
+
+            cn_var = tk.StringVar(value=str(existing.get('name') or ''))
+            ca_var = tk.IntVar(value=1 if int(existing.get('is_active', 1) or 0) == 1 else 0)
+            cc_var = tk.IntVar(value=1 if int(existing.get('show_in_catalog', 1) or 0) == 1 else 0)
+            cmps_var = tk.StringVar(value='' if existing.get('max_items_per_student') is None else str(existing.get('max_items_per_student')))
+            cmpc_var = tk.StringVar(value='' if existing.get('max_items_per_class') is None else str(existing.get('max_items_per_class')))
+            cminp_var = tk.StringVar(value=str(int(existing.get('min_points_required', 0) or 0)))
+
+            rn = _cr('שם קטגוריה:')
+            tk.Entry(rn, textvariable=cn_var, font=('Arial', 11), justify='right', width=28).pack(side=tk.RIGHT, padx=6)
+
+            rf = _cr('דגלים:')
+            tk.Checkbutton(rf, text=fix_rtl_text('פעילה'), variable=ca_var, bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
+            tk.Checkbutton(rf, text=fix_rtl_text('הצג בקטלוג'), variable=cc_var, bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
+
+            rmps = _cr('מקס\' לתלמיד:')
+            tk.Entry(rmps, textvariable=cmps_var, font=('Arial', 10), justify='right', width=10).pack(side=tk.RIGHT, padx=6)
+            tk.Label(rmps, text=fix_rtl_text('(ריק = ללא הגבלה)'), bg='#ecf0f1', fg='#7f8c8d', font=('Arial', 9)).pack(side=tk.RIGHT, padx=6)
+
+            rmpc = _cr('מקס\' לכיתה:')
+            tk.Entry(rmpc, textvariable=cmpc_var, font=('Arial', 10), justify='right', width=10).pack(side=tk.RIGHT, padx=6)
+            tk.Label(rmpc, text=fix_rtl_text('(ריק = ללא הגבלה)'), bg='#ecf0f1', fg='#7f8c8d', font=('Arial', 9)).pack(side=tk.RIGHT, padx=6)
+
+            rminp = _cr('סף נקודות:')
+            tk.Entry(rminp, textvariable=cminp_var, font=('Arial', 10), justify='right', width=10).pack(side=tk.RIGHT, padx=6)
+            tk.Label(rminp, text=fix_rtl_text('(0 = ללא סף)'), bg='#ecf0f1', fg='#7f8c8d', font=('Arial', 9)).pack(side=tk.RIGHT, padx=6)
+
+            def _cat_save():
+                nm = cn_var.get().strip()
+                if not nm:
+                    messagebox.showwarning('אזהרה', 'חובה להזין שם קטגוריה')
+                    return
+                cat_result.update({
+                    'ok': True,
+                    'name': nm,
+                    'is_active': 1 if int(ca_var.get() or 0) == 1 else 0,
+                    'show_in_catalog': 1 if int(cc_var.get() or 0) == 1 else 0,
+                    'max_items_per_student': (int(str(cmps_var.get()).strip()) if str(cmps_var.get() or '').strip() else None),
+                    'max_items_per_class': (int(str(cmpc_var.get()).strip()) if str(cmpc_var.get() or '').strip() else None),
+                    'min_points_required': (int(str(cminp_var.get() or '0').strip() or '0') if str(cminp_var.get() or '').strip() else 0),
+                })
+                cdlg.destroy()
+
+            cbtns = tk.Frame(cbody, bg='#ecf0f1')
+            cbtns.pack(pady=(10, 0), anchor='e')
+            tk.Button(cbtns, text='שמור', command=_cat_save, font=('Arial', 10, 'bold'), bg='#27ae60', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
+            tk.Button(cbtns, text='ביטול', command=cdlg.destroy, font=('Arial', 10), bg='#95a5a6', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
+
+            cdlg.wait_window()
+            return cat_result
+
         def add_category():
-            nm = simpledialog.askstring('קטגוריה', 'שם קטגוריה:', parent=dialog)
-            if nm is None:
+            data = _open_category_dialog()
+            if not data.get('ok'):
                 return
-            nm = str(nm or '').strip()
-            if not nm:
-                messagebox.showwarning('אזהרה', 'חובה להזין שם קטגוריה')
-                return
-            is_active = 1 if messagebox.askyesno('קטגוריה', 'להפעיל את הקטגוריה?') else 0
             try:
-                cid = self.db.add_product_category(name=nm, sort_order=0, is_active=int(is_active))
+                cid = self.db.add_product_category(
+                    name=data['name'], sort_order=0, is_active=data.get('is_active', 1),
+                    show_in_catalog=data.get('show_in_catalog', 1),
+                    max_items_per_student=data.get('max_items_per_student'),
+                    max_items_per_class=data.get('max_items_per_class'),
+                    min_points_required=data.get('min_points_required', 0))
             except Exception as e:
                 messagebox.showerror('שגיאה', str(e))
                 return
@@ -15625,17 +16588,17 @@ class AdminStation:
                 messagebox.showwarning('אזהרה', 'בחר קטגוריה לעריכה')
                 return
             row = _get_cat_row(cid)
-            nm = simpledialog.askstring('קטגוריה', 'שם קטגוריה:', initialvalue=str(row.get('name') or ''), parent=dialog)
-            if nm is None:
+            data = _open_category_dialog(existing=row)
+            if not data.get('ok'):
                 return
-            nm = str(nm or '').strip()
-            if not nm:
-                messagebox.showwarning('אזהרה', 'חובה להזין שם קטגוריה')
-                return
-            cur_active = 1 if int(row.get('is_active', 1) or 0) == 1 else 0
-            is_active = 1 if messagebox.askyesno('קטגוריה', 'להפעיל את הקטגוריה?', default=('yes' if cur_active else 'no')) else 0
             try:
-                self.db.update_product_category(int(cid), name=nm, sort_order=int(row.get('sort_order', 0) or 0), is_active=int(is_active))
+                self.db.update_product_category(
+                    int(cid), name=data['name'], sort_order=int(row.get('sort_order', 0) or 0),
+                    is_active=data.get('is_active', 1),
+                    show_in_catalog=data.get('show_in_catalog', 1),
+                    max_items_per_student=data.get('max_items_per_student'),
+                    max_items_per_class=data.get('max_items_per_class'),
+                    min_points_required=data.get('min_points_required', 0))
             except Exception as e:
                 messagebox.showerror('שגיאה', str(e))
                 return
@@ -15651,7 +16614,13 @@ class AdminStation:
                 return
             new_active = 0 if int(row.get('is_active', 1) or 0) == 1 else 1
             try:
-                self.db.update_product_category(int(cid), name=str(row.get('name') or ''), sort_order=int(row.get('sort_order', 0) or 0), is_active=int(new_active))
+                self.db.update_product_category(
+                    int(cid), name=str(row.get('name') or ''), sort_order=int(row.get('sort_order', 0) or 0),
+                    is_active=int(new_active),
+                    show_in_catalog=int(row.get('show_in_catalog', 1) or 1),
+                    max_items_per_student=row.get('max_items_per_student'),
+                    max_items_per_class=row.get('max_items_per_class'),
+                    min_points_required=int(row.get('min_points_required', 0) or 0))
             except Exception as e:
                 messagebox.showerror('שגיאה', str(e))
                 return
@@ -15865,7 +16834,8 @@ class AdminStation:
                     'challenge_queue_priority_mode': 'מצב עדיפות',
                     'challenge_queue_priority_custom': 'עדיפות מותאמת',
                     'challenge_allowed_classes': 'כיתות מורשות (אתגר)',
-                    'challenge_min_points_required': 'מינימום נקודות (אתגר)'
+                    'challenge_min_points_required': 'מינימום נקודות (אתגר)',
+                    'challenge_class_grouping': 'תור כיתתי'
                 }
                 df = df.rename(columns=hebrew_columns)
                 
@@ -16644,6 +17614,44 @@ class AdminStation:
         tk.Label(r_footer, text=fix_rtl_text('ברכת סיום בקבלה:'), bg='#ecf0f1', width=22, anchor='e').pack(side=tk.RIGHT, padx=6)
         tk.Entry(r_footer, textvariable=footer_text_var, font=('Arial', 10), justify='right', width=54).pack(side=tk.RIGHT, padx=6)
 
+        # --- טיימר / שעון עצר ---
+        timer_mode_var = tk.StringVar(value='none')
+        try:
+            timer_mode_var.set(self.db.get_cashier_timer_mode())
+        except Exception:
+            timer_mode_var.set('none')
+
+        timer_minutes_var = tk.StringVar(value='3')
+        try:
+            timer_minutes_var.set(str(self.db.get_cashier_timer_minutes()))
+        except Exception:
+            timer_minutes_var.set('3')
+
+        r_timer = tk.Frame(sf, bg='#ecf0f1')
+        r_timer.pack(fill=tk.X, pady=6)
+        tk.Label(r_timer, text=fix_rtl_text('טיימר/שעון עצר:'), bg='#ecf0f1', width=22, anchor='e').pack(side=tk.RIGHT, padx=6)
+
+        timer_minutes_entry = tk.Entry(r_timer, textvariable=timer_minutes_var, font=('Arial', 10), justify='right', width=5, state='disabled')
+
+        def _on_timer_mode_change(*_a):
+            try:
+                if timer_mode_var.get() == 'timer':
+                    timer_minutes_entry.configure(state='normal')
+                else:
+                    timer_minutes_entry.configure(state='disabled')
+            except Exception:
+                pass
+
+        timer_mode_var.trace_add('write', _on_timer_mode_change)
+
+        ttk.Radiobutton(r_timer, text=fix_rtl_text('ללא'), variable=timer_mode_var, value='none', style='Rtl.TRadiobutton').pack(side=tk.RIGHT, padx=4)
+        ttk.Radiobutton(r_timer, text=fix_rtl_text('שעון עצר (ספירה למעלה)'), variable=timer_mode_var, value='stopwatch', style='Rtl.TRadiobutton').pack(side=tk.RIGHT, padx=4)
+        ttk.Radiobutton(r_timer, text=fix_rtl_text('טיימר (ספירה לאחור)'), variable=timer_mode_var, value='timer', style='Rtl.TRadiobutton').pack(side=tk.RIGHT, padx=4)
+        tk.Label(r_timer, text=fix_rtl_text('דקות:'), bg='#ecf0f1', font=('Arial', 9)).pack(side=tk.RIGHT, padx=(4, 0))
+        timer_minutes_entry.pack(side=tk.RIGHT, padx=(0, 4))
+
+        _on_timer_mode_change()
+
         responsibles_cb = {'fn': None}
 
         r_resp = tk.Frame(sf, bg='#ecf0f1')
@@ -16944,10 +17952,6 @@ class AdminStation:
             except Exception:
                 pass
             try:
-                self.db.set_cashier_payment_confirm_mode(confirm_mode_var.get())
-            except Exception:
-                pass
-            try:
                 self.db.set_cashier_payment_confirm_threshold(int(str(confirm_threshold_var.get() or '0').strip() or '0'))
             except Exception:
                 pass
@@ -16959,13 +17963,663 @@ class AdminStation:
                 self.db.set_cashier_receipt_footer_text(footer_text_var.get().strip())
             except Exception:
                 pass
+            try:
+                self.db.set_cashier_timer_mode(timer_mode_var.get().strip())
+            except Exception:
+                pass
+            try:
+                self.db.set_cashier_timer_minutes(int(str(timer_minutes_var.get() or '3').strip() or '3'))
+            except Exception:
+                pass
             messagebox.showinfo('נשמר', 'הגדרות קופה נשמרו')
+
+        def _import_products_from_excel():
+            """ייבוא מוצרים/אתגרים מקובץ אקסל"""
+            from tkinter import filedialog
+            import pandas as pd
+            
+            # בחירת סוג ייבוא עם חלון מותאם
+            import_window = tk.Toplevel(self.root)
+            import_window.title("בחירת סוג ייבוא")
+            import_window.geometry("400x250")
+            import_window.configure(bg='#ecf0f1')
+            import_window.resizable(False, False)
+            import_window.transient(self.root)
+            import_window.grab_set()
+            
+            # מרכז את החלון
+            import_window.update_idletasks()
+            x = (import_window.winfo_screenwidth() // 2) - (400 // 2)
+            y = (import_window.winfo_screenheight() // 2) - (250 // 2)
+            import_window.geometry(f"400x250+{x}+{y}")
+            
+            tk.Label(
+                import_window,
+                text="בחר סוג ייבוא:",
+                font=('Arial', 14, 'bold'),
+                bg='#ecf0f1',
+                fg='#2c3e50'
+            ).pack(pady=20)
+            
+            import_type_var = tk.StringVar(value="מוצרים")
+            
+            tk.Radiobutton(
+                import_window,
+                text="מוצרים",
+                variable=import_type_var,
+                value="מוצרים",
+                font=('Arial', 12),
+                bg='#ecf0f1',
+                fg='#2c3e50'
+            ).pack(pady=5)
+            
+            tk.Radiobutton(
+                import_window,
+                text="אתגרים",
+                variable=import_type_var,
+                value="אתגרים",
+                font=('Arial', 12),
+                bg='#ecf0f1',
+                fg='#2c3e50'
+            ).pack(pady=5)
+            
+            button_frame = tk.Frame(import_window, bg='#ecf0f1')
+            button_frame.pack(pady=20)
+            
+            def on_import():
+                import_window.destroy()
+            
+            def on_cancel():
+                import_type_var.set("CANCEL")
+                import_window.destroy()
+            
+            tk.Button(
+                button_frame,
+                text="ייבוא",
+                command=on_import,
+                bg='#27ae60',
+                fg='white',
+                font=('Arial', 11, 'bold'),
+                padx=20,
+                pady=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            tk.Button(
+                button_frame,
+                text="ביטול",
+                command=on_cancel,
+                bg='#e74c3c',
+                fg='white',
+                font=('Arial', 11, 'bold'),
+                padx=20,
+                pady=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            import_window.wait_window()
+            
+            import_type = import_type_var.get()
+            if import_type == "CANCEL":
+                return
+            
+            title = f'בחר קובץ אקסל לייבוא {import_type}'
+            
+            file_path = filedialog.askopenfilename(
+                title=title,
+                filetypes=[('Excel files', '*.xlsx *.xls'), ('All files', '*.*')]
+            )
+            if not file_path:
+                return
+                
+            try:
+                df = pd.read_excel(file_path)
+                imported = 0
+                errors = []
+                added_categories = set()
+                
+                # מטמון קטגוריות — name → id
+                cat_cache = {}
+                try:
+                    for c in (self.db.get_product_categories(active_only=False) or []):
+                        cat_cache[str(c.get('name', '')).strip()] = int(c.get('id') or 0)
+                except Exception:
+                    pass
+
+                def _resolve_category_id(row_data):
+                    """מחזיר category_id — קודם לפי שם, אח"כ לפי מזהה. יוצר קטגוריה חדשה אם צריך."""
+                    raw_cname = row_data.get('קטגוריה')
+                    cname = ''
+                    if raw_cname is not None:
+                        try:
+                            if not pd.isna(raw_cname):
+                                cname = str(raw_cname).strip()
+                        except (TypeError, ValueError):
+                            cname = str(raw_cname).strip()
+                    if cname and cname.lower() != 'nan':
+                        if cname in cat_cache:
+                            return cat_cache[cname]
+                        # קטגוריה חדשה
+                        try:
+                            new_id = self.db.add_product_category(name=cname)
+                            if new_id:
+                                cat_cache[cname] = new_id
+                                added_categories.add(cname)
+                                return new_id
+                        except Exception:
+                            pass
+                    raw_cid = row_data.get('מזהה קטגוריה')
+                    if raw_cid is not None:
+                        try:
+                            if pd.isna(raw_cid):
+                                raw_cid = None
+                        except (TypeError, ValueError):
+                            pass
+                    if raw_cid is not None:
+                        try:
+                            cid = int(float(raw_cid))
+                            if cid > 0:
+                                return cid
+                        except (ValueError, TypeError):
+                            pass
+                    return None
+
+                def _safe_str(val, default=''):
+                    """Convert value to string, handling NaN/None properly."""
+                    if val is None:
+                        return default
+                    try:
+                        if pd.isna(val):
+                            return default
+                    except (TypeError, ValueError):
+                        pass
+                    s = str(val).strip()
+                    if s.lower() == 'nan':
+                        return default
+                    return s
+
+                def _parse_is_active(val):
+                    if val is None or (isinstance(val, float) and pd.isna(val)):
+                        return 1
+                    s = str(val).strip().lower()
+                    if s in ('לא', '0', 'false', 'no', 'nan'):
+                        return 0 if s != 'nan' else 1
+                    return 1
+
+                def _parse_opt_int(val):
+                    if val is None:
+                        return None
+                    try:
+                        if pd.isna(val):
+                            return None
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        v = int(float(val))
+                        return v if v > 0 else None
+                    except (ValueError, TypeError):
+                        return None
+
+                def _safe_int(val, default=0):
+                    """Convert value to int, handling NaN/None properly."""
+                    if val is None:
+                        return default
+                    try:
+                        if pd.isna(val):
+                            return default
+                    except (TypeError, ValueError):
+                        pass
+                    try:
+                        return int(float(val))
+                    except (ValueError, TypeError):
+                        return default
+
+                for index, row in df.iterrows():
+                    try:
+                        cat_id = _resolve_category_id(row)
+                        p_name = _safe_str(row.get('שם פנימי'))
+                        p_display = _safe_str(row.get('שם תצוגה'))
+                        if not p_name or not p_display:
+                            errors.append(f"שורה {index+2}: חסרים שם פנימי או שם תצוגה")
+                            continue
+
+                        is_active = _parse_is_active(row.get('פעיל'))
+                        allowed_classes = _safe_str(row.get('כיתות מורשות'))
+                        min_points = _safe_int(row.get('סף נקודות'))
+                        max_student = _parse_opt_int(row.get('מקס לתלמיד'))
+                        max_class = _parse_opt_int(row.get('מקס לכיתה'))
+
+                        # שדות שוברים
+                        consolidated_voucher = 1 if _safe_str(row.get('שובר מרוכז')).strip() in ('כן', '1', 'yes', 'true') else 0
+                        voucher_per_unit = 1 if _safe_str(row.get('שובר ליחידה')).strip() in ('כן', '1', 'yes', 'true') else 0
+
+                        # נתיב תמונה
+                        p_image = _safe_str(row.get('נתיב תמונה'))
+
+                        if import_type == "מוצרים":
+                            price = _safe_int(row.get('מחיר נקודות'))
+                            stock = _parse_opt_int(row.get('כמות מלאי'))
+
+                            pid = self.db.add_product(
+                                name=p_name,
+                                display_name=p_display,
+                                category_id=cat_id,
+                                price_points=price,
+                                stock_qty=stock,
+                                image_path=p_image,
+                                is_active=is_active,
+                                allowed_classes=allowed_classes,
+                                min_points_required=min_points,
+                                max_per_student=max_student,
+                                max_per_class=max_class,
+                                consolidated_voucher=consolidated_voucher,
+                                voucher_per_unit=voucher_per_unit,
+                            )
+                            if not pid:
+                                errors.append(f"שורה {index+2}: נכשל ביצירת מוצר")
+                                continue
+                        else:  # אתגרים — מוצר + שירות מתוזמן
+                            price = _safe_int(row.get('נקודות זכייה'))
+
+                            pid = self.db.add_product(
+                                name=p_name,
+                                display_name=p_display,
+                                category_id=cat_id,
+                                price_points=price,
+                                image_path=p_image,
+                                is_active=is_active,
+                                allowed_classes=allowed_classes,
+                                min_points_required=min_points,
+                                max_per_student=max_student,
+                                max_per_class=max_class,
+                                deduct_points=0,
+                                consolidated_voucher=consolidated_voucher,
+                                voucher_per_unit=voucher_per_unit,
+                            )
+                            if not pid:
+                                errors.append(f"שורה {index+2}: נכשל ביצירת אתגר")
+                                continue
+                            try:
+                                self.db.upsert_scheduled_service(
+                                    product_id=pid,
+                                    duration_minutes=int(row.get('משך (דקות)', 10) or 10),
+                                    capacity_per_slot=int(row.get('קיבולת', 1) or 1),
+                                    start_time=str(row.get('שעת התחלה', '08:00') or '08:00').strip(),
+                                    end_time=str(row.get('שעת סיום', '16:00') or '16:00').strip(),
+                                    is_active=is_active,
+                                    allowed_classes=allowed_classes,
+                                    min_points_required=min_points,
+                                    max_per_student=max_student,
+                                    max_per_class=max_class
+                                )
+                            except Exception:
+                                pass  # המוצר נוצר, השירות המתוזמן ייווצר ידנית אם צריך
+
+                        # וריאציות (דלג על "ברירת מחדל" — היא נוצרת אוטומטית עם מחיר המוצר)
+                        for vi in range(1, 6):
+                            vname = _safe_str(row.get(f'וריאציה {vi}'))
+                            if vname and vname != 'ברירת מחדל':
+                                try:
+                                    self.db.add_product_variant(
+                                        product_id=pid,
+                                        variant_name=vname,
+                                        display_name=vname,
+                                        sort_order=vi
+                                    )
+                                except Exception:
+                                    pass
+
+                        imported += 1
+                    except Exception as e:
+                        errors.append(f"שורה {index+2}: {str(e)}")
+                
+                msg = f'יובאו בהצלחה {imported} {import_type}'
+                if added_categories:
+                    msg += f'\n\nנוספו קטגוריות חדשות: {", ".join(added_categories)}'
+                if errors:
+                    msg += f'\n\nשגיאות ({len(errors)}):\n' + '\n'.join(errors[:10])
+                    if len(errors) > 10:
+                        msg += f'\n...ועוד {len(errors)-10} שגיאות'
+                
+                messagebox.showinfo('ייבוא הסתיים', msg)
+                _load_rows()
+                # רענון רשימת קטגוריות
+                try:
+                    _load_categories()
+                except Exception:
+                    pass
+                
+            except Exception as e:
+                messagebox.showerror('שגיאת ייבוא', f'לא ניתן לייבא את הקובץ:\n{str(e)}')
+
+        def _export_products_to_excel():
+            """ייצוא מוצרים לקובץ אקסל"""
+            from tkinter import filedialog
+            import pandas as pd
+            from openpyxl import load_workbook
+            from openpyxl.styles import Alignment
+            
+            # חלון בחירת סוג ייצוא עם כפתורי רדיו
+            choice_dialog = tk.Toplevel(dialog)
+            choice_dialog.title('בחירת סוג ייצוא')
+            choice_dialog.geometry('400x250')
+            choice_dialog.resizable(False, False)
+            choice_dialog.configure(bg='#ecf0f1')
+            choice_dialog.transient(dialog)
+            choice_dialog.grab_set()
+            
+            export_type = tk.StringVar(value="מוצרים")
+            
+            tk.Label(choice_dialog, text='בחר סוג ייצוא:', bg='#ecf0f1', font=('Arial', 12, 'bold')).pack(pady=10)
+            
+            tk.Radiobutton(choice_dialog, text='מוצרים', variable=export_type, value="מוצרים", 
+                          bg='#ecf0f1', font=('Arial', 11)).pack(pady=5)
+            tk.Radiobutton(choice_dialog, text='אתגרים', variable=export_type, value="אתגרים", 
+                          bg='#ecf0f1', font=('Arial', 11)).pack(pady=5)
+            
+            result = None
+            
+            def on_ok():
+                nonlocal result
+                result = export_type.get()
+                choice_dialog.destroy()
+            
+            def on_cancel():
+                choice_dialog.destroy()
+            
+            btn_frame = tk.Frame(choice_dialog, bg='#ecf0f1')
+            btn_frame.pack(pady=10)
+            tk.Button(
+                btn_frame, text='ייצוא', command=on_ok,
+                bg='#27ae60', fg='white', font=('Arial', 11, 'bold'),
+                padx=20, pady=5
+            ).pack(side=tk.LEFT, padx=5)
+            tk.Button(
+                btn_frame, text='ביטול', command=on_cancel,
+                bg='#e74c3c', fg='white', font=('Arial', 11, 'bold'),
+                padx=20, pady=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            choice_dialog.wait_window()
+            
+            if not result:
+                return
+            
+            if result == "מוצרים":
+                default_name = "ייצוא מוצרים.xlsx"
+                title = "שמור ייצוא מוצרים"
+            else:  # אתגרים
+                default_name = "ייצוא אתגרים.xlsx"
+                title = "שמור ייצוא אתגרים"
+            
+            file_path = filedialog.asksaveasfilename(
+                title=title,
+                defaultextension='.xlsx',
+                filetypes=[('Excel files', '*.xlsx'), ('All files', '*.*')],
+                initialdir=self._get_downloads_dir(),
+                initialfile=default_name
+            )
+            if not file_path:
+                return
+                
+            try:
+                # שימוש ב-get_cashier_catalog_export שמחזיר products + challenges + categories
+                all_catalog = self.db.get_cashier_catalog_export() or []
+                data = []
+
+                if result == "מוצרים":
+                    rows = [r for r in all_catalog if not int(r.get('challenge_id') or 0)]
+                    for p in rows:
+                        pid = int(p.get('product_id') or 0)
+                        # טעינת וריאציות (סינון "ברירת מחדל" — וריאציה מלאכותית)
+                        variants = []
+                        try:
+                            _all_vars = (self.db.get_product_variants(pid) or []) if pid else []
+                            variants = [v for v in _all_vars if str(v.get('variant_name') or '').strip() != 'ברירת מחדל']
+                        except Exception:
+                            pass
+                        row_data = {
+                            'מזהה': pid,
+                            'שם פנימי': p.get('product_name') or '',
+                            'שם תצוגה': p.get('product_display_name') or '',
+                            'מזהה קטגוריה': p.get('category_id') or '',
+                            'קטגוריה': p.get('category_name') or '',
+                            'מחיר נקודות': p.get('product_price_points') or 0,
+                            'כמות מלאי': p.get('product_stock_qty') or '',
+                            'פעיל': 'כן' if int(p.get('product_is_active') or 0) == 1 else 'לא',
+                            'נתיב תמונה': p.get('product_image_path') or '',
+                            'כיתות מורשות': p.get('product_allowed_classes') or '',
+                            'סף נקודות': p.get('product_min_points_required') or 0,
+                            'מקס לתלמיד': p.get('product_max_per_student') or '',
+                            'מקס לכיתה': p.get('product_max_per_class') or '',
+                            'שובר מרוכז': 'כן' if int(p.get('consolidated_voucher') or 0) == 1 else 'לא',
+                            'שובר ליחידה': 'כן' if int(p.get('voucher_per_unit') or 0) == 1 else 'לא',
+                        }
+                        for vi in range(5):
+                            vname = variants[vi].get('variant_name', '') if vi < len(variants) else ''
+                            row_data[f'וריאציה {vi+1}'] = vname
+                        data.append(row_data)
+                else:  # אתגרים
+                    rows = [r for r in all_catalog if int(r.get('challenge_id') or 0)]
+                    for c in rows:
+                        pid = int(c.get('product_id') or 0)
+                        variants = []
+                        try:
+                            _all_vars = (self.db.get_product_variants(pid) or []) if pid else []
+                            variants = [v for v in _all_vars if str(v.get('variant_name') or '').strip() != 'ברירת מחדל']
+                        except Exception:
+                            pass
+                        row_data = {
+                            'מזהה': pid,
+                            'שם פנימי': c.get('product_name') or '',
+                            'שם תצוגה': c.get('product_display_name') or '',
+                            'מזהה קטגוריה': c.get('category_id') or '',
+                            'קטגוריה': c.get('category_name') or '',
+                            'נקודות זכייה': c.get('product_price_points') or 0,
+                            'פעיל': 'כן' if int(c.get('challenge_is_active') or 0) == 1 else 'לא',
+                            'נתיב תמונה': c.get('product_image_path') or '',
+                            'כיתות מורשות': c.get('challenge_allowed_classes') or '',
+                            'סף נקודות': c.get('challenge_min_points_required') or 0,
+                            'מקס לתלמיד': c.get('challenge_max_per_student') or '',
+                            'מקס לכיתה': c.get('challenge_max_per_class') or '',
+                            'משך (דקות)': c.get('challenge_duration_minutes') or '',
+                            'קיבולת': c.get('challenge_capacity_per_slot') or '',
+                            'שעת התחלה': c.get('challenge_start_time') or '',
+                            'שעת סיום': c.get('challenge_end_time') or '',
+                        }
+                        for vi in range(5):
+                            vname = variants[vi].get('variant_name', '') if vi < len(variants) else ''
+                            row_data[f'וריאציה {vi+1}'] = vname
+                        data.append(row_data)
+                
+                df = pd.DataFrame(data)
+                df.to_excel(file_path, index=False, engine='openpyxl')
+                
+                # עיצוב RTL + צבעים מתחלפים + הקפאת כותרת
+                wb = load_workbook(file_path)
+                ws = wb.active
+                try:
+                    from excel_styling import apply_rtl_and_alternating_colors
+                    apply_rtl_and_alternating_colors(ws, has_header=True)
+                except Exception:
+                    ws.sheet_view.rightToLeft = True
+                    for _row in ws.iter_rows():
+                        for cell in _row:
+                            cell.alignment = Alignment(horizontal='right', vertical='center')
+                try:
+                    ws.freeze_panes = 'A2'
+                    ws.print_title_rows = '1:1'
+                except Exception:
+                    pass
+                ws.page_setup.paperSize = ws.PAPERSIZE_A4
+                ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+                ws.page_setup.fitToPage = True
+                ws.page_setup.fitToHeight = 0
+                ws.page_setup.fitToWidth = 1
+                
+                wb.save(file_path)
+                messagebox.showinfo('ייצוא הסתיים', f'יוצאו {len(data)} {result} בהצלחה')
+                
+            except Exception as e:
+                messagebox.showerror('שגיאת ייצוא', f'לא ניתן לייצא את ה{result}:\n{str(e)}')
+
+        def _export_import_template():
+            """ייצוא תבנית לייבוא"""
+            from tkinter import filedialog
+            import pandas as pd
+            from openpyxl import load_workbook
+            from openpyxl.styles import Alignment
+            
+            # חלון בחירת סוג תבנית עם כפתורי רדיו
+            choice_dialog = tk.Toplevel(dialog)
+            choice_dialog.title('בחירת סוג תבנית')
+            choice_dialog.geometry('400x250')
+            choice_dialog.resizable(False, False)
+            choice_dialog.configure(bg='#ecf0f1')
+            choice_dialog.transient(dialog)
+            choice_dialog.grab_set()
+            
+            template_type = tk.StringVar(value="מוצרים")
+            
+            tk.Label(choice_dialog, text='בחר סוג תבנית:', bg='#ecf0f1', font=('Arial', 12, 'bold')).pack(pady=10)
+            
+            tk.Radiobutton(choice_dialog, text='מוצרים', variable=template_type, value="מוצרים", 
+                          bg='#ecf0f1', font=('Arial', 11)).pack(pady=5)
+            tk.Radiobutton(choice_dialog, text='אתגרים', variable=template_type, value="אתגרים", 
+                          bg='#ecf0f1', font=('Arial', 11)).pack(pady=5)
+            
+            result = None
+            
+            def on_ok():
+                nonlocal result
+                result = template_type.get()
+                choice_dialog.destroy()
+            
+            def on_cancel():
+                choice_dialog.destroy()
+            
+            btn_frame = tk.Frame(choice_dialog, bg='#ecf0f1')
+            btn_frame.pack(pady=10)
+            tk.Button(
+                btn_frame, text='ייצוא תבנית', command=on_ok,
+                bg='#27ae60', fg='white', font=('Arial', 11, 'bold'),
+                padx=20, pady=5
+            ).pack(side=tk.LEFT, padx=5)
+            tk.Button(
+                btn_frame, text='ביטול', command=on_cancel,
+                bg='#e74c3c', fg='white', font=('Arial', 11, 'bold'),
+                padx=20, pady=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            choice_dialog.wait_window()
+            
+            if not result:
+                return
+            
+            if result == "מוצרים":
+                default_name = "תבנית ייבוא מוצרים.xlsx"
+                title = "שמור תבנית ייבוא מוצרים"
+                # דוגמה למוצר
+                example_data = [{
+                    'שם פנימי': 'מוצר_לדוגמה',
+                    'שם תצוגה': 'מוצר לדוגמה',
+                    'מזהה קטגוריה': '1',
+                    'קטגוריה': 'חנות סידקית',
+                    'מחיר נקודות': '50',
+                    'כמות מלאי': '100',
+                    'תיאור': 'תיאור המוצר',
+                    'פעיל': 'כן',
+                    'נתיב תמונה': '',
+                    'כיתות מורשות': '',
+                    'סף נקודות': '0',
+                    'מקס לתלמיד': '',
+                    'מקס לכיתה': '',
+                    'שובר מרוכז': 'לא',
+                    'שובר ליחידה': 'לא',
+                    'מחיר מותנה': '',
+                    'וריאציה 1': '',
+                    'וריאציה 2': '',
+                    'וריאציה 3': '',
+                    'וריאציה 4': '',
+                    'וריאציה 5': ''
+                }]
+            else:  # אתגרים
+                default_name = "תבנית ייבוא אתגרים.xlsx"
+                title = "שמור תבנית ייבוא אתגרים"
+                # דוגמה לאתגר
+                example_data = [{
+                    'שם פנימי': 'אתגר_לדוגמה',
+                    'שם תצוגה': 'אתגר לדוגמה',
+                    'מזהה קטגוריה': '1',
+                    'קטגוריה': 'אתגרים יומיים',
+                    'נקודות זכייה': '30',
+                    'תיאור': 'תיאור האתגר',
+                    'פעיל': 'כן',
+                    'נתיב תמונה': '',
+                    'כיתות מורשות': '',
+                    'סף נקודות': '0',
+                    'מקס לתלמיד': '',
+                    'מקס לכיתה': '',
+                    'שובר מרוכז': 'לא',
+                    'שובר ליחידה': 'לא',
+                    'וריאציה 1': '',
+                    'וריאציה 2': '',
+                    'וריאציה 3': '',
+                    'וריאציה 4': '',
+                    'וריאציה 5': ''
+                }]
+            
+            file_path = filedialog.asksaveasfilename(
+                title=title,
+                defaultextension='.xlsx',
+                filetypes=[('Excel files', '*.xlsx'), ('All files', '*.*')],
+                initialdir=self._get_downloads_dir(),
+                initialfile=default_name
+            )
+            if not file_path:
+                return
+                
+            try:
+                df = pd.DataFrame(example_data)
+                df.to_excel(file_path, index=False, engine='openpyxl')
+                
+                # עיצוב RTL + צבעים מתחלפים + הקפאת כותרת
+                wb = load_workbook(file_path)
+                ws = wb.active
+                try:
+                    from excel_styling import apply_rtl_and_alternating_colors
+                    apply_rtl_and_alternating_colors(ws, has_header=True)
+                except Exception:
+                    ws.sheet_view.rightToLeft = True
+                    for _row in ws.iter_rows():
+                        for cell in _row:
+                            cell.alignment = Alignment(horizontal='right', vertical='center')
+                try:
+                    ws.freeze_panes = 'A2'
+                    ws.print_title_rows = '1:1'
+                except Exception:
+                    pass
+                ws.page_setup.paperSize = ws.PAPERSIZE_A4
+                ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+                ws.page_setup.fitToPage = True
+                ws.page_setup.fitToHeight = 0
+                ws.page_setup.fitToWidth = 1
+                
+                wb.save(file_path)
+                messagebox.showinfo('תבנית נוצרה', f'תבנית ייבוא {result} נשמרה בהצלחה')
+                
+            except Exception as e:
+                messagebox.showerror('שגיאה', f'לא ניתן ליצור תבנית:\n{str(e)}')
 
         cashier_save_cb['fn'] = _save_settings
 
         sbtns = tk.Frame(settings_tab, bg='#ecf0f1')
         sbtns.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 10))
         tk.Button(sbtns, text='💾 שמור הגדרות', command=_save_settings, font=('Arial', 10, 'bold'), bg='#27ae60', fg='white', padx=18, pady=6).pack(side=tk.LEFT, padx=6)
+        
+        # כפתורי ייבוא/ייצוא מוצרים
+        tk.Button(sbtns, text='📥 ייבוא מוצרים מאקסל', command=_import_products_from_excel, font=('Arial', 10, 'bold'), bg='#3498db', fg='white', padx=18, pady=6).pack(side=tk.LEFT, padx=6)
+        tk.Button(sbtns, text='📤 ייצוא מוצרים לאקסל', command=_export_products_to_excel, font=('Arial', 10, 'bold'), bg='#9b59b6', fg='white', padx=18, pady=6).pack(side=tk.LEFT, padx=6)
+        tk.Button(sbtns, text='📋 ייצוא תבנית ייבוא', command=_export_import_template, font=('Arial', 10, 'bold'), bg='#95a5a6', fg='white', padx=18, pady=6).pack(side=tk.LEFT, padx=6)
+        tk.Button(sbtns, text='🖨️ קטלוג להדפסה', command=lambda: self._export_catalog_html(), font=('Arial', 10, 'bold'), bg='#e67e22', fg='white', padx=18, pady=6).pack(side=tk.LEFT, padx=6)
 
         try:
             settings_container.pack_forget()
@@ -17201,7 +18855,7 @@ class AdminStation:
         
         try:
             from anti_spam_dialog import open_anti_spam_dialog
-            open_anti_spam_dialog(self.root, self.load_app_config, self.save_app_config)
+            open_anti_spam_dialog(self.root, self.load_app_config, self.save_app_config, self.db)
         except Exception as e:
             messagebox.showerror("שגיאה", f"לא ניתן לפתוח חלון ניהול חסימות:\n{e}")
 
@@ -18781,8 +20435,6 @@ class AdminStation:
         self.root.wait_window(dialog)
 
     def export_activity_cards_excel(self):
-        if not self.ensure_can_modify():
-            return
         if not (self.current_teacher and int(self.current_teacher.get('is_admin', 0) or 0) == 1):
             messagebox.showwarning("אין הרשאה", "גישה רק למנהלים")
             return
@@ -21374,24 +23026,42 @@ class AdminStation:
             self.root.attributes('-alpha', 0.0)
         except Exception:
             pass
-        # יצירת חלון התחברות
+        # יצירת חלון התחברות — עיצוב כמו מסך הטעינה
         login_window = tk.Toplevel(self.root)
         login_window.title("התחברות - עמדת ניהול")
-        login_window.geometry("550x350")
-        login_window.configure(bg='#ecf0f1')
-        login_window.resizable(True, True)
+        login_window.geometry("500x350")
+        login_window.configure(bg='#2c3e50')
+        login_window.resizable(False, False)
+        login_window.overrideredirect(False)
         keep_topmost = True
         try:
             login_window.attributes('-topmost', True)
         except Exception:
             pass
         try:
-            # כאשר root שקוף/מוסתר, transient לפעמים גורם לחלון ההתחברות לא להופיע.
-            # נשאיר את החלון עצמאי אך עדיין נשתמש ב-grab_set.
             login_window.transient(None)
         except Exception:
             pass
-        login_window.grab_set()
+        # בשחזור מהמזעור, נחזיר focus + topmost כדי ללכוד קלט כרטיס
+        def _on_login_deiconify(event):
+            try:
+                if login_window.state() != 'iconic':
+                    login_window.focus_force()
+                    login_window.lift()
+            except Exception:
+                pass
+        login_window.bind('<Map>', _on_login_deiconify)
+        
+        # מרכוז החלון
+        try:
+            login_window.update_idletasks()
+            sw = login_window.winfo_screenwidth()
+            sh = login_window.winfo_screenheight()
+            x = (sw - 500) // 2
+            y = (sh - 350) // 2
+            login_window.geometry(f"500x350+{x}+{y}")
+        except Exception:
+            pass
         
         # כעת, אחרי שחלון ההתחברות קיים, אפשר להסתיר לגמרי את ה-root
         try:
@@ -21401,35 +23071,48 @@ class AdminStation:
         
         # משתנה לשמירת הכרטיס
         card_buffer = {'text': ''}
+
+        main_frame = tk.Frame(login_window, bg='#2c3e50')
+        main_frame.pack(expand=True, fill='both', padx=20, pady=20)
         
         tk.Label(
-            login_window,
+            main_frame,
+            text="🎓",
+            font=('Arial', 48),
+            bg='#2c3e50',
+            fg='#ffffff'
+        ).pack(pady=(10, 5))
+        
+        tk.Label(
+            main_frame,
             text="ברוכים הבאים למערכת הניהול",
-            font=('Arial', 16, 'bold'),
-            bg='#ecf0f1',
-            fg='#2c3e50'
-        ).pack(pady=20)
+            font=('Arial', 18, 'bold'),
+            bg='#2c3e50',
+            fg='#ffffff'
+        ).pack(pady=(5, 10))
         
         tk.Label(
-            login_window,
+            main_frame,
             text="🔐 העבר את כרטיס המורה שלך",
-            font=('Arial', 14),
-            bg='#ecf0f1',
-            fg='#34495e'
-        ).pack(pady=15)
+            font=('Arial', 13),
+            bg='#2c3e50',
+            fg='#ecf0f1'
+        ).pack(pady=(5, 10))
         
         # שדה הצגת כרטיס
         card_display = tk.Label(
-            login_window,
+            main_frame,
             text="ממתין לכרטיס...",
             font=('Arial', 12),
-            bg='white',
-            fg='#7f8c8d',
+            bg='#34495e',
+            fg='#95a5a6',
             width=30,
             height=2,
-            relief=tk.SUNKEN
+            relief=tk.FLAT,
+            highlightbackground='#3498db',
+            highlightthickness=1
         )
-        card_display.pack(pady=20)
+        card_display.pack(pady=15)
         
         def on_key(event):
             """טיפול בלחיצת מקש"""
@@ -21458,6 +23141,15 @@ class AdminStation:
             
             # בדיקת כרטיס במסד הנתונים
             try:
+                # בדיקה שה-DB הופעל
+                if not hasattr(self, 'db') or self.db is None:
+                    card_display.config(
+                        text="⏳ מאתחל מסד נתונים, אנא המתן...",
+                        fg='#e67e22'
+                    )
+                    card_buffer['text'] = ''
+                    return
+                    
                 teacher = self.db.get_teacher_by_card(card_number)
             except sqlite3.OperationalError as e:
                 msg = str(e).lower()
@@ -21469,7 +23161,7 @@ class AdminStation:
                     card_buffer['text'] = ''
                     login_window.after(2500, lambda: card_display.config(
                         text="ממתין לכרטיס...",
-                        fg='#7f8c8d'
+                        fg='#95a5a6'
                     ))
                     return
                 raise
@@ -21496,7 +23188,7 @@ class AdminStation:
                 card_buffer['text'] = ''
                 login_window.after(3000, lambda: card_display.config(
                     text="ממתין לכרטיס...",
-                    fg='#7f8c8d'
+                    fg='#95a5a6'
                 ))
         
         # טיפול בסגירת חלון ההתחברות
@@ -21739,6 +23431,186 @@ class AdminStation:
             self._login_active = False
         except Exception:
             pass
+            
+        # המתנה לאתחול המלא לפני הצגת הממשק
+        self.root.after(100, self._wait_for_full_init_and_continue)
+
+    def _show_license_block_dialog(self):
+        """חלון חסימה כשהרישיון פג תוקף — אפשרות להזין רישיון חדש או לצאת"""
+        lm = getattr(self, 'license_manager', None)
+        if lm is None:
+            return
+
+        # הצגת root מינימלית כדי ש-Toplevel יעבוד
+        try:
+            self.root.deiconify()
+            self.root.attributes('-alpha', 0.0)
+        except Exception:
+            pass
+
+        block_win = tk.Toplevel(self.root)
+        block_win.title("רישיון פג תוקף")
+        block_win.geometry("520x420")
+        block_win.configure(bg='#2c3e50')
+        block_win.resizable(False, False)
+        try:
+            block_win.attributes('-topmost', True)
+        except Exception:
+            pass
+        try:
+            block_win.update_idletasks()
+            sw = block_win.winfo_screenwidth()
+            sh = block_win.winfo_screenheight()
+            x = (sw - 520) // 2
+            y = (sh - 420) // 2
+            block_win.geometry(f"520x420+{x}+{y}")
+        except Exception:
+            pass
+
+        main_frame = tk.Frame(block_win, bg='#2c3e50')
+        main_frame.pack(expand=True, fill='both', padx=20, pady=15)
+
+        tk.Label(main_frame, text="⚠️", font=('Arial', 48), bg='#2c3e50', fg='#e74c3c').pack(pady=(5, 5))
+        tk.Label(
+            main_frame,
+            text="הרישיון פג תוקף",
+            font=('Arial', 18, 'bold'),
+            bg='#2c3e50',
+            fg='#e74c3c'
+        ).pack(pady=(0, 10))
+
+        # הודעה מפורטת
+        msg = lm.get_startup_message() or "הרישיון פג תוקף. יש להזין רישיון חדש כדי להמשיך."
+        tk.Label(
+            main_frame,
+            text=msg,
+            font=('Arial', 11),
+            bg='#2c3e50',
+            fg='#ecf0f1',
+            wraplength=460,
+            justify='center'
+        ).pack(pady=(0, 10))
+
+        # קוד מערכת
+        sys_code = getattr(lm, 'system_code', '') or ''
+        if sys_code:
+            code_frame = tk.Frame(main_frame, bg='#34495e', highlightbackground='#3498db', highlightthickness=1)
+            code_frame.pack(fill=tk.X, padx=20, pady=5)
+            tk.Label(code_frame, text="קוד מערכת:", font=('Arial', 9), bg='#34495e', fg='#95a5a6').pack(anchor='e', padx=10, pady=(5, 0))
+            tk.Label(code_frame, text=sys_code, font=('Consolas', 12, 'bold'), bg='#34495e', fg='#3498db').pack(pady=(0, 5))
+
+        # שדות הזנת רישיון חדש
+        entry_frame = tk.Frame(main_frame, bg='#2c3e50')
+        entry_frame.pack(fill=tk.X, padx=20, pady=5)
+
+        tk.Label(entry_frame, text="שם מוסד:", font=('Arial', 10), bg='#2c3e50', fg='#ecf0f1', anchor='e').pack(fill=tk.X)
+        school_entry = tk.Entry(entry_frame, font=('Arial', 11), justify='right')
+        school_entry.pack(fill=tk.X, pady=(0, 5))
+        # מילוי שם מוסד קיים
+        existing_school = getattr(lm, 'school_name', '') or ''
+        if existing_school:
+            school_entry.insert(0, existing_school)
+
+        tk.Label(entry_frame, text="קוד הפעלה:", font=('Arial', 10), bg='#2c3e50', fg='#ecf0f1', anchor='e').pack(fill=tk.X)
+        key_entry = tk.Entry(entry_frame, font=('Arial', 11), justify='right')
+        key_entry.pack(fill=tk.X, pady=(0, 5))
+
+        tk.Label(entry_frame, text="תאריך תפוגה (YYYY-MM-DD, לרישיון חודשי):", font=('Arial', 9), bg='#2c3e50', fg='#95a5a6', anchor='e').pack(fill=tk.X)
+        expiry_entry = tk.Entry(entry_frame, font=('Arial', 11), justify='right')
+        expiry_entry.pack(fill=tk.X, pady=(0, 5))
+
+        status_label = tk.Label(main_frame, text="", font=('Arial', 10), bg='#2c3e50', fg='#e74c3c')
+        status_label.pack(pady=3)
+
+        def try_activate():
+            school = school_entry.get().strip()
+            key = key_entry.get().strip()
+            expiry = expiry_entry.get().strip() or None
+            if not school or not key:
+                status_label.config(text="יש להזין שם מוסד וקוד הפעלה", fg='#e74c3c')
+                return
+            ok, msg_result = lm.activate(school, key, expiry)
+            if ok:
+                status_label.config(text=msg_result, fg='#27ae60')
+                block_win.after(1500, lambda: _continue_after_activate(block_win))
+            else:
+                status_label.config(text=msg_result, fg='#e74c3c')
+
+        def _continue_after_activate(win):
+            try:
+                win.destroy()
+            except Exception:
+                pass
+            # המשך לממשק הראשי
+            self._wait_for_full_init_and_continue()
+
+        def exit_app():
+            try:
+                block_win.destroy()
+            except Exception:
+                pass
+            try:
+                self.root.quit()
+            except Exception:
+                pass
+            try:
+                self.root.destroy()
+            except Exception:
+                pass
+
+        btn_frame = tk.Frame(main_frame, bg='#2c3e50')
+        btn_frame.pack(pady=10)
+        tk.Button(
+            btn_frame,
+            text="🔑 הפעל רישיון",
+            command=try_activate,
+            font=('Arial', 11, 'bold'),
+            bg='#27ae60',
+            fg='white',
+            width=16,
+            cursor='hand2'
+        ).pack(side=tk.RIGHT, padx=8)
+        tk.Button(
+            btn_frame,
+            text="❌ יציאה",
+            command=exit_app,
+            font=('Arial', 11, 'bold'),
+            bg='#e74c3c',
+            fg='white',
+            width=12,
+            cursor='hand2'
+        ).pack(side=tk.RIGHT, padx=8)
+
+        block_win.protocol("WM_DELETE_WINDOW", exit_app)
+        block_win.focus_force()
+
+    def _wait_for_full_init_and_continue(self):
+        """המתנה לאתחול המלא והמשך לממשק הראשי"""
+        # בדיקה שכל הרכיבים מוכנים
+        if not hasattr(self, 'license_manager') or self.license_manager is None:
+            self.root.after(200, self._wait_for_full_init_and_continue)
+            return
+            
+        if not hasattr(self, 'importer') or self.importer is None:
+            self.root.after(200, self._wait_for_full_init_and_continue)
+            return
+
+        # בדיקת תוקף רישיון — חסימה אם פג
+        lm = getattr(self, 'license_manager', None)
+        if lm is not None:
+            is_expired = False
+            if getattr(lm, 'monthly_expired', False):
+                is_expired = True
+            elif getattr(lm, 'term_expired', False):
+                is_expired = True
+            elif getattr(lm, 'trial_expired', False) and not getattr(lm, 'is_licensed', False):
+                is_expired = True
+
+            if is_expired:
+                self._show_license_block_dialog()
+                return
+            
+        # כל הרכיבים מוכנים - הצגת הממשק הראשי
         try:
             self.root.deiconify()
             self.root.attributes('-alpha', 1.0)
@@ -21782,13 +23654,16 @@ class AdminStation:
         self.root.update()
         
         # עדכון כותרת החלון
-        teacher_name = self.current_teacher['name']
-        is_admin = self.current_teacher['is_admin'] == 1
-        role = "מנהל" if is_admin else "מורה"
-        self.root.title(f"עמדת ניהול - {teacher_name} ({role})")
+        if self.current_teacher:
+            teacher_name = self.current_teacher['name']
+            is_admin = self.current_teacher['is_admin'] == 1
+            role = "מנהל" if is_admin else "מורה"
+            self.root.title(f"עמדת ניהול - {teacher_name} ({role})")
+        else:
+            self.root.title("עמדת ניהול - משתמש לא ידוע")
         
         # טעינת כיתות המורה ל-cache (פעם אחת בלבד!)
-        if not is_admin:
+        if self.current_teacher and not is_admin:
             self.teacher_classes_cache = self.db.get_teacher_classes(self.current_teacher['id'])
             safe_print(f"📚 כיתות של {teacher_name}: {', '.join(self.teacher_classes_cache)}")
         
@@ -21971,6 +23846,252 @@ class AdminStation:
 
         # סינכרון ביציאה
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def _export_catalog_html(self):
+        """ייצוא קטלוג מוצרים להדפסה כ-HTML"""
+        from tkinter import filedialog
+        import html as html_mod
+        import base64
+
+        try:
+            products_raw = self.db.get_cashier_catalog() or []
+        except Exception:
+            products_raw = []
+
+        products = []
+        for p in (products_raw or []):
+            if int(p.get('is_active', 1) or 0) != 1:
+                continue
+            name = (str(p.get('display_name') or '').strip() or str(p.get('name') or '').strip())
+            if not name:
+                continue
+            try:
+                price = int(p.get('price_points', 0) or 0)
+            except Exception:
+                price = 0
+            try:
+                stock = p.get('stock_qty')
+                stock = int(stock) if stock is not None else 0
+            except Exception:
+                stock = 0
+            try:
+                min_pts = int(p.get('min_points_required', 0) or 0)
+            except Exception:
+                min_pts = 0
+            try:
+                max_stu = int(p.get('max_per_student', 0) or 0)
+            except Exception:
+                max_stu = 0
+            cat = str(p.get('category_name') or '').strip()
+            img_path = str(p.get('image_path') or '').strip()
+            # Variants
+            pvariants = []
+            try:
+                pid_for_var = int(p.get('id') or 0)
+                if pid_for_var:
+                    raw_vars = self.db.get_product_variants(pid_for_var, active_only=True) or []
+                    for vv in raw_vars:
+                        vn = str(vv.get('variant_name') or vv.get('display_name') or '').strip()
+                        if vn and vn != 'ברירת מחדל':
+                            vp = int(vv.get('price_points', 0) or 0)
+                            pvariants.append({'name': vn, 'price': vp})
+            except Exception:
+                pass
+            products.append({
+                'name': name, 'price': price, 'stock': stock,
+                'min_pts': min_pts, 'max_stu': max_stu,
+                'category': cat, 'img': img_path,
+                'variants': pvariants,
+            })
+
+        if not products:
+            try:
+                messagebox.showwarning('אין מוצרים', 'אין מוצרים פעילים לייצוא.')
+            except Exception:
+                pass
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title='שמור קטלוג להדפסה',
+            defaultextension='.html',
+            filetypes=[('HTML files', '*.html'), ('All files', '*.*')],
+            initialdir=self._get_downloads_dir(),
+            initialfile='קטלוג_מוצרים.html'
+        )
+        if not file_path:
+            return
+
+        try:
+            # Logo
+            logo_data = ''
+            try:
+                cfg = self.load_app_config() or {}
+                logo_p = str(cfg.get('logo_path') or '').strip()
+                if not logo_p:
+                    # Try common locations
+                    for lp in [os.path.join(os.path.dirname(self.db.db_path), '..', 'לוגו 2.png'),
+                               os.path.join(os.path.dirname(self.db.db_path), 'logo.png')]:
+                        if os.path.isfile(lp):
+                            logo_p = lp
+                            break
+                if logo_p and os.path.isfile(logo_p):
+                    with open(logo_p, 'rb') as f:
+                        d = base64.b64encode(f.read()).decode('ascii')
+                    ext = os.path.splitext(logo_p)[1].lower()
+                    mime = 'image/png' if ext == '.png' else 'image/jpeg'
+                    logo_data = f'data:{mime};base64,{d}'
+            except Exception:
+                pass
+
+            cat_icons = {
+                'חנות - פרס יקר': '⭐', 'חנות - פרס בינוני': '🎁', 'חנות - פרס זול': '🎈',
+                'דוכני מזון': '🍿', 'דוכני פעילות': '🎯', 'מכירה סינית': '🎟️', 'טרמפולינות': '🤸',
+            }
+            cat_colors = {
+                'חנות - פרס יקר': '#8B6914', 'חנות - פרס בינוני': '#2F5496', 'חנות - פרס זול': '#548235',
+                'דוכני מזון': '#BF4B00', 'דוכני פעילות': '#7030A0', 'מכירה סינית': '#C00000', 'טרמפולינות': '#00B050',
+            }
+            cat_order = {
+                'חנות - פרס יקר': 1, 'חנות - פרס בינוני': 2, 'חנות - פרס זול': 3,
+                'דוכני מזון': 4, 'דוכני פעילות': 5, 'מכירה סינית': 6, 'טרמפולינות': 7,
+            }
+
+            h = html_mod.escape
+            cats = {}
+            for p in products:
+                c = p['category'] or 'ללא קטגוריה'
+                cats.setdefault(c, []).append(p)
+            sorted_cats = sorted(cats.keys(), key=lambda c: cat_order.get(c, 99))
+
+            css = '''@page{size:A4;margin:6mm}*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:Arial,'Segoe UI',Tahoma,sans-serif;direction:rtl;background:#fff;color:#1a1a2e;font-size:9pt;line-height:1.3}
+.header{display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #2F5496;padding:4mm 2mm;margin-bottom:3mm}
+.header-right{display:flex;flex-direction:column;gap:2px}
+.header-right .title{font-size:16pt;font-weight:bold;color:#2F5496}
+.header-right .subtitle{font-size:10pt;color:#555}
+.student-info{display:flex;gap:12mm;margin-top:3px}
+.student-info .field{display:flex;align-items:center;gap:2mm;font-size:10pt}
+.student-info .field label{font-weight:bold;color:#2F5496}
+.student-info .field .blank{display:inline-block;border-bottom:1.5px solid #333;min-width:25mm;height:5mm}
+.logo{width:22mm;height:auto;object-fit:contain}
+.cat-section{margin-bottom:2mm}
+.cat-title{background:#2F5496;color:#fff;padding:1.5mm 4mm;font-size:10pt;font-weight:bold;border-radius:2px;margin-bottom:1.5mm;display:flex;align-items:center;gap:2mm}
+.cat-title .icon{font-size:11pt}
+.products-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:1.5mm}
+.product-card{border:1px solid #ccc;border-radius:3px;padding:1.5mm;text-align:center;position:relative;background:#fafbfd;break-inside:avoid;display:flex;flex-direction:column;min-height:28mm}
+.product-variants{font-size:6.5pt;color:#444;margin-top:0.5mm;line-height:1.4}
+.product-variants .var-item{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.product-card.restricted{background:#f7f7fa;border:1.5px dashed #aab}
+.product-card.restricted::after{content:'🔒';position:absolute;top:1mm;left:1mm;font-size:8pt}
+.product-img-wrap{width:100%;height:16mm;display:flex;align-items:center;justify-content:center;background:#eef2f7;border-radius:2px;margin-bottom:1mm;overflow:hidden}
+.product-img-wrap img{max-width:100%;max-height:100%;object-fit:contain}
+.product-img-wrap .placeholder{font-size:16pt;color:#bbb}
+.product-name{font-size:7.5pt;font-weight:bold;color:#1a1a2e;margin-bottom:1mm;flex-grow:1;display:flex;align-items:center;justify-content:center;word-break:break-word}
+.product-bottom{display:flex;align-items:center;justify-content:space-between;gap:1mm}
+.product-price{background:#2F5496;color:#fff;font-size:8pt;font-weight:bold;padding:0.5mm 2mm;border-radius:2px;white-space:nowrap}
+.product-qty{width:8mm;height:6mm;border:1.5px solid #2F5496;border-radius:2px;text-align:center;font-size:9pt;color:#2F5496;flex-shrink:0}
+.product-info{font-size:6pt;color:#888;margin-top:0.5mm}
+.footer{margin-top:3mm;padding-top:2mm;border-top:1px solid #ccc;font-size:7pt;color:#888;text-align:center}
+.legend{display:flex;gap:6mm;justify-content:center;margin-top:2mm;font-size:7.5pt}
+.legend span{display:flex;align-items:center;gap:1mm}
+@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}'''
+
+            parts = [f'''<!DOCTYPE html><html lang="he" dir="rtl"><head><meta charset="UTF-8">
+<title>קטלוג מוצרים</title><style>{css}</style></head><body>
+<div class="header"><div class="header-right">
+<div class="title">קטלוג מוצרים - יריד נקודות</div>
+<div class="subtitle">סמן בריבוע כמה יחידות אתה מעוניין לרכוש. מוצרים נעולים 🔒 דורשים יותר נקודות.</div>
+<div class="student-info">
+<div class="field"><label>שם:</label><span class="blank"></span></div>
+<div class="field"><label>כיתה:</label><span class="blank"></span></div>
+<div class="field"><label>נקודות:</label><span class="blank"></span></div>
+</div></div>
+{'<img class="logo" src="' + logo_data + '" alt="לוגו">' if logo_data else ''}
+</div>''']
+
+            for cat_name in sorted_cats:
+                prods = cats[cat_name]
+                icon = cat_icons.get(cat_name, '📦')
+                color = cat_colors.get(cat_name, '#2F5496')
+                cols = 4 if cat_name in ('דוכני פעילות', 'מכירה סינית', 'טרמפולינות', 'דוכני מזון') else 6
+
+                parts.append(f'<div class="cat-section"><div class="cat-title" style="background:{color}">'
+                             f'<span class="icon">{icon}</span> {h(cat_name)}'
+                             f'<span style="font-size:7pt;font-weight:normal;margin-right:auto;">({len(prods)} פריטים)</span>'
+                             f'</div><div class="products-grid" style="grid-template-columns:repeat({cols},1fr);">')
+
+                for p in prods:
+                    restricted = ' restricted' if p['min_pts'] > 0 else ''
+                    info_parts = []
+                    if p['min_pts'] > 0:
+                        info_parts.append(f"מ-{p['min_pts']} נק'")
+                    if p['max_stu'] > 0:
+                        info_parts.append(f"עד {p['max_stu']}")
+                    info_str = ' | '.join(info_parts)
+
+                    img_html = f'<span class="placeholder">{icon}</span>'
+                    if p['img']:
+                        ip = p['img']
+                        if not os.path.isabs(ip):
+                            try:
+                                ip = os.path.join(os.path.dirname(self.db.db_path), ip)
+                            except Exception:
+                                pass
+                        if os.path.isfile(ip):
+                            try:
+                                with open(ip, 'rb') as f:
+                                    d64 = base64.b64encode(f.read()).decode('ascii')
+                                ext = os.path.splitext(ip)[1].lower()
+                                mime = 'image/png' if ext == '.png' else 'image/jpeg'
+                                img_html = f'<img src="data:{mime};base64,{d64}" alt="">'
+                            except Exception:
+                                pass
+
+                    # Variants HTML
+                    variants_html = ''
+                    pvars = p.get('variants') or []
+                    if pvars:
+                        vlines = []
+                        for vv in pvars:
+                            vn = h(vv['name'])
+                            vp = vv.get('price', 0)
+                            if vp and vp != p['price']:
+                                vlines.append(f'<div class="var-item">{vn} ({vp} נק\')</div>')
+                            else:
+                                vlines.append(f'<div class="var-item">{vn}</div>')
+                        variants_html = '<div class="product-variants">' + ''.join(vlines) + '</div>'
+
+                    parts.append(
+                        f'<div class="product-card{restricted}">'
+                        f'<div class="product-img-wrap">{img_html}</div>'
+                        f'<div class="product-name">{h(p["name"])}</div>'
+                        + variants_html
+                        + f'<div class="product-bottom">'
+                        f'<div class="product-price">{p["price"]} נק\'</div>'
+                        f'<input type="text" class="product-qty" maxlength="2" title="כמות">'
+                        f'</div>'
+                        + (f'<div class="product-info">{h(info_str)}</div>' if info_str else '')
+                        + '</div>'
+                    )
+                parts.append('</div></div>')
+
+            parts.append('''<div class="legend">
+<span>🔒 דורש סף נקודות מינימלי</span>
+<span>☐ רשום כמות רצויה בריבוע</span>
+</div><div class="footer">זהו קטלוג לתכנון בלבד — הרכישה בפועל תתבצע ביריד עצמו באמצעות כרטיס התלמיד.</div>
+</body></html>''')
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(parts))
+
+            messagebox.showinfo('קטלוג נוצר', f'הקטלוג נשמר בהצלחה.\n\n{file_path}\n\nיש לפתוח בדפדפן ולהדפיס (Ctrl+P).')
+            try:
+                import webbrowser
+                webbrowser.open(file_path)
+            except Exception:
+                pass
+        except Exception as e:
+            messagebox.showerror('שגיאה', f'לא ניתן ליצור קטלוג:\n{str(e)}')
 
     def _get_downloads_dir(self) -> str:
         try:
@@ -22322,6 +24443,49 @@ class AdminStation:
         except Exception:
             pass
     
+    def _force_sync_before_close(self):
+        """כפה סינכרון מיידי של כל השינויים הממתינים"""
+        try:
+            import sync_agent
+            cfg = self.db.get_app_config()
+            if not cfg:
+                return
+                
+            push_url = str(cfg.get('sync_push_url') or '').strip()
+            api_key = str(cfg.get('api_key') or '').strip()
+            tenant_id = str(cfg.get('tenant_id') or '').strip()
+            station_id = str(cfg.get('station_id') or '').strip()
+            
+            if not (push_url and api_key and tenant_id):
+                return
+                
+            # קבל את כל השינויים הממתינים
+            changes = self.db.get_pending_changes(limit=1000) or []
+            if changes:
+                print(f"[SYNC] Pushing {len(changes)} pending changes before close...")
+                success = sync_agent.push_changes(
+                    push_url=push_url,
+                    changes=changes,
+                    api_key=api_key,
+                    tenant_id=tenant_id,
+                    station_id=station_id
+                )
+                if success:
+                    print("[SYNC] ✅ Successfully pushed changes before close")
+                    # סמן שינויים כנשלחו
+                    for change in changes:
+                        try:
+                            self.db.mark_change_synced(change.get('id'))
+                        except Exception:
+                            pass
+                else:
+                    print("[SYNC] ❌ Failed to push changes before close")
+            else:
+                print("[SYNC] No pending changes to push")
+                
+        except Exception as e:
+            print(f"[SYNC] Error in force sync: {e}")
+
     def on_closing(self):
         """טיפול בסגירת החלון"""
         try:
@@ -22333,6 +24497,15 @@ class AdminStation:
                 self._excel_export_job = None
         except Exception:
             pass
+            
+        # סינכרון מיידי לפני סגירה
+        try:
+            if hasattr(self, '_sync_thread') and self._sync_thread:
+                print("[SYNC] Forcing immediate sync before closing...")
+                self._force_sync_before_close()
+        except Exception as e:
+            print(f"[SYNC] Error forcing sync before close: {e}")
+            
         # ייצוא רק אם היו שינויים
         if self.has_changes:
             safe_print("📤 ייצוא שינויים לפני סגירה (רק G, H, I)...")
@@ -22343,12 +24516,94 @@ class AdminStation:
                 pass
         else:
             safe_print("ℹ️ אין שינויים - דילוג על ייצוא")
+
+        # Flush remote writes BEFORE destroy — עם הודעה גלויה (לא קפיאה)
+        try:
+            from database import _RemoteSyncWorker
+            with _RemoteSyncWorker._lock:
+                has_workers = len(_RemoteSyncWorker._instances) > 0
+            print(f"[DB-SYNC] Pre-close: has_workers={has_workers}")
+            if has_workers:
+                # הצגת הודעה למשתמש
+                try:
+                    self.show_status_message("⏳ מסנכרן שינויים לפני סגירה...", '#3498db', duration=10000)
+                    self.root.update_idletasks()
+                except Exception:
+                    pass
+                import threading
+                flush_done = threading.Event()
+                def _do_flush():
+                    try:
+                        _RemoteSyncWorker.flush_all(timeout=8)
+                    except Exception as _fe:
+                        try:
+                            print(f"[DB-SYNC] Flush error: {_fe}")
+                        except Exception:
+                            pass
+                    flush_done.set()
+                t = threading.Thread(target=_do_flush, daemon=True)
+                t.start()
+                # המתן עד 10 שניות — UI לא יקפא כי נעשה update כל 200ms
+                for _ in range(50):
+                    if flush_done.wait(0.2):
+                        break
+                    try:
+                        self.root.update()
+                    except Exception:
+                        break
+                print(f"[DB-SYNC] Pre-close flush done (completed={flush_done.is_set()})")
+                # סמן שה-flush בוצע — atexit לא צריך לחזור על זה
+                _RemoteSyncWorker._flushed_at_exit = True
+        except Exception as e:
+            try:
+                print(f"[DB-SYNC] Pre-close flush error: {e}")
+            except Exception:
+                pass
+
         self.root.destroy()
+        try:
+            import sys
+            sys.exit(0)
+        except SystemExit:
+            import os
+            os._exit(0)
+
+
+_single_instance_mutex = None
+
+def _acquire_single_instance():
+    """מניעת פתיחות כפולות באמצעות Windows Mutex"""
+    global _single_instance_mutex
+    try:
+        if sys.platform == 'win32':
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            mutex_name = "SchoolPoints_AdminStation_SingleInstance"
+            _single_instance_mutex = kernel32.CreateMutexW(None, True, mutex_name)
+            if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                kernel32.CloseHandle(_single_instance_mutex)
+                _single_instance_mutex = None
+                return False
+    except Exception:
+        pass
+    return True
 
 
 def main():
-    """הפעלה רגילה - ללא splash (גורם לבעיות)"""
+    """הפעלה עם splash screen"""
+    try:
+        import sp_logger
+        sp_logger.install()
+    except Exception:
+        pass
+    _install_crash_logger()
     _set_windows_dpi_awareness()
+
+    # מניעת פתיחות כפולות
+    if not _acquire_single_instance():
+        return
+    
+    # יצירת חלון ראשי עם תצורה מתאימה
     root = tk.Tk()
     try:
         import sys
@@ -22363,9 +24618,26 @@ def main():
                 break
     except Exception:
         pass
+    
+    # הסתרת החלון הראשי לפני ה-splash screen
+    root.withdraw()
     _apply_tk_scaling(root)
-    app = AdminStation(root)
-    root.mainloop()
+    
+    # פונקציה להפעלת התוכנה הראשית
+    def run_main_app():
+        try:
+            app = AdminStation(root)
+            root.mainloop()
+        except Exception as e:
+            print(f"Error starting main app: {e}")
+            try:
+                root.destroy()
+            except:
+                pass
+    
+    # הפעלת splash screen ואז התוכנה הראשית
+    from splash_screen import show_splash_and_run
+    show_splash_and_run(run_main_app, title="מערכת ניהול נקודות", init_time=1)
 
 
 def main_no_splash():

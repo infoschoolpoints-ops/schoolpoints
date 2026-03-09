@@ -1639,8 +1639,12 @@ class ColorEditor:
             messagebox.showwarning("אזהרה", "חייב להיות לפחות טווח אחד")
             return
         
+        if not (0 <= index < len(self.ranges)):
+            return
+        
         if messagebox.askyesno("אישור מחיקה", "האם למחוק טווח זה?"):
-            del self.ranges[index]
+            if 0 <= index < len(self.ranges):
+                del self.ranges[index]
             self.refresh_ranges()
     
     def add_range(self):

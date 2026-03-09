@@ -84,7 +84,7 @@ class CustomerDisplay:
             return False
     
     def _send(self, data):
-        """שליחת נתונים למסך"""
+        """Send data to display with timeout protection"""
         if not self.connected or not self.serial:
             return False
         try:
@@ -95,12 +95,23 @@ class CustomerDisplay:
                 data = data[::-1]
                 # Encode with PC862 (as discovered from display boot screen)
                 data = data.encode('cp862', errors='ignore')  # ignore instead of replace
-            self.serial.write(data)
-            self.serial.flush()
-            time.sleep(0.1)  # Slightly longer delay
-            return True
+            
+            # Set a short timeout for write operations
+            old_timeout = self.serial.timeout
+            self.serial.timeout = 0.5  # 500ms timeout
+            
+            try:
+                self.serial.write(data)
+                self.serial.flush()
+                time.sleep(0.05)  # Shorter delay
+                return True
+            finally:
+                self.serial.timeout = old_timeout
+                
         except Exception as e:
-            print(f"Display send error: {e}")
+            # Don't print timeout errors to avoid spam
+            if "timeout" not in str(e).lower():
+                print(f"Display send error: {e}")
             return False
     
     def _send_text(self, text):

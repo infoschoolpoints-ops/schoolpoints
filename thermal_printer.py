@@ -8,65 +8,23 @@ import hashlib
 
 
 class HebrewDate:
-    """Convert Gregorian date to Hebrew date with proper Hebrew numerals."""
-    
-    HEBREW_MONTHS = [
-        "תשרי", "חשוון", "כסלו", "טבת", "שבט", "אדר",
-        "ניסן", "אייר", "סיוון", "תמוז", "אב", "אלול"
-    ]
-    
-    @staticmethod
-    def number_to_hebrew(num):
-        """Convert number to Hebrew letters."""
-        ones = ["", "א", "ב", "ג", "ד", "ה", "ו", "ז", "ח", "ט"]
-        tens = ["", "י", "כ", "ל", "מ", "נ", "ס", "ע", "פ", "צ"]
-        hundreds = ["", "ק", "ר", "ש", "ת", "תק", "תר", "תש", "תת", "תתק"]
-        
-        if num == 15:
-            return "ט\"ו"
-        if num == 16:
-            return "ט\"ז"
-        
-        result = ""
-        h = num // 100
-        if h > 0 and h < len(hundreds):
-            result += hundreds[h]
-        
-        remainder = num % 100
-        t = remainder // 10
-        o = remainder % 10
-        
-        if t > 0 and t < len(tens):
-            result += tens[t]
-        if o > 0 and o < len(ones):
-            result += ones[o]
-        
-        if len(result) == 1:
-            result += "'"
-        elif len(result) > 1:
-            result = result[:-1] + '"' + result[-1]
-        
-        return result if result else str(num)
-    
+    """Convert Gregorian date to Hebrew date using pyluach (accurate)."""
+
     @staticmethod
     def get_hebrew_date(date=None):
-        """Get Hebrew date string with Hebrew numerals."""
+        """Get Hebrew date string using pyluach via jewish_calendar module."""
         if date is None:
             date = datetime.now()
-        
-        day = date.day
-        month = date.month
-        year = date.year
-        
-        hebrew_year = year + 3760
-        hebrew_month_idx = (month + 6) % 12
-        hebrew_month = HebrewDate.HEBREW_MONTHS[hebrew_month_idx]
-        
-        hebrew_day = HebrewDate.number_to_hebrew(day)
-        year_last_digits = hebrew_year % 1000
-        hebrew_year_str = HebrewDate.number_to_hebrew(year_last_digits)
-        
-        return f"{hebrew_day} ב{hebrew_month} ה'{hebrew_year_str}"
+        try:
+            from jewish_calendar import hebrew_date_from_gregorian_str
+            greg_str = date.strftime('%Y-%m-%d')
+            result = hebrew_date_from_gregorian_str(greg_str)
+            if result:
+                return result
+        except Exception:
+            pass
+        # Fallback: return simple Gregorian date if pyluach unavailable
+        return date.strftime('%d/%m/%Y')
 
 
 class ThermalPrinterCached:

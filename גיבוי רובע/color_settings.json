@@ -1,0 +1,106 @@
+{
+  "color_ranges": [
+    {
+      "min": 0,
+      "max": 400,
+      "color": "#c0c0c0",
+      "name": "זהב",
+      "sound_key": "001 תיקוף"
+    },
+    {
+      "min": 300,
+      "max": 500,
+      "color": "#fd3ee0",
+      "name": "זוהר",
+      "sound_key": "002 תיקוף"
+    },
+    {
+      "min": 501,
+      "max": 800,
+      "color": "#e40106",
+      "name": "חדש",
+      "sound_key": "003 תיקוף"
+    },
+    {
+      "min": 801,
+      "max": 900,
+      "color": "#3ffc56",
+      "name": "חדש",
+      "sound_key": "004 תיקוף"
+    },
+    {
+      "min": 901,
+      "max": 1000,
+      "color": "#f8fc3f",
+      "name": "חדש",
+      "sound_key": "005 תיקוף"
+    },
+    {
+      "min": 1001,
+      "max": 1399,
+      "color": "#5ae0e0",
+      "name": "חדש",
+      "sound_key": "006 תיקוף"
+    },
+    {
+      "min": 1400,
+      "max": 1499,
+      "color": "#ff633c",
+      "name": "חדש",
+      "sound_key": "007 תיקוף"
+    },
+    {
+      "min": 1500,
+      "max": 1700,
+      "color": "#ff3cc9",
+      "name": "חדש",
+      "sound_key": "008 תיקוף"
+    },
+    {
+      "min": 1701,
+      "max": 2000,
+      "color": "#ff3c3c",
+      "name": "חדש",
+      "sound_key": "001"
+    }
+  ],
+  "coins": [
+    {
+      "value": 500,
+      "color": "#c0c0c0",
+      "name": "כסף",
+      "kind": "coin"
+    },
+    {
+      "value": 1000,
+      "color": "#f1c40f",
+      "name": "זהב",
+      "kind": "coin"
+    },
+    {
+      "value": 1500,
+      "color": "#1ae6e6",
+      "name": "יהלום",
+      "kind": "diamond"
+    }
+  ],
+  "goal": {
+    "enabled": 1,
+    "mode": "relative_class",
+    "absolute_points": 100,
+    "relative_percent": 95.0,
+    "show_percent": 1,
+    "filled_color": "#f81003",
+    "empty_color": "#ecf0f1",
+    "border_color": "#2c3e50"
+  },
+  "event_sounds": {
+    "unknown_card": "נכשל",
+    "swipe_ok": "001 תיקוף",
+    "first_swipe": "01 הראשונים לבונוס כפיים",
+    "time_bonus": "001 לבונוס זמנים",
+    "tier_up_first_time": "001 קריאה התפעלות",
+    "teacher_bonus": "001 כפיים",
+    "special_bonus": "002 כפיים סוערות"
+  }
+}

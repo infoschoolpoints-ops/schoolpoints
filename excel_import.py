@@ -64,8 +64,8 @@ class ExcelImporter:
             from openpyxl import load_workbook
             from openpyxl.styles import Alignment
 
-            student_name = _strip_asterisk_annotations(f"{student.get('first_name', '')} {student.get('last_name', '')}".strip())
-            class_name = _strip_asterisk_annotations(str(student.get('class_name') or '').strip())
+            student_name = f"{student.get('first_name', '')} {student.get('last_name', '')}".strip()
+            class_name = str(student.get('class_name') or '').strip()
 
             def _split_dt(dt_val: str) -> tuple[str, str]:
                 s = str(dt_val or '').strip()
@@ -132,8 +132,8 @@ class ExcelImporter:
                     'אחרי': row.get('new_points'),
                     'סוג פעולה': action_type,
                     'מבצע פעולה': _actor_kind(action_type, actor_name, reason),
-                    'בוצע ע"י': _strip_asterisk_annotations(actor_name),
-                    'סיבה': _strip_asterisk_annotations(reason),
+                    'בוצע ע"י': actor_name,
+                    'סיבה': reason,
                 })
 
             df = pd.DataFrame(data, columns=columns) if data else pd.DataFrame(columns=columns)
@@ -153,12 +153,27 @@ class ExcelImporter:
                     for cell in row:
                         cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
 
+            # הקפאת שורת כותרת + כותרת חוזרת בהדפסה
+            try:
+                ws.freeze_panes = 'A2'
+                ws.print_title_rows = '1:1'
+            except Exception:
+                pass
+
             # שם גליון
             try:
                 base = f"היסטוריה - {student.get('first_name','')}{student.get('last_name','')}".strip() or 'היסטוריה'
                 ws.title = str(base)[:31]
             except Exception:
                 pass
+
+            # הוספת מעברי עמוד לכל הגליונות
+            for ws in wb.worksheets:
+                ws.page_setup.paperSize = ws.PAPERSIZE_A4
+                ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+                ws.page_setup.fitToPage = True
+                ws.page_setup.fitToHeight = 0
+                ws.page_setup.fitToWidth = 1
 
             wb.save(excel_path)
             return True
@@ -384,7 +399,55 @@ class ExcelImporter:
                     else:
                         # אין עמודת "מס' סידורי" – השתמש בסדר השורות כמות שהוא
                         serial_number = int(index) + 1
-                    
+
+                    # מגדר
+                    import_gender = None
+                    if 'מגדר' in df.columns:
+                        try:
+                            g = str(row.get('מגדר', '') or '').strip()
+                            if g in ('בן', 'M', 'זכר'):
+                                import_gender = 'M'
+                            elif g in ('בת', 'F', 'נקבה'):
+                                import_gender = 'F'
+                        except Exception:
+                            pass
+
+                    # יום הולדת עברי
+                    import_hb_day = None
+                    import_hb_month = None
+                    import_hb_year = None
+                    _heb_month_map = {
+                        'תשרי': 7, 'חשון': 8, 'כסלו': 9, 'טבת': 10, 'שבט': 11,
+                        'אדר': 12, "אדר ב'": 13, "אדר ב": 13,
+                        'ניסן': 1, 'אייר': 2, 'סיון': 3, 'תמוז': 4, 'אב': 5, 'אלול': 6,
+                    }
+                    if 'יום הולדת עברי - יום' in df.columns:
+                        try:
+                            dv = row.get('יום הולדת עברי - יום')
+                            if pd.notna(dv) and str(dv).strip() and str(dv).strip().lower() != 'nan':
+                                import_hb_day = int(float(dv))
+                        except Exception:
+                            pass
+                    if 'יום הולדת עברי - חודש' in df.columns:
+                        try:
+                            mv = str(row.get('יום הולדת עברי - חודש') or '').strip()
+                            if mv and mv.lower() != 'nan':
+                                import_hb_month = _heb_month_map.get(mv)
+                                if import_hb_month is None:
+                                    try:
+                                        import_hb_month = int(float(mv))
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                    if 'יום הולדת עברי - שנה' in df.columns:
+                        try:
+                            yv = row.get('יום הולדת עברי - שנה')
+                            if pd.notna(yv) and str(yv).strip() and str(yv).strip().lower() != 'nan':
+                                import_hb_year = int(float(yv))
+                        except Exception:
+                            pass
+
                     # חיפוש תלמיד קיים (לפי שם)
                     existing = self.db.search_students(f"{first_name} {last_name}")
                     
@@ -412,6 +475,26 @@ class ExcelImporter:
                         # עדכון הודעה פרטית - תמיד מעדכן (גם אם ריק)!
                         self.db.update_private_message(student_id, private_message)
 
+                        # עדכון מגדר ויום הולדת עברי (אם הגיעו מהאקסל)
+                        if import_gender is not None or import_hb_day is not None or import_hb_month is not None or import_hb_year is not None:
+                            try:
+                                self.db.update_student_basic(
+                                    student_id=student_id,
+                                    last_name=student.get('last_name', last_name),
+                                    first_name=student.get('first_name', first_name),
+                                    id_number=student.get('id_number') or id_number,
+                                    class_name=student.get('class_name') or class_name,
+                                    card_number=student.get('card_number') or (card_number or ''),
+                                    photo_number=student.get('photo_number') or photo_number,
+                                    serial_number=serial_number,
+                                    hebrew_birth_day=import_hb_day if import_hb_day is not None else student.get('hebrew_birth_day'),
+                                    hebrew_birth_month=import_hb_month if import_hb_month is not None else student.get('hebrew_birth_month'),
+                                    hebrew_birth_year=import_hb_year if import_hb_year is not None else student.get('hebrew_birth_year'),
+                                    gender=import_gender if import_gender is not None else (student.get('gender') or None),
+                                )
+                            except Exception:
+                                pass
+
                         # שמירת סיכום תיקופים ליצירת swipe_log (רק אם clear_existing)
                         if clear_existing and total_swipes_val is not None:
                             swipe_totals_by_student[student_id] = total_swipes_val
@@ -427,7 +510,11 @@ class ExcelImporter:
                             photo_number=photo_number,
                             card_number=card_number,
                             points=points,
-                            serial_number=serial_number
+                            serial_number=serial_number,
+                            hebrew_birth_day=import_hb_day,
+                            hebrew_birth_month=import_hb_month,
+                            hebrew_birth_year=import_hb_year,
+                            gender=import_gender,
                         )
                         # אם קיימת הודעה פרטית בשורה – עדכן גם אותה לתלמיד החדש
                         if private_message is not None:
@@ -495,6 +582,283 @@ class ExcelImporter:
             errors.append(f"שגיאה כללית בקריאת הקובץ: {str(e)}")
             return 0, errors
     
+    # ---------- ייבוא סלקטיבי ----------
+    SELECTABLE_FIELDS = [
+        ('כיתה', 'class'), ('ת"ז', 'id_number'), ('נתיב תמונה', 'photo'),
+        ("מס' כרטיס", 'card'), ("מס' נקודות", 'points'), ('הודעה פרטית', 'private_message'),
+        ('מגדר', 'gender'), ('יום הולדת עברי', 'hebrew_birthday'), ("מס' סידורי", 'serial'),
+    ]
+
+    def read_excel_info(self, excel_path: str) -> dict:
+        """קריאת מידע על קובץ Excel: עמודות זמינות, מספר שורות, שדות לייבוא."""
+        if not _require_pandas():
+            return {'error': _PANDAS_MISSING_MSG}
+        try:
+            df = pd.read_excel(excel_path, dtype={"מס' כרטיס": str})
+            cols = list(df.columns)
+            if 'שם משפחה' not in cols or 'שם פרטי' not in cols:
+                return {'error': 'חסרות עמודות חובה: שם משפחה, שם פרטי'}
+            valid = df[df['שם משפחה'].notna() & df['שם פרטי'].notna()]
+            valid = valid[valid['שם משפחה'].astype(str).str.strip().ne('')]
+            valid = valid[valid['שם פרטי'].astype(str).str.strip().ne('')]
+            valid = valid[~valid['שם משפחה'].astype(str).str.strip().str.lower().eq('nan')]
+            valid = valid[~valid['שם פרטי'].astype(str).str.strip().str.lower().eq('nan')]
+            available = []
+            _col_detect = {
+                'class': 'כיתה' in cols, 'id_number': 'ת"ז' in cols,
+                'photo': ('נתיב תמונה' in cols or "מס' תמונה" in cols),
+                'card': "מס' כרטיס" in cols, 'points': "מס' נקודות" in cols,
+                'private_message': 'הודעה פרטית' in cols, 'gender': 'מגדר' in cols,
+                'hebrew_birthday': any(c in cols for c in [
+                    'יום הולדת עברי - יום', 'יום הולדת עברי - חודש', 'יום הולדת עברי - שנה']),
+                'serial': any('סידורי' in str(c) for c in cols),
+            }
+            for display_name, field_key in self.SELECTABLE_FIELDS:
+                if _col_detect.get(field_key):
+                    available.append((display_name, field_key))
+            return {'columns': cols, 'row_count': len(valid), 'available_fields': available}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def selective_import(self, excel_path: str, selected_keys: set,
+                         add_new: bool = False) -> tuple:
+        """ייבוא סלקטיבי – עדכון רק שדות נבחרים לתלמידים שמזוהים לפי שם.
+
+        Returns: (updated_count, added_count, skipped_count, errors)
+        """
+        if not _require_pandas():
+            return 0, 0, 0, [_PANDAS_MISSING_MSG]
+        errors: List[str] = []
+        updated = 0
+        added = 0
+        skipped = 0
+        try:
+            df = pd.read_excel(excel_path, dtype={"מס' כרטיס": str})
+            cols = list(df.columns)
+            if 'שם משפחה' not in cols or 'שם פרטי' not in cols:
+                return 0, 0, 0, ['חסרות עמודות חובה: שם משפחה, שם פרטי']
+
+            all_students = self.db.get_all_students()
+            # מילון שם -> רשימת תלמידים (לטיפול בכפילויות שם)
+            lookup: Dict[tuple, list] = {}
+            serial_lookup: Dict[str, dict] = {}
+            for s in all_students:
+                k = (str(s.get('first_name') or '').strip(),
+                     str(s.get('last_name') or '').strip())
+                if k[0] and k[1]:
+                    lookup.setdefault(k, []).append(s)
+                sn = str(s.get('serial_number') or '').strip()
+                if sn and sn != 'None' and sn != 'nan':
+                    serial_lookup[sn] = s
+
+            photo_col = "נתיב תמונה" if "נתיב תמונה" in cols else "מס' תמונה"
+            serial_col = None
+            for c in cols:
+                if 'סידורי' in str(c):
+                    serial_col = c
+                    break
+            _heb_month_map = {
+                'תשרי': 7, 'חשון': 8, 'כסלו': 9, 'טבת': 10, 'שבט': 11,
+                'אדר': 12, "אדר ב'": 13, "אדר ב": 13,
+                'ניסן': 1, 'אייר': 2, 'סיון': 3, 'תמוז': 4, 'אב': 5, 'אלול': 6,
+            }
+
+            for index, row in df.iterrows():
+                try:
+                    last_name = str(row.get('שם משפחה', '')).strip()
+                    first_name = str(row.get('שם פרטי', '')).strip()
+                    if not last_name or not first_name or last_name == 'nan' or first_name == 'nan':
+                        continue
+                    candidates = lookup.get((first_name, last_name)) or []
+                    existing = None
+                    if len(candidates) == 1:
+                        existing = candidates[0]
+                    elif len(candidates) > 1:
+                        # כפילות שם — ננסה לזהות לפי מס' סידורי
+                        row_serial = ''
+                        if serial_col:
+                            try:
+                                rv = row.get(serial_col)
+                                if pd.notna(rv):
+                                    row_serial = str(rv).strip().replace('.0', '')
+                            except Exception:
+                                pass
+                        if row_serial and row_serial in serial_lookup:
+                            existing = serial_lookup[row_serial]
+                        else:
+                            skipped += 1
+                            errors.append(
+                                f"שורה {index + 2}: {first_name} {last_name} — "
+                                f"נמצאו {len(candidates)} תלמידים עם שם זהה, לא ניתן לזהות")
+                            continue
+                    if existing:
+                        sid = existing['id']
+                        self._selective_update_student(
+                            sid, existing, row, cols, selected_keys,
+                            photo_col, serial_col, _heb_month_map)
+                        updated += 1
+                    elif add_new:
+                        self._selective_add_student(
+                            row, cols, selected_keys, first_name, last_name,
+                            photo_col, serial_col, _heb_month_map, index)
+                        added += 1
+                    else:
+                        skipped += 1
+                except Exception as e:
+                    errors.append(f"שגיאה בשורה {index + 2}: {str(e)}")
+            return updated, added, skipped, errors
+        except Exception as e:
+            errors.append(f"שגיאה כללית: {str(e)}")
+            return updated, added, skipped, errors
+
+    def _selective_update_student(self, sid, existing, row, cols, selected_keys,
+                                  photo_col, serial_col, _heb_month_map):
+        """עדכון שדות נבחרים לתלמיד קיים."""
+        # שדות שמעדכנים דרך update_student_basic
+        needs_basic = selected_keys & {'class', 'id_number', 'gender', 'hebrew_birthday'}
+        basic_kwargs = dict(
+            student_id=sid,
+            last_name=existing.get('last_name', ''),
+            first_name=existing.get('first_name', ''),
+            id_number=existing.get('id_number') or '',
+            class_name=existing.get('class_name') or '',
+            card_number=existing.get('card_number') or '',
+            photo_number=existing.get('photo_number') or '',
+            serial_number=existing.get('serial_number'),
+            hebrew_birth_day=existing.get('hebrew_birth_day'),
+            hebrew_birth_month=existing.get('hebrew_birth_month'),
+            hebrew_birth_year=existing.get('hebrew_birth_year'),
+            gender=existing.get('gender'),
+        )
+        if 'class' in selected_keys and 'כיתה' in cols:
+            val = str(row.get('כיתה', '')).strip() if pd.notna(row.get('כיתה')) else ''
+            if val == 'nan': val = ''
+            basic_kwargs['class_name'] = val
+        if 'id_number' in selected_keys and 'ת"ז' in cols:
+            val = str(row.get('ת"ז', '')).strip() if pd.notna(row.get('ת"ז')) else ''
+            if val == 'nan': val = ''
+            basic_kwargs['id_number'] = val
+        if 'gender' in selected_keys and 'מגדר' in cols:
+            g = str(row.get('מגדר', '') or '').strip()
+            if g in ('בן', 'M', 'זכר'): basic_kwargs['gender'] = 'M'
+            elif g in ('בת', 'F', 'נקבה'): basic_kwargs['gender'] = 'F'
+        if 'hebrew_birthday' in selected_keys:
+            if 'יום הולדת עברי - יום' in cols:
+                try:
+                    dv = row.get('יום הולדת עברי - יום')
+                    if pd.notna(dv) and str(dv).strip() and str(dv).strip().lower() != 'nan':
+                        basic_kwargs['hebrew_birth_day'] = int(float(dv))
+                except Exception: pass
+            if 'יום הולדת עברי - חודש' in cols:
+                try:
+                    mv = str(row.get('יום הולדת עברי - חודש') or '').strip()
+                    if mv and mv.lower() != 'nan':
+                        basic_kwargs['hebrew_birth_month'] = _heb_month_map.get(mv)
+                        if basic_kwargs['hebrew_birth_month'] is None:
+                            basic_kwargs['hebrew_birth_month'] = int(float(mv))
+                except Exception: pass
+            if 'יום הולדת עברי - שנה' in cols:
+                try:
+                    yv = row.get('יום הולדת עברי - שנה')
+                    if pd.notna(yv) and str(yv).strip() and str(yv).strip().lower() != 'nan':
+                        basic_kwargs['hebrew_birth_year'] = int(float(yv))
+                except Exception: pass
+        if needs_basic:
+            self.db.update_student_basic(**basic_kwargs)
+
+        if 'card' in selected_keys and "מס' כרטיס" in cols:
+            val = str(row.get("מס' כרטיס", '')).strip() if pd.notna(row.get("מס' כרטיס")) else ''
+            val = val.lstrip("'")
+            if val in ('nan', '', '0'): val = None
+            self.db.update_card_number(sid, val or '')
+        if 'photo' in selected_keys and photo_col in cols:
+            val = str(row.get(photo_col, '')).strip() if pd.notna(row.get(photo_col)) else ''
+            if val == 'nan': val = ''
+            self.db.update_photo_number(sid, val)
+        if 'points' in selected_keys and "מס' נקודות" in cols:
+            try:
+                pts = int(float(row.get("מס' נקודות"))) if pd.notna(row.get("מס' נקודות")) else 0
+            except Exception: pts = 0
+            if pts != int(existing.get('points') or 0):
+                self.db.update_student_points(sid, pts, "ייבוא סלקטיבי מ-Excel", "מערכת")
+        if 'private_message' in selected_keys and 'הודעה פרטית' in cols:
+            val = None
+            try:
+                msg_val = row.get('הודעה פרטית')
+                if pd.notna(msg_val) and str(msg_val).strip() and str(msg_val).strip().lower() != 'nan':
+                    val = str(msg_val).strip()
+            except Exception: pass
+            self.db.update_private_message(sid, val)
+        if 'serial' in selected_keys and serial_col and serial_col in cols:
+            try:
+                sv = row.get(serial_col)
+                if pd.notna(sv) and str(sv).strip() and str(sv).strip().lower() != 'nan':
+                    self.db.update_serial_number(sid, int(float(sv)))
+            except Exception: pass
+
+    def _selective_add_student(self, row, cols, selected_keys, first_name, last_name,
+                               photo_col, serial_col, _heb_month_map, index):
+        """הוספת תלמיד חדש בייבוא סלקטיבי."""
+        kwargs = dict(last_name=last_name, first_name=first_name)
+        if 'class' in selected_keys and 'כיתה' in cols:
+            val = str(row.get('כיתה', '')).strip() if pd.notna(row.get('כיתה')) else ''
+            if val != 'nan': kwargs['class_name'] = val
+        if 'id_number' in selected_keys and 'ת"ז' in cols:
+            val = str(row.get('ת"ז', '')).strip() if pd.notna(row.get('ת"ז')) else ''
+            if val != 'nan': kwargs['id_number'] = val
+        if 'photo' in selected_keys and photo_col in cols:
+            val = str(row.get(photo_col, '')).strip() if pd.notna(row.get(photo_col)) else ''
+            if val != 'nan': kwargs['photo_number'] = val
+        if 'card' in selected_keys and "מס' כרטיס" in cols:
+            val = str(row.get("מס' כרטיס", '')).strip() if pd.notna(row.get("מס' כרטיס")) else ''
+            val = val.lstrip("'")
+            if val not in ('nan', '', '0'): kwargs['card_number'] = val
+        if 'points' in selected_keys and "מס' נקודות" in cols:
+            try:
+                kwargs['points'] = int(float(row.get("מס' נקודות"))) if pd.notna(row.get("מס' נקודות")) else 0
+            except Exception: pass
+        if 'serial' in selected_keys and serial_col and serial_col in cols:
+            try:
+                sv = row.get(serial_col)
+                if pd.notna(sv) and str(sv).strip().lower() != 'nan':
+                    kwargs['serial_number'] = int(float(sv))
+            except Exception: pass
+        else:
+            kwargs['serial_number'] = int(index) + 1
+        if 'gender' in selected_keys and 'מגדר' in cols:
+            g = str(row.get('מגדר', '') or '').strip()
+            if g in ('בן', 'M', 'זכר'): kwargs['gender'] = 'M'
+            elif g in ('בת', 'F', 'נקבה'): kwargs['gender'] = 'F'
+        if 'hebrew_birthday' in selected_keys:
+            if 'יום הולדת עברי - יום' in cols:
+                try:
+                    dv = row.get('יום הולדת עברי - יום')
+                    if pd.notna(dv) and str(dv).strip().lower() != 'nan':
+                        kwargs['hebrew_birth_day'] = int(float(dv))
+                except Exception: pass
+            if 'יום הולדת עברי - חודש' in cols:
+                try:
+                    mv = str(row.get('יום הולדת עברי - חודש') or '').strip()
+                    if mv and mv.lower() != 'nan':
+                        val = _heb_month_map.get(mv)
+                        if val is None:
+                            val = int(float(mv))
+                        kwargs['hebrew_birth_month'] = val
+                except Exception: pass
+            if 'יום הולדת עברי - שנה' in cols:
+                try:
+                    yv = row.get('יום הולדת עברי - שנה')
+                    if pd.notna(yv) and str(yv).strip().lower() != 'nan':
+                        kwargs['hebrew_birth_year'] = int(float(yv))
+                except Exception: pass
+        new_id = self.db.add_student(**kwargs)
+        if 'private_message' in selected_keys and 'הודעה פרטית' in cols:
+            try:
+                msg_val = row.get('הודעה פרטית')
+                if pd.notna(msg_val) and str(msg_val).strip() and str(msg_val).strip().lower() != 'nan':
+                    self.db.update_private_message(new_id, str(msg_val).strip())
+            except Exception: pass
+
     def export_columns_only(self, excel_path: str) -> bool:
         """
         ייצוא חכם - עדכון רק עמודות G, H, I (כרטיס, נקודות, הודעה)
@@ -555,6 +919,14 @@ class ExcelImporter:
                 cell = ws.cell(row=row_num, column=card_col)
                 cell.number_format = '@'
             
+            # הוספת מעברי עמוד לכל הגליונות
+            for ws in wb.worksheets:
+                ws.page_setup.paperSize = ws.PAPERSIZE_A4
+                ws.page_setup.orientation = ws.ORIENTATION_LANDSCAPE
+                ws.page_setup.fitToPage = True
+                ws.page_setup.fitToHeight = 0
+                ws.page_setup.fitToWidth = 1
+
             wb.save(excel_path)
             return True
             
@@ -598,6 +970,10 @@ class ExcelImporter:
                 "מס' תיקופים",
                 "ממוצע תיקופים",
                 'הודעה פרטית',
+                'מגדר',
+                'יום הולדת עברי - יום',
+                'יום הולדת עברי - חודש',
+                'יום הולדת עברי - שנה',
             ]
 
             # המרה ל-DataFrame
@@ -619,22 +995,42 @@ class ExcelImporter:
                 else:
                     avg_swipes = 0
 
+                # מגדר ויום הולדת עברי
+                gender_val = str(student.get('gender') or '').strip()
+                gender_display = {'M': 'בן', 'F': 'בת'}.get(gender_val, '')
+                hb_day = student.get('hebrew_birth_day') or ''
+                hb_month_num = student.get('hebrew_birth_month')
+                hb_month_display = ''
+                if hb_month_num:
+                    _heb_m = {1:'ניסן',2:'אייר',3:'סיון',4:'תמוז',5:'אב',6:'אלול',7:'תשרי',8:'חשון',9:'כסלו',10:'טבת',11:'שבט',12:'אדר',13:"אדר ב'"}
+                    hb_month_display = _heb_m.get(int(hb_month_num), str(hb_month_num))
+                hb_year = student.get('hebrew_birth_year') or ''
+
                 data.append({
                     "מס' סידורי": serial_out,
-                    'שם משפחה': _strip_asterisk_annotations(student['last_name']),
-                    'שם פרטי': _strip_asterisk_annotations(student['first_name']),
-                    'כיתה': _strip_asterisk_annotations(student['class_name']),
+                    'שם משפחה': student['last_name'],
+                    'שם פרטי': student['first_name'],
+                    'כיתה': student['class_name'],
                     "נתיב תמונה": student['photo_number'],
                     "מס' כרטיס": card_str,
                     "מס' נקודות": student['points'],
                     "מס' תיקופים": total_swipes,
                     "ממוצע תיקופים": avg_swipes,
-                    'הודעה פרטית': _strip_asterisk_annotations(student.get('private_message', '') or '')
+                    'הודעה פרטית': student.get('private_message', '') or '',
+                    'מגדר': gender_display,
+                    'יום הולדת עברי - יום': hb_day if hb_day else '',
+                    'יום הולדת עברי - חודש': hb_month_display,
+                    'יום הולדת עברי - שנה': hb_year if hb_year else '',
                 })
             
             # גם אם data ריק – ניצור DataFrame עם העמודות כדי לקבל שורת כותרות בלבד
             if data:
                 df = pd.DataFrame(data, columns=columns)
+                # מיון לפי כיתה (stable sort — שומר סדר פנימי)
+                try:
+                    df = df.sort_values(by='כיתה', kind='mergesort', key=lambda x: x.astype(str).str.strip())
+                except Exception:
+                    pass
             else:
                 df = pd.DataFrame(columns=columns)
             
@@ -672,6 +1068,21 @@ class ExcelImporter:
                     for cell in row:
                         cell.alignment = Alignment(horizontal='right', vertical='center')
             
+            # מעברי עמוד בין כיתות + הקפאת כותרת
+            try:
+                from excel_styling import add_class_page_breaks_and_freeze
+                add_class_page_breaks_and_freeze(ws, has_header=True)
+            except Exception:
+                pass
+            
+            # הגדרות הדפסה
+            for _ws in wb.worksheets:
+                _ws.page_setup.paperSize = _ws.PAPERSIZE_A4
+                _ws.page_setup.orientation = _ws.ORIENTATION_LANDSCAPE
+                _ws.page_setup.fitToPage = True
+                _ws.page_setup.fitToHeight = 0
+                _ws.page_setup.fitToWidth = 1
+
             wb.save(excel_path)
             
             return True
@@ -724,6 +1135,36 @@ class ExcelImporter:
                         return hhmm.replace(':', '.')
                     except Exception:
                         return ''
+
+            # כלי עזר לפורמט תאריך
+            def _format_date(d_iso: str) -> str:
+                if not d_iso or len(d_iso) < 10:
+                    return d_iso
+                y, m, d = d_iso[0:4], d_iso[5:7], d_iso[8:10]
+                return f"{d}.{m}.{y}"
+
+            def _style_and_setup_wb(wb_arg):
+                """עיצוב RTL + מעברי עמוד בין כיתות + הקפאת כותרת + הגדרות הדפסה"""
+                try:
+                    from excel_styling import apply_rtl_and_alternating_colors, add_class_page_breaks_and_freeze
+                    for _ws in wb_arg.worksheets:
+                        apply_rtl_and_alternating_colors(_ws, has_header=True)
+                        add_class_page_breaks_and_freeze(_ws, has_header=True)
+                except Exception:
+                    for _ws in wb_arg.worksheets:
+                        _ws.sheet_view.rightToLeft = True
+                for _ws in wb_arg.worksheets:
+                    _ws.page_setup.paperSize = _ws.PAPERSIZE_A4
+                    _ws.page_setup.orientation = _ws.ORIENTATION_LANDSCAPE
+                    _ws.page_setup.fitToPage = True
+                    _ws.page_setup.fitToHeight = 0
+                    _ws.page_setup.fitToWidth = 1
+
+            def _sort_by_class(df_arg):
+                try:
+                    return df_arg.sort_values(by='כיתה', kind='mergesort', key=lambda x: x.astype(str).str.strip())
+                except Exception:
+                    return df_arg
 
             # מצב 1: נוכחות ליום מסוים (כל הבונוסים)
             if mode == "day":
@@ -815,32 +1256,13 @@ class ExcelImporter:
                     data.append(row_dict)
 
                 df = pd.DataFrame(data, columns=columns) if data else pd.DataFrame(columns=columns)
-
+                df = _sort_by_class(df)
                 df.to_excel(excel_path, index=False, engine='openpyxl')
 
                 wb = load_workbook(excel_path)
-                ws = wb.active
-                
-                # Apply RTL and alternating colors styling
-                try:
-                    from excel_styling import apply_rtl_and_alternating_colors
-                    apply_rtl_and_alternating_colors(ws, has_header=True)
-                except Exception:
-                    # Fallback to basic RTL
-                    ws.sheet_view.rightToLeft = True
-                    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
-                        for cell in row:
-                            cell.alignment = Alignment(horizontal='right', vertical='center')
-
+                _style_and_setup_wb(wb)
                 wb.save(excel_path)
                 return True
-
-            # כלי עזר לפורמט תאריך מעמודת given_date (YYYY-MM-DD → DD.MM.YYYY)
-            def _format_date(d_iso: str) -> str:
-                if not d_iso or len(d_iso) < 10:
-                    return d_iso
-                y, m, d = d_iso[0:4], d_iso[5:7], d_iso[8:10]
-                return f"{d}.{m}.{y}"
 
             # מצב 2: לפי בונוס אחד – כל התאריכים, עמודה לכל תאריך
             if mode == "bonus":
@@ -907,28 +1329,17 @@ class ExcelImporter:
                     data.append(row_dict)
 
                 df = pd.DataFrame(data, columns=columns) if data else pd.DataFrame(columns=columns)
+                df = _sort_by_class(df)
                 df.to_excel(excel_path, index=False, engine='openpyxl')
 
                 wb = load_workbook(excel_path)
                 ws = wb.active
-                
-                # Apply RTL and alternating colors styling
-                try:
-                    from excel_styling import apply_rtl_and_alternating_colors
-                    apply_rtl_and_alternating_colors(ws, has_header=True)
-                except Exception:
-                    # Fallback to basic RTL
-                    ws.sheet_view.rightToLeft = True
-                    for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
-                        for cell in row:
-                            cell.alignment = Alignment(horizontal='right', vertical='center')
-
                 try:
                     sheet_name = str(chosen_group or chosen_bonus.get('name', 'נוכחות'))[:31]
                     ws.title = sheet_name
                 except Exception:
                     pass
-
+                _style_and_setup_wb(wb)
                 wb.save(excel_path)
                 return True
 
@@ -1018,20 +1429,8 @@ class ExcelImporter:
                         columns = ["מס' סידורי", 'שם משפחה', 'שם פרטי', 'כיתה']
                         pd.DataFrame([], columns=columns).to_excel(writer, sheet_name='נוכחות', index=False)
 
-                # Apply RTL and alternating colors styling to all sheets
                 wb = load_workbook(excel_path)
-                try:
-                    from excel_styling import apply_rtl_and_alternating_colors
-                    for ws in wb.worksheets:
-                        apply_rtl_and_alternating_colors(ws, has_header=True)
-                except Exception:
-                    # Fallback to basic RTL
-                    for ws in wb.worksheets:
-                        ws.sheet_view.rightToLeft = True
-                        for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
-                            for cell in row:
-                                cell.alignment = Alignment(horizontal='right', vertical='center')
-
+                _style_and_setup_wb(wb)
                 wb.save(excel_path)
                 return True
 
@@ -1053,7 +1452,7 @@ class ExcelImporter:
 
             rows, headers = self.db.get_daily_points_summary_matrix(allowed_classes=allowed_classes)
             base_cols = ["מס' סידורי", 'שם משפחה', 'שם פרטי', 'כיתה']
-            cols = base_cols + list(headers or [])
+            cols = base_cols + list(headers or []) + ["סה\"כ נקודות"]
 
             try:
                 df = pd.DataFrame(rows or [])
@@ -1065,6 +1464,12 @@ class ExcelImporter:
                     df[c] = ''
             df = df[cols]
 
+            # מיון לפי כיתה
+            try:
+                df = df.sort_values(by='כיתה', kind='mergesort', key=lambda x: x.astype(str).str.strip())
+            except Exception:
+                pass
+
             df.to_excel(excel_path, index=False, engine='openpyxl')
 
             wb = load_workbook(excel_path)
@@ -1075,13 +1480,21 @@ class ExcelImporter:
                 pass
 
             try:
-                from excel_styling import apply_rtl_and_alternating_colors
+                from excel_styling import apply_rtl_and_alternating_colors, add_class_page_breaks_and_freeze
                 apply_rtl_and_alternating_colors(ws, has_header=True)
+                add_class_page_breaks_and_freeze(ws, has_header=True)
             except Exception:
                 ws.sheet_view.rightToLeft = True
                 for row in ws.iter_rows(min_row=1, max_row=ws.max_row):
                     for cell in row:
                         cell.alignment = Alignment(horizontal='right', vertical='center', wrap_text=True)
+
+            for _ws in wb.worksheets:
+                _ws.page_setup.paperSize = _ws.PAPERSIZE_A4
+                _ws.page_setup.orientation = _ws.ORIENTATION_LANDSCAPE
+                _ws.page_setup.fitToPage = True
+                _ws.page_setup.fitToHeight = 0
+                _ws.page_setup.fitToWidth = 1
 
             wb.save(excel_path)
             return True

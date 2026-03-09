@@ -79,6 +79,167 @@ def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[
         try: conn.close()
         except: pass
 
+
+@router.get('/api/time-bonus')
+def api_time_bonus_list(request: Request) -> Dict[str, Any]:
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+
+    conn = tenant_db_connection(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, name, start_time, end_time, bonus_points, is_active '
+            'FROM time_bonus_schedules ORDER BY start_time'
+        )
+        rows = cur.fetchall() or []
+        rules = []
+        for r in rows:
+            rr = dict(r) if isinstance(r, dict) else {k: r[k] for k in r.keys()}
+            rules.append({
+                'id': rr.get('id'),
+                'name': rr.get('name') or '',
+                'start_time': rr.get('start_time') or '',
+                'end_time': rr.get('end_time') or '',
+                'points': int(rr.get('bonus_points') or 0),
+                'is_active': int(rr.get('is_active') or 0)
+            })
+        return {'rules': rules}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@router.post('/api/time-bonus/save')
+def api_time_bonus_save(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+
+    rules_in = payload.get('rules') or []
+    if not isinstance(rules_in, list):
+        raise HTTPException(status_code=400, detail='invalid rules')
+
+    def _normalize_time_str(t: str) -> str:
+        try:
+            s = str(t or '').strip()
+            if not s:
+                return ''
+            parts = s.split(':')
+            if len(parts) != 2:
+                return s
+            hh = int(parts[0])
+            mm = int(parts[1])
+            if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                return s
+            return f"{hh:02d}:{mm:02d}"
+        except Exception:
+            return str(t or '').strip()
+
+    conn = tenant_db_connection(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, name, start_time, end_time, bonus_points, is_active, group_name '
+            'FROM time_bonus_schedules'
+        )
+        existing_rows = cur.fetchall() or []
+        existing_map = {}
+        for r in existing_rows:
+            rr = dict(r) if isinstance(r, dict) else {k: r[k] for k in r.keys()}
+            try:
+                rid = int(rr.get('id') or 0)
+            except Exception:
+                rid = 0
+            if rid > 0:
+                existing_map[rid] = rr
+
+        keep_ids = set()
+        saved_rules = []
+
+        for rule in rules_in:
+            if not isinstance(rule, dict):
+                continue
+            try:
+                rid = int(rule.get('id') or 0)
+            except Exception:
+                rid = 0
+            existing = existing_map.get(rid)
+            name = str(rule.get('name') or (existing.get('name') if existing else '') or '').strip()
+            start_time = _normalize_time_str(rule.get('start_time') or (existing.get('start_time') if existing else '') or '')
+            end_time = _normalize_time_str(rule.get('end_time') or (existing.get('end_time') if existing else '') or '')
+            points_val = rule.get('points')
+            if points_val is None and existing is not None:
+                points_val = existing.get('bonus_points')
+            try:
+                points = int(points_val or 0)
+            except Exception:
+                points = 0
+            is_active_val = rule.get('is_active')
+            if is_active_val is None and existing is not None:
+                is_active_val = existing.get('is_active')
+            try:
+                is_active = int(is_active_val or 0)
+            except Exception:
+                is_active = 0
+
+            if not name:
+                continue
+            if rid > 0 and existing is not None:
+                cur.execute(
+                    sql_placeholder(
+                        'UPDATE time_bonus_schedules '
+                        'SET name = ?, start_time = ?, end_time = ?, bonus_points = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP '
+                        'WHERE id = ?'
+                    ),
+                    (name, start_time, end_time, points, is_active, rid)
+                )
+                keep_ids.add(rid)
+                saved_rules.append({'id': rid, 'name': name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active})
+                continue
+
+            group_name = (existing.get('group_name') if existing else None)
+            if USE_POSTGRES:
+                cur.execute(
+                    'INSERT INTO time_bonus_schedules (name, group_name, start_time, end_time, bonus_points, is_active) '
+                    'VALUES (%s, %s, %s, %s, %s, %s) RETURNING id',
+                    (name, group_name, start_time, end_time, points, is_active)
+                )
+                row = cur.fetchone()
+                new_id = row['id'] if isinstance(row, dict) else row[0]
+            else:
+                cur.execute(
+                    'INSERT INTO time_bonus_schedules (name, group_name, start_time, end_time, bonus_points, is_active) '
+                    'VALUES (?, ?, ?, ?, ?, ?)',
+                    (name, group_name, start_time, end_time, points, is_active)
+                )
+                new_id = cur.lastrowid
+            keep_ids.add(int(new_id or 0))
+            saved_rules.append({'id': int(new_id or 0), 'name': name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active})
+
+        delete_ids = [rid for rid in existing_map.keys() if rid not in keep_ids]
+        if delete_ids:
+            placeholders = ','.join(['?' for _ in delete_ids])
+            if USE_POSTGRES:
+                placeholders = ','.join(['%s' for _ in delete_ids])
+            cur.execute(
+                f'DELETE FROM time_bonus_schedules WHERE id IN ({placeholders})',
+                tuple(delete_ids)
+            )
+
+        conn.commit()
+        return {'ok': True, 'rules': saved_rules}
+    finally:
+        try: conn.close()
+        except: pass
+
 @router.get("/web/system-settings", response_class=HTMLResponse)
 def web_system_settings(request: Request):
     guard = web_require_admin_teacher(request)
@@ -1347,7 +1508,7 @@ def web_time_bonus(request: Request):
 
       async function loadRules() {
         try {
-          const res = await fetch('/api/settings/time_bonus');
+          const res = await fetch('/api/time-bonus');
           const data = await res.json();
           rules = Array.isArray(data.rules) ? data.rules : [];
           renderRules();
@@ -1407,7 +1568,8 @@ def web_time_bonus(request: Request):
         
         if (!name) return alert('נא להזין שם');
 
-        const newRule = { name, start_time: start, end_time: end, points };
+        const existingId = (idx >= 0 && rules[idx]) ? rules[idx].id : null;
+        const newRule = { id: existingId, name, start_time: start, end_time: end, points };
         
         if (idx >= 0) {
             rules[idx] = newRule;
@@ -1428,10 +1590,10 @@ def web_time_bonus(request: Request):
       }
 
       async function saveToServer() {
-        await fetch('/api/settings/save', {
+        await fetch('/api/time-bonus/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ key: 'time_bonus', value: { rules: rules } })
+            body: JSON.stringify({ rules: rules })
         });
       }
 

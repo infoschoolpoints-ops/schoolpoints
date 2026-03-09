@@ -147,16 +147,52 @@ def create_voucher_image(voucher_data: dict, logo_path: str = None) -> Image.Ima
     draw.line([(40, y), (width-40, y)], fill='black', width=2)
     y += 30
     
-    # Item name (centered, bold)
+    # Item name (centered, bold) - supports multi-line for consolidated vouchers
     item_name = voucher_data.get('item_name', '')
     if item_name:
-        text = reverse_hebrew_for_image(item_name)
-        # Use extra large font for item name
-        bbox = draw.textbbox((0, 0), text, font=font_extra_large_bold)
-        text_width = bbox[2] - bbox[0]
-        x = (width - text_width) // 2
-        draw.text((x, y), text, fill='black', font=font_extra_large_bold)
-        y += 70  # More space for larger font
+        item_lines = item_name.split('\n')
+        is_consolidated = len(item_lines) > 1
+        if not is_consolidated:
+            # Single item - large centered text
+            text = reverse_hebrew_for_image(item_name)
+            bbox = draw.textbbox((0, 0), text, font=font_extra_large_bold)
+            text_width = bbox[2] - bbox[0]
+            x = (width - text_width) // 2
+            draw.text((x, y), text, fill='black', font=font_extra_large_bold)
+            y += 70
+        else:
+            # Consolidated voucher - title line + item lines with checkboxes
+            title_line = item_lines[0]
+            text = reverse_hebrew_for_image(title_line)
+            bbox = draw.textbbox((0, 0), text, font=font_large_bold)
+            text_width = bbox[2] - bbox[0]
+            x = (width - text_width) // 2
+            draw.text((x, y), text, fill='black', font=font_large_bold)
+            y += 55
+            # Draw each item line with a square checkbox on the right
+            checkbox_size = 22
+            for line in item_lines[1:]:
+                line = line.strip()
+                if not line:
+                    continue
+                # Strip "[ ] " prefix if present (added by cashier_station)
+                display_line = line
+                if display_line.startswith('[ ] '):
+                    display_line = display_line[4:]
+                text = reverse_hebrew_for_image(display_line)
+                # Draw checkbox square on the right side
+                cb_x = width - 60
+                cb_y_top = y + 4
+                draw.rectangle([cb_x, cb_y_top, cb_x + checkbox_size, cb_y_top + checkbox_size], outline='black', width=2)
+                # Draw item text to the left of checkbox
+                bbox = draw.textbbox((0, 0), text, font=font_medium)
+                text_width = bbox[2] - bbox[0]
+                tx = cb_x - text_width - 10
+                if tx < 20:
+                    tx = 20
+                draw.text((tx, y), text, fill='black', font=font_medium)
+                y += 36
+            y += 10
     
     # Quantity (if > 1)
     qty = voucher_data.get('qty', 1)

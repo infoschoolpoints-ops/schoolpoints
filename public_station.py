@@ -75,7 +75,7 @@ LRE = '\u202a'  # Left-to-Right Embedding
 
 UNIVERSAL_MASTER_CODE = "05276247440527624744"
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.4"
 
 _DEBUG_LOG_ENABLED = False
 _DEBUG_LOG_PATH = None
@@ -773,12 +773,19 @@ class PublicStation:
             return
 
         _debug_log('Database נפתח בהצלחה')
+
+        # ניסיון שני להפעלת שרת סנכרון — עכשיו עם db_path נכון
+        try:
+            self._maybe_start_local_sync_server()
+        except Exception:
+            pass
+
         # שימוש באותו מסד נתונים כמו ה-Database הראשי (db_path משותף)
         self.messages_db = MessagesDB(self.db.db_path)
         self.card_buffer = ""
 
         self._last_settings_refresh_ts = 0.0
-        self._settings_refresh_interval_sec = 1.0
+        self._settings_refresh_interval_sec = 5.0
 
         # טעינת כרטיס מאסטר מקובץ (אם קיים)
         self.exit_code = self.load_master_card()
@@ -1835,8 +1842,8 @@ class PublicStation:
         # מיקום ההודעות והסטטיסטיקות אחרי שהממשק נטען
         if self.background_template != 'template1':
             self.root.after(100, self.position_side_labels)
-            # עדכון מיקומים בכל שינוי גודל חלון
-            self.root.bind('<Configure>', lambda e: self.position_side_labels())
+            # עדכון מיקומים בכל שינוי גודל חלון (עם debounce למניעת הצטברות)
+            self.root.bind('<Configure>', lambda e: self._debounced_position_side_labels())
         
         # כפתור יציאה נסתר (בפינה)
         self.exit_button = tk.Button(
@@ -1906,11 +1913,25 @@ class PublicStation:
         self.root.bind('<Key>', self.on_key_press)
         self.root.bind('<Return>', self.on_enter_press)
     
-    def position_side_labels(self):
+    def _debounced_position_side_labels(self):
+        """debounce ל-position_side_labels — מונע הצטברות callbacks מ-Configure events."""
+        try:
+            if getattr(self, '_position_side_after_id', None) is not None:
+                try:
+                    self.root.after_cancel(self._position_side_after_id)
+                except Exception:
+                    pass
+            self._position_side_after_id = self.root.after(150, self._do_position_side_labels)
+        except Exception:
+            self._position_side_after_id = None
+
+    def _do_position_side_labels(self):
+        self._position_side_after_id = None
+        self.position_side_labels()
+
+    def position_side_labels(self, _retry_count: int = 0):
         """מיקום ההודעות והסטטיסטיקות בצד הריבוע באופן רספונסיבי"""
         try:
-            self.root.update_idletasks()
-            
             # מיקום וגודל הריבוע (ביחס ל-root!)
             # חשוב: info_frame הוא ילד של main_frame, לכן winfo_x/y הם יחסיים ל-main_frame.
             # כדי למקם ילדים של root לפי place, חייבים קואורדינטות יחסיות ל-root.
@@ -1920,9 +1941,10 @@ class PublicStation:
             info_h = self.info_frame.winfo_height()
             sw = max(800, self.root.winfo_width())
 
-            # אם הריבוע עדיין לא נפרס, ננסה שוב
+            # אם הריבוע עדיין לא נפרס, ננסה שוב (עד 5 ניסיונות בלבד)
             if info_w <= 50 or info_h <= 50:
-                self.root.after(100, self.position_side_labels)
+                if _retry_count < 5:
+                    self.root.after(200, lambda: self.position_side_labels(_retry_count + 1))
                 return
             
             # מרווח קבוע קטן בין הריבוע לפנלים
@@ -1957,8 +1979,7 @@ class PublicStation:
             # סטטיסטיקות מימין – משתמש בגובה הטבעי של הטקסט (לא כל הריבוע)
             self.statistics_label.place(x=right_x, y=info_y, width=side_w)
 
-            # עדכון מדידות אחרי הצבה כדי למקם את תמונת התלמיד צמוד לשדה הסטטיסטיקות
-            self.root.update_idletasks()
+            # מיקום תמונת התלמיד צמוד לשדה הסטטיסטיקות
             if hasattr(self, 'photo_label'):
                 stats_y = self.statistics_label.winfo_rooty() - self.root.winfo_rooty()
                 stats_h = self.statistics_label.winfo_height()
@@ -1997,8 +2018,9 @@ class PublicStation:
             self.message_label.config(wraplength=max(100, side_w - 20), justify='right')
             self.statistics_label.config(wraplength=max(120, side_w - 20), justify='right')
         except Exception:
-            # במידה ומרכיבים עדיין לא מחושבים, ננסה שוב מעט מאוחר יותר
-            self.root.after(100, self.position_side_labels)
+            # במידה ומרכיבים עדיין לא מחושבים, ננסה שוב (עד 5 ניסיונות)
+            if _retry_count < 5:
+                self.root.after(300, lambda: self.position_side_labels(_retry_count + 1))
     
     def on_key_press(self, event):
         """טיפול בלחיצת מקש"""
@@ -2119,11 +2141,11 @@ class PublicStation:
                     kind = str(getattr(self, '_anti_spam_overlay_kind', '') or '').strip().lower()
                 except Exception:
                     kind = ''
-                if kind == 'block':
+                if kind in ('block', 'block1'):
                     return
                 # warning: נשאיר על המסך כדי לא לפספס את האזהרה כאשר סורקים מהר.
-                # blocked: נסתיר כדי לא להפריע לסריקה הבאה.
-                if kind == 'blocked':
+                # blocked/blocked1: נסתיר כדי לא להפריע לסריקה הבאה.
+                if kind in ('blocked', 'blocked1'):
                     try:
                         self._hide_anti_spam_overlay()
                     except Exception:
@@ -2384,7 +2406,10 @@ class PublicStation:
             # בדיקת בונוס זמנים - אם יש בונוס פעיל עכשיו (לפי כיתה)
             self.time_bonus_message = ""  # איפוס הודעת בונוס זמנים
             class_name = (student.get('class_name') or '').strip()
-            time_bonus = self.db.get_active_time_bonus_now(class_name=class_name)
+            try:
+                time_bonus = self.db.get_active_time_bonus_now(class_name=class_name)
+            except Exception:
+                time_bonus = None
             if time_bonus:
                 student_id = student['id']
                 bonus_schedule_id = time_bonus['id']
@@ -2469,9 +2494,15 @@ class PublicStation:
                             ok_add = False
                         if ok_add:
                             # רשום שהתלמיד קיבל את הבונוס היום
-                            self.db.record_time_bonus_given(student_id, bonus_schedule_id)
+                            try:
+                                self.db.record_time_bonus_given(student_id, bonus_schedule_id)
+                            except Exception:
+                                pass
                             # רענן את פרטי התלמיד
-                            student = self.db.get_student_by_card(card_number)
+                            try:
+                                student = self.db.get_student_by_card(card_number)
+                            except Exception:
+                                pass
                             # אייקון וי (✅ → גליף ייעודי בגופן) לפני הטקסט
                             extra = ""
                             if is_first_time_bonus_today_for_group:
@@ -3210,6 +3241,32 @@ class PublicStation:
                     if calendar_items:
                         calendar_items = [normalize_ui_icons(str(x)) for x in calendar_items if str(x).strip()]
                         texts = calendar_items + texts
+
+                    # ימי הולדת עבריים בטיקר
+                    try:
+                        show_birthdays = str(self.db.get_setting('news_show_birthdays', '0')) == '1'
+                        if show_birthdays:
+                            heb_parts = jewish_calendar.get_today_hebrew_date_parts()
+                            if heb_parts:
+                                bday_students = self.db.get_students_with_hebrew_birthday(
+                                    heb_parts['day'], heb_parts['month'])
+                                if bday_students:
+                                    bday_template = str(self.db.get_setting(
+                                        'birthday_message_template', '') or '').strip()
+                                    barmitz_template = str(self.db.get_setting(
+                                        'birthday_bar_mitzvah_template', '') or '').strip()
+                                    bday_items = jewish_calendar.build_birthday_news_items(
+                                        bday_students,
+                                        message_template=bday_template,
+                                        bar_mitzvah_template=barmitz_template,
+                                    )
+                                    if bday_items:
+                                        bday_items = [normalize_ui_icons(str(x)) for x in bday_items if str(x).strip()]
+                                        # הוספה אחרי פריטי לוח ולפני חדשות רגילות
+                                        cal_count = len(calendar_items) if calendar_items else 0
+                                        texts = texts[:cal_count] + bday_items + texts[cal_count:]
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -3246,54 +3303,128 @@ class PublicStation:
             self.news_offset_px = 0
             self.news_current_index = 0
 
+    def _get_ticker_speed_setting(self) -> str:
+        try:
+            now = float(time.time())
+        except Exception:
+            now = 0.0
+        try:
+            ts = float(getattr(self, '_news_ticker_speed_ts', 0.0) or 0.0)
+        except Exception:
+            ts = 0.0
+        try:
+            cached = str(getattr(self, '_news_ticker_speed_cached', '') or '').strip()
+        except Exception:
+            cached = ''
+        if cached and now > 0 and ts > 0 and (now - ts) < 30.0:
+            return cached
+        try:
+            cfg = self.load_app_config() or {}
+        except Exception:
+            cfg = {}
+        try:
+            sp = str(cfg.get('news_ticker_speed', 'normal') or 'normal').strip()
+        except Exception:
+            sp = 'normal'
+        try:
+            self._news_ticker_speed_cached = sp
+            self._news_ticker_speed_ts = now
+        except Exception:
+            pass
+        try:
+            if isinstance(getattr(self, 'app_config', None), dict):
+                self.app_config['news_ticker_speed'] = sp
+        except Exception:
+            pass
+        return sp
+
+    def _rebuild_news_strip(self, canvas_w: int, canvas_h: int):
+        """בניית תמונת strip + PhotoImage פעם אחת כשהתוכן משתנה."""
+        text = getattr(self, 'news_text_full', "") or ""
+        self.news_current_text = text
+        # ניקוי ישן
+        self.news_canvas.delete("all")
+        self._news_canvas_img_id = None
+        old_photo = getattr(self, '_news_strip_photo', None)
+        self._news_strip_photo = None
+        self._news_strip_img = None
+        del old_photo
+
+        if not text:
+            self.news_scroll_x = 0
+            self.news_text_width = 0
+            self.news_unit_width = 0
+            self._news_strip_w = 0
+            self._news_strip_h = 0
+            return
+
+        visual_text = visual_rtl_simple(text)
+        unit_text = visual_text + f"   \uE236   "
+
+        try:
+            if hasattr(self, 'agas_ttf_path') and self.agas_ttf_path and os.path.exists(self.agas_ttf_path):
+                font_path = self.agas_ttf_path
+            else:
+                font_path = os.path.join(self.base_dir, "Gan CLM Bold.otf")
+                if not os.path.exists(font_path):
+                    font_path = os.path.join(self.base_dir, "fonts", "Gan CLM Bold.otf")
+            font_size = int(self.font_info * 0.9) + 5
+            img_font = ImageFont.truetype(font_path, font_size)
+        except Exception:
+            try:
+                img_font = ImageFont.truetype("arial.ttf", int(self.font_info * 0.9) + 5)
+            except Exception:
+                img_font = ImageFont.load_default()
+
+        temp_img = Image.new('RGB', (1, 1))
+        temp_draw = ImageDraw.Draw(temp_img)
+        bbox = temp_draw.textbbox((0, 0), unit_text, font=img_font)
+        unit_w = max(1, bbox[2] - bbox[0])
+
+        repeat_count = max(3, int(canvas_w / unit_w) + 4)
+        full_text = unit_text * repeat_count
+        bbox = temp_draw.textbbox((0, 0), full_text, font=img_font)
+        total_w = max(1, bbox[2] - bbox[0])
+
+        self.news_unit_width = unit_w
+        self.news_text_width = total_w
+        self.news_scroll_x = 0
+
+        bg_color = self.root.cget('bg')
+        theme = getattr(self, 'theme_name', 'dark') or 'dark'
+        news_color = '#111111' if theme == 'light' else '#FFD700'
+
+        strip_h = max(1, int(canvas_h))
+        strip_w = max(1, int(total_w))
+        if strip_h <= 0:
+            strip_h = int(40 * (self.screen_height / 1080))
+
+        try:
+            strip_img = Image.new('RGB', (strip_w, strip_h), bg_color)
+            draw = ImageDraw.Draw(strip_img)
+            y_pos = max(0, int((strip_h - int(getattr(img_font, 'size', 22) or 22)) / 2))
+            draw.text((0, y_pos), full_text, font=img_font, fill=news_color)
+            self._news_strip_img = strip_img
+            self._news_strip_w = strip_w
+            self._news_strip_h = strip_h
+            # המרה ל-PhotoImage פעם אחת בלבד — לא כל פריים!
+            self._news_strip_photo = ImageTk.PhotoImage(strip_img)
+            self._news_canvas_img_id = self.news_canvas.create_image(0, 0, image=self._news_strip_photo, anchor='nw')
+        except Exception:
+            self._news_strip_img = None
+            self._news_strip_photo = None
+            self._news_strip_w = 0
+            self._news_strip_h = 0
+            self._news_canvas_img_id = None
+
     def update_news_ticker(self):
         """עדכון טקסט רצועת החדשות – גלילה רציפה משמאל לימין עם Canvas.
         
         ציור ידני של הטקסט עם PIL/ImageDraw כדי לטפל בעברית נכון.
+        שיפור ביצועים: PhotoImage נוצר פעם אחת כשהתוכן משתנה,
+        כל פריים רק מזיז את האלמנט ב-Canvas (ללא הקצאת זיכרון).
         """
         try:
-            def _get_speed_setting() -> str:
-                try:
-                    now = float(time.time())
-                except Exception:
-                    now = 0.0
-
-                try:
-                    ts = float(getattr(self, '_news_ticker_speed_ts', 0.0) or 0.0)
-                except Exception:
-                    ts = 0.0
-
-                try:
-                    cached = str(getattr(self, '_news_ticker_speed_cached', '') or '').strip()
-                except Exception:
-                    cached = ''
-
-                if cached and now > 0 and ts > 0 and (now - ts) < 3.0:
-                    return cached
-
-                try:
-                    cfg = self.load_app_config() or {}
-                except Exception:
-                    cfg = {}
-                try:
-                    sp = str(cfg.get('news_ticker_speed', 'normal') or 'normal').strip()
-                except Exception:
-                    sp = 'normal'
-
-                try:
-                    self._news_ticker_speed_cached = sp
-                    self._news_ticker_speed_ts = now
-                except Exception:
-                    pass
-
-                try:
-                    if isinstance(getattr(self, 'app_config', None), dict):
-                        self.app_config['news_ticker_speed'] = sp
-                except Exception:
-                    pass
-
-                return sp
-
             try:
                 self._news_ticker_job = None
             except Exception:
@@ -3301,12 +3432,6 @@ class PublicStation:
 
             if not getattr(self, 'news_canvas', None):
                 return
-
-            # עדכון גודל ה-Canvas
-            try:
-                self.news_canvas.update_idletasks()
-            except Exception:
-                pass
 
             canvas_w = self.news_canvas.winfo_width() or self.screen_width
             canvas_h = self.news_canvas.winfo_height() or int(40 * (self.screen_height / 1080))
@@ -3316,138 +3441,55 @@ class PublicStation:
                 canvas_h = int(40 * (self.screen_height / 1080))
 
             text = getattr(self, 'news_text_full', "") or ""
+
+            # בנייה מחדש כשהתוכן משתנה, או כשהרצועה נבנתה בגודל שגוי (1px בזמן init)
+            need_rebuild = (text != getattr(self, 'news_current_text', ""))
+            if not need_rebuild and text:
+                old_strip_h = getattr(self, '_news_strip_h', 0) or 0
+                if old_strip_h < 2 and canvas_h > 1:
+                    need_rebuild = True
+            if need_rebuild:
+                self._rebuild_news_strip(canvas_w, canvas_h)
+
             if not text:
-                # אין חדשות – ניקוי Canvas
-                self.news_canvas.delete("all")
-                self.news_scroll_x = 0
-                self.news_text_width = 0
-                self.news_unit_width = 0
-                self.news_current_text = ""
-                self._news_strip_img = None
-                self._news_strip_w = 0
-                self._news_strip_h = 0
-            else:
-                # אם התוכן השתנה - צור תמונה מחדש
-                if text != getattr(self, 'news_current_text', ""):
-                    self.news_current_text = text
-                    # המרה חזותית של הטקסט לפני ציור (PIL לא מטפל ב-BIDI אוטומטית)
-                    visual_text = visual_rtl_simple(text)
-                    unit_text = visual_text + f"   \uE236   "
-                    
-                    # יצירת תמונה עם PIL למדידת רוחב הטקסט
-                    try:
-                        # שימוש בפונט Gan CLM Bold שתומך בעברית
-                        if hasattr(self, 'agas_ttf_path') and self.agas_ttf_path and os.path.exists(self.agas_ttf_path):
-                            font_path = self.agas_ttf_path
-                        else:
-                            # חיפוש פונט בתיקיית התוכנה
-                            font_path = os.path.join(self.base_dir, "Gan CLM Bold.otf")
-                            if not os.path.exists(font_path):
-                                font_path = os.path.join(self.base_dir, "fonts", "Gan CLM Bold.otf")
-                        
-                        font_size = int(self.font_info * 0.9) + 5
-                        img_font = ImageFont.truetype(font_path, font_size)
-                    except Exception as e:
-                        print(f"שגיאה בטעינת פונט: {e}")
-                        # ניסיון עם Arial כגיבוי
-                        try:
-                            img_font = ImageFont.truetype("arial.ttf", int(self.font_info * 0.9) + 5)
-                        except:
-                            img_font = ImageFont.load_default()
-                    
-                    # יצירת תמונה זמנית למדידה
-                    temp_img = Image.new('RGB', (1, 1))
-                    temp_draw = ImageDraw.Draw(temp_img)
-                    bbox = temp_draw.textbbox((0, 0), unit_text, font=img_font)
-                    unit_w = max(1, bbox[2] - bbox[0])
+                # אין חדשות — לא ממשיכים אנימציה, נבדוק שוב בעוד שנייה
+                try:
+                    self._news_ticker_last_ts = float(time.time())
+                except Exception:
+                    self._news_ticker_last_ts = 0.0
+                try:
+                    self._news_ticker_job = self.root.after(1000, self.update_news_ticker)
+                except Exception:
+                    self._news_ticker_job = None
+                return
 
-                    # שכפול לכיסוי מסך
-                    repeat_count = max(3, int(canvas_w / unit_w) + 4)
-                    full_text = unit_text * repeat_count
+            # הזזה — מהירות לפי הגדרות
+            speed_setting = self._get_ticker_speed_setting()
+            if speed_setting == 'very_fast':
+                step = max(3, int(canvas_w / 320))
+            elif speed_setting == 'fast':
+                step = max(2, int(canvas_w / 480))
+            else:  # normal
+                step = max(1, int(canvas_w / 960))
 
-                    bbox = temp_draw.textbbox((0, 0), full_text, font=img_font)
-                    total_w = max(1, bbox[2] - bbox[0])
+            unit_w = max(1, int(getattr(self, 'news_unit_width', 1) or 1))
+            self.news_scroll_x = (self.news_scroll_x - step) % unit_w
 
-                    self.news_unit_width = unit_w
-                    self.news_text_width = total_w
-                    self.news_scroll_x = 0
+            # הזזת האלמנט הקיים ב-Canvas — אפס הקצאות זיכרון!
+            if getattr(self, '_news_canvas_img_id', None) is not None:
+                try:
+                    self.news_canvas.coords(self._news_canvas_img_id, -self.news_scroll_x, 0)
+                except Exception:
+                    pass
 
-                    # בניית strip image פעם אחת (במקום ציור כל פריים)
-                    bg_color = self.root.cget('bg')
-                    theme = getattr(self, 'theme_name', 'dark') or 'dark'
-                    if theme == 'light':
-                        news_color = '#111111'
-                    else:
-                        news_color = '#FFD700'
-
-                    strip_h = int(canvas_h)
-                    strip_w = int(total_w)
-                    if strip_h <= 0:
-                        strip_h = int(40 * (self.screen_height / 1080))
-                    if strip_w <= 0:
-                        strip_w = max(1, unit_w * 3)
-
-                    try:
-                        strip_img = Image.new('RGB', (strip_w, strip_h), bg_color)
-                        draw = ImageDraw.Draw(strip_img)
-                        y_pos = max(0, int((strip_h - int(getattr(img_font, 'size', 22) or 22)) / 2))
-                        draw.text((0, y_pos), full_text, font=img_font, fill=news_color)
-                        self._news_strip_img = strip_img
-                        self._news_strip_w = strip_w
-                        self._news_strip_h = strip_h
-                    except Exception:
-                        self._news_strip_img = None
-                        self._news_strip_w = 0
-                        self._news_strip_h = 0
-                
-                # הזזה משמאל לימין - מהירות לפי הגדרות
-                speed_setting = _get_speed_setting()
-
-                if speed_setting == 'very_fast':
-                    step = max(3, int(canvas_w / 320))
-                elif speed_setting == 'fast':
-                    step = max(2, int(canvas_w / 480))
-                else:  # normal
-                    step = max(1, int(canvas_w / 960))
-
-                # כאשר אנו מזיזים את חלון ה-crop בתוך ה-strip:
-                # הגדלת offset גורמת לתנועה מימין לשמאל. כדי להשיג שמאל→ימין, נלך אחורה.
-                self.news_scroll_x = (self.news_scroll_x - step) % max(1, int(getattr(self, 'news_unit_width', 1) or 1))
-
-                strip = getattr(self, '_news_strip_img', None)
-                sw = int(getattr(self, '_news_strip_w', 0) or 0)
-                sh = int(getattr(self, '_news_strip_h', 0) or 0)
-                if strip is not None and sw > 0 and sh > 0:
-                    # חישוב offset בתוך ה-strip
-                    off = int(int(self.news_scroll_x) % max(1, sw))
-
-                    try:
-                        if off + int(canvas_w) <= sw:
-                            view = strip.crop((off, 0, off + int(canvas_w), sh))
-                        else:
-                            # wrap
-                            part1 = strip.crop((off, 0, sw, sh))
-                            part2 = strip.crop((0, 0, max(1, (off + int(canvas_w)) - sw), sh))
-                            view = Image.new('RGB', (int(canvas_w), sh), self.root.cget('bg'))
-                            view.paste(part1, (0, 0))
-                            view.paste(part2, (part1.size[0], 0))
-
-                        self.news_photo = ImageTk.PhotoImage(view)
-                        self.news_canvas.delete("all")
-                        self.news_canvas.create_image(0, 0, image=self.news_photo, anchor='nw')
-                    except Exception:
-                        pass
-
-            # קצב רענון לפי מהירות
-            speed_setting = _get_speed_setting()
-            
+            # קצב רענון
             if speed_setting == 'very_fast':
                 refresh_ms = 15
             elif speed_setting == 'fast':
                 refresh_ms = 20
-            else:  # normal
+            else:
                 refresh_ms = 30
-            
+
             try:
                 self._news_ticker_last_ts = float(time.time())
             except Exception:
@@ -3505,10 +3547,12 @@ class PublicStation:
             self._news_ticker_watchdog_job = None
 
     def refresh_news_items_loop(self):
-        """ריענון רשימת החדשות כל דקה (לשינויים מעמדת הניהול)."""
-        self.load_news_items()
-        # ריענון תדיר יותר כדי שעדכונים בעמדת הניהול יופיעו כמעט מיד.
-        self.root.after(5000, self.refresh_news_items_loop)
+        """ריענון רשימת החדשות (לשינויים מעמדת הניהול)."""
+        try:
+            self.load_news_items()
+        except Exception:
+            pass
+        self.root.after(30000, self.refresh_news_items_loop)
 
     def update_background_slideshow(self):
         """עדכון תמונת הרקע במצב מצגת (אם הוגדר)"""
@@ -3531,6 +3575,8 @@ class PublicStation:
                     img = self._prepare_background_image(img)
                     # שמירת תמונת בסיס לשימוש בתבנית הגרפית (template1)
                     self.bg_base_image = img
+                    # שחרור PhotoImage ישן לפני יצירת חדש — מונע דליפת זיכרון
+                    old_bg = getattr(self, 'bg_image', None)
                     if getattr(self, 'background_template', None) == 'template1':
                         # במצב template1 נצייר את הכיתוב על כל שקופית באותו סגנון
                         try:
@@ -3555,6 +3601,7 @@ class PublicStation:
                         self.bg_image = ImageTk.PhotoImage(img)
                         if getattr(self, 'bg_label', None):
                             self.bg_label.config(image=self.bg_image)
+                    del old_bg
             elif mode in ('grid_static', 'grid_dynamic'):
                 # מונטאז' ריבועים - סטטי או מתחלף
                 self._render_montage_background(static=(mode == 'grid_static'))
@@ -3566,6 +3613,12 @@ class PublicStation:
             self.root.after(interval, self.update_background_slideshow)
         except Exception as e:
             print(f"שגיאה בעדכון מצגת רקע: {e}")
+            # תמיד תזמן מחדש גם אחרי שגיאה
+            try:
+                interval = getattr(self, 'bg_interval_ms', 15000)
+                self.root.after(interval, self.update_background_slideshow)
+            except Exception:
+                pass
 
     def _render_montage_background(self, static: bool = False):
         """בניית תמונת רקע מונטאז' (Grid) על כל המסך מתוך bg_files."""
@@ -4890,6 +4943,14 @@ class PublicStation:
 
     def load_app_config(self):
         """טעינת הגדרות יישום מקובץ הגדרות חיצוני, עם נפילה חזרה לקובץ המובנה."""
+        # קאש קצר (5 שניות) — מונע 4-5 קריאות דיסק/רשת בכל תיקוף
+        try:
+            _cache = getattr(self, '_app_config_cache', None)
+            if isinstance(_cache, dict) and _cache.get('cfg') is not None:
+                if (time.time() - float(_cache.get('ts', 0))) < 5.0:
+                    return _cache['cfg']
+        except Exception:
+            pass
         try:
             live_config = self._get_config_file_path()
             base_config = os.path.join(self.base_dir, 'config.json')
@@ -4936,15 +4997,19 @@ class PublicStation:
                     except Exception:
                         pass
 
+                self._app_config_cache = {'cfg': shared_cfg, 'ts': time.time()}
                 return shared_cfg
 
             # ללא תיקיית רשת – החזר את ההגדרות המקומיות או קובץ ברירת המחדל
             if local_cfg:
+                self._app_config_cache = {'cfg': local_cfg, 'ts': time.time()}
                 return local_cfg
 
             if os.path.exists(base_config):
                 with open(base_config, 'r', encoding='utf-8') as f:
-                    return json.load(f)
+                    result = json.load(f)
+                    self._app_config_cache = {'cfg': result, 'ts': time.time()}
+                    return result
         except Exception as e:
             print(f"שגיאה בטעינת config.json: {e}")
         return {}
@@ -5061,20 +5126,65 @@ class PublicStation:
                 pass
             return
 
-    def _is_local_sync_server_running(self, port: int) -> bool:
+    def _is_local_sync_server_running(self, port: int, validate_pull: bool = False) -> bool:
         try:
             url = f"http://127.0.0.1:{int(port)}/sync/status"
             req = urllib.request.Request(url, headers={'Accept': 'application/json'})
             with urllib.request.urlopen(req, timeout=0.5) as resp:
                 data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
-                return bool(data.get('ok'))
+                if not bool(data.get('ok')):
+                    return False
         except Exception:
+            return False
+        if not validate_pull:
+            return True
+        # Validate server can actually serve pulls (not just status)
+        try:
+            cfg = self.load_app_config() or {}
+            api_key = str(cfg.get('local_sync_key') or 'local').strip()
+            url2 = f"http://127.0.0.1:{int(port)}/sync/pull?since_id=999999999&limit=1"
+            req2 = urllib.request.Request(url2, headers={'Accept': 'application/json', 'api-key': api_key})
+            with urllib.request.urlopen(req2, timeout=2) as resp2:
+                data2 = json.loads(resp2.read().decode('utf-8', errors='ignore') or '{}')
+                if data2.get('ok'):
+                    return True
+                else:
+                    try:
+                        print(f"[PUBLIC] Sync server pull validation FAILED: {data2}")
+                    except Exception:
+                        pass
+                    return False
+        except Exception as e:
+            try:
+                print(f"[PUBLIC] Sync server pull validation ERROR: {e}")
+            except Exception:
+                pass
             return False
 
     def _maybe_start_local_sync_server(self) -> None:
         try:
+            print("[PUBLIC] _maybe_start_local_sync_server called")
+        except Exception:
+            pass
+        try:
             if bool(getattr(self, '_local_sync_server_started', False)):
-                return
+                # וידוא שהשרת באמת רץ (לא רק שהדגל מסומן)
+                try:
+                    port = int((self.load_app_config() or {}).get('local_sync_port') or 8765)
+                except Exception:
+                    port = 8765
+                if self._is_local_sync_server_running(port, validate_pull=True):
+                    try:
+                        print(f"[PUBLIC] Sync server confirmed running on port {port}")
+                    except Exception:
+                        pass
+                    return
+                else:
+                    try:
+                        print(f"[PUBLIC] Sync server flag was set but server NOT responding on port {port}, retrying...")
+                    except Exception:
+                        pass
+                    self._local_sync_server_started = False
         except Exception:
             pass
 
@@ -5091,6 +5201,10 @@ class PublicStation:
                 local_sync_enabled = str(cfg.get('local_sync_enabled') or '').strip().lower() in ('1', 'true', 'on', 'yes')
             except Exception:
                 local_sync_enabled = False
+        try:
+            print(f"[PUBLIC] local_sync_enabled={local_sync_enabled}")
+        except Exception:
+            pass
         if not local_sync_enabled:
             return
 
@@ -5100,6 +5214,10 @@ class PublicStation:
             role = ''
 
         if role and role != 'master':
+            try:
+                print(f"[PUBLIC] role={role}, not master, returning")
+            except Exception:
+                pass
             return
 
         try:
@@ -5110,9 +5228,22 @@ class PublicStation:
         try:
             import sync_agent
             host = sync_agent._unc_host(str(shared_folder or '').strip())
+            try:
+                is_local = sync_agent._is_local_host(host) if host else False
+                print(f"[PUBLIC] shared_folder={shared_folder}, host={host}, is_local={is_local}, role={role}")
+            except Exception:
+                pass
             if role != 'master' and host and not sync_agent._is_local_host(host):
+                try:
+                    print("[PUBLIC] Host is not local, returning")
+                except Exception:
+                    pass
                 return
-        except Exception:
+        except Exception as e:
+            try:
+                print(f"[PUBLIC] host detection error: {e}")
+            except Exception:
+                pass
             host = None
 
         try:
@@ -5120,12 +5251,47 @@ class PublicStation:
         except Exception:
             port = 8765
 
-        if self._is_local_sync_server_running(port):
+        if self._is_local_sync_server_running(port, validate_pull=True):
             try:
                 self._local_sync_server_started = True
+                print(f"[PUBLIC] Sync server already running and healthy on port {port}")
             except Exception:
                 pass
             return
+        elif self._is_local_sync_server_running(port, validate_pull=False):
+            try:
+                print(f"[PUBLIC] Stale sync server detected on port {port} (status OK but pull FAILS) - sending reconnect")
+            except Exception:
+                pass
+            try:
+                reconnect_url = f"http://127.0.0.1:{int(port)}/sync/reconnect"
+                req = urllib.request.Request(reconnect_url, headers={'Accept': 'application/json'})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
+                    try:
+                        print(f"[PUBLIC] Reconnect response: {data}")
+                    except Exception:
+                        pass
+                    if data.get('ok'):
+                        import time as _time
+                        _time.sleep(0.5)
+                        if self._is_local_sync_server_running(port, validate_pull=True):
+                            try:
+                                print("[PUBLIC] Sync server recovered after reconnect!")
+                            except Exception:
+                                pass
+                            self._local_sync_server_started = True
+                            return
+                        else:
+                            try:
+                                print("[PUBLIC] Sync server still failing after reconnect")
+                            except Exception:
+                                pass
+            except Exception as re_err:
+                try:
+                    print(f"[PUBLIC] Reconnect failed: {re_err}")
+                except Exception:
+                    pass
 
         try:
             api_key = str(cfg.get('local_sync_key') or 'local').strip()
@@ -5136,22 +5302,36 @@ class PublicStation:
         except Exception:
             tenant_id = 'local'
 
+        db_path = None
+        try:
+            db_path = self.db.db_path if hasattr(self, 'db') else None
+        except Exception:
+            db_path = None
+        try:
+            print(f"[PUBLIC] Starting sync server: port={port}, db_path={db_path}")
+        except Exception:
+            pass
+
         try:
             import local_sync_server
             t = local_sync_server.start_in_thread(
                 host='0.0.0.0',
                 port=port,
-                db_path=self.db.db_path if hasattr(self, 'db') else None,
+                db_path=db_path,
                 api_key=api_key,
                 tenant_id=tenant_id
             )
             try:
                 self._local_sync_server_thread = t
                 self._local_sync_server_started = True
+                print(f"[PUBLIC] Sync server started successfully on port {port}")
             except Exception:
                 pass
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                print(f"[PUBLIC] ERROR starting sync server: {e}")
+            except Exception:
+                pass
 
     def save_app_config(self, config: dict) -> bool:
         """שמירת הגדרות יישום לקובץ הגדרות חיצוני במיקום כתיב."""
@@ -7281,6 +7461,15 @@ class PublicStation:
             except Exception:
                 pass
 
+        # חפש ליד קובץ ה-DB
+        try:
+            db_dir = os.path.dirname(os.path.abspath(self.db.db_path))
+            cand = os.path.join(db_dir, p)
+            if os.path.exists(cand):
+                return cand
+        except Exception:
+            pass
+
         try:
             cand = os.path.join(self.base_dir, p)
             if os.path.exists(cand):
@@ -7381,30 +7570,40 @@ class PublicStation:
         except Exception:
             img_path = ''
 
-        if img_path:
-            try:
-                img = Image.open(img_path)
-                if img.mode not in ('RGB', 'RGBA'):
-                    img = img.convert('RGB')
-                max_w = int(w * 0.92)
-                max_h = int(h * 0.70)
-                try:
-                    img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
-                except Exception:
-                    try:
-                        img.thumbnail((max_w, max_h), Image.LANCZOS)
-                    except Exception:
-                        img.thumbnail((max_w, max_h))
-                self._ads_popup_img = ImageTk.PhotoImage(img)
-                tk.Label(container, image=self._ads_popup_img, bg='#ffffff').pack(pady=(14, 8))
-            except Exception:
-                self._ads_popup_img = None
-
         text = ''
         try:
             text = str(item.get('text') or '').strip()
         except Exception:
             text = ''
+
+        if img_path:
+            try:
+                img = Image.open(img_path)
+                if img.mode not in ('RGB', 'RGBA'):
+                    img = img.convert('RGBA')
+                # הגדלת התמונה למקסימום האפשרי: אם אין טקסט — 98% מהריבוע, אם יש טקסט — 98%×78%
+                _inner_w = w - (2 * border_px if border_enabled else 0)
+                _inner_h = h - (2 * border_px if border_enabled else 0)
+                max_w = max(200, int(_inner_w * 0.98))
+                max_h = max(150, int(_inner_h * (0.92 if not text else 0.78)))
+                # שמירה על יחס גובה-רוחב: חישוב scale factor אופטימלי
+                orig_w, orig_h = img.size
+                if orig_w > 0 and orig_h > 0:
+                    scale = min(max_w / orig_w, max_h / orig_h)
+                    new_w = max(1, int(orig_w * scale))
+                    new_h = max(1, int(orig_h * scale))
+                    try:
+                        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                    except Exception:
+                        try:
+                            img = img.resize((new_w, new_h), Image.LANCZOS)
+                        except Exception:
+                            img = img.resize((new_w, new_h))
+                self._ads_popup_img = ImageTk.PhotoImage(img)
+                tk.Label(container, image=self._ads_popup_img, bg='#ffffff').pack(
+                    pady=(6 if text else 0), expand=(not text), fill=(tk.BOTH if not text else tk.NONE))
+            except Exception:
+                self._ads_popup_img = None
         if text:
             try:
                 font_size = max(18, int(0.028 * sh))
@@ -7627,6 +7826,20 @@ class PublicStation:
             gap_sec = 1.0
         if gap_sec > 600:
             gap_sec = 600.0
+
+        # לא מציגים פרסומות בזמן חסימה (שבתות/חגים) או Overlay אנטי-ספאם
+        try:
+            if self._is_public_closed_now():
+                self._ads_popup_loop_job = self.root.after(5000, self._ads_popup_loop)
+                return
+        except Exception:
+            pass
+        try:
+            if self._is_anti_spam_overlay_active():
+                self._ads_popup_loop_job = self.root.after(3000, self._ads_popup_loop)
+                return
+        except Exception:
+            pass
 
         try:
             if getattr(self, '_ads_popup_win', None) is not None and self._ads_popup_win.winfo_exists():
@@ -8275,6 +8488,12 @@ class PublicStation:
                     return bool(default)
                 return bool(default)
 
+            # רישום תיקוף תמיד — גם אם אנטי-ספאם מכובה
+            try:
+                self.db.log_card_validation(student_id, card_number)
+            except Exception:
+                pass
+
             if not _cfg_bool((config or {}).get('anti_spam_enabled', True), True):
                 return None
             
@@ -8314,8 +8533,6 @@ class PublicStation:
                         'sound_key': '',
                     },
                 ]
-            
-            self.db.log_card_validation(student_id, card_number)
             
             is_blocked, block_until, reason = self.db.is_card_blocked(student_id)
             if is_blocked:
@@ -8706,6 +8923,25 @@ class PublicStation:
                 if class_name:
                     self.class_label.config(text=f"כיתה: {class_name}")
 
+                # ניקוי פריטי תלמיד קודם כדי שלא ייראו מאחורי ה-Overlay
+                try:
+                    if hasattr(self, 'id_label'):
+                        self.id_label.config(text="")
+                    if hasattr(self, 'points_label'):
+                        self.points_label.config(text="")
+                    if hasattr(self, 'points_text_label'):
+                        self.points_text_label.config(text="")
+                    if hasattr(self, 'message_label'):
+                        self.message_label.config(text="")
+                    if hasattr(self, 'statistics_label'):
+                        self.statistics_label.config(text="")
+                    if hasattr(self, 'photo_label'):
+                        self.photo_label.config(image="", text="")
+                    self.current_photo_img = None
+                    self.template1_photo_original = None
+                except Exception:
+                    pass
+
                 # Overlay גדול לאזהרה, לא מכסה את שם התלמיד
                 overlay_text = str(message or '').strip()
                 self._show_anti_spam_overlay(overlay_text, kind=('warning' if int(stage or 1) <= 1 else 'warning2'), seconds=display_sec, keep_name=True)
@@ -8783,6 +9019,11 @@ def _relaunch_outside_job():
 
 def main():
     """הפעלה רגילה של העמדה הציבורית, כולל בדיקת רישיון בתוך המחלקה."""
+    try:
+        import sp_logger
+        sp_logger.install()
+    except Exception:
+        pass
 
     # אם התהליך נמצא בתוך Job Object (למשל כשהופעל דרך py.exe launcher),
     # נפעיל מחדש מחוץ ל-Job כדי למנוע הריגה כשתהליך אחר באותו Job יוצא.
@@ -8877,6 +9118,11 @@ def main():
         if not getattr(app, "_restart_requested", False):
             _debug_log('breaking out of main loop (no restart requested)')
             break
+    # Force-kill background threads to prevent zombie processes holding WAL locks
+    try:
+        os._exit(0)
+    except Exception:
+        pass
 
 
 def main_no_splash():
@@ -8885,6 +9131,10 @@ def main_no_splash():
     root = tk.Tk()
     app = PublicStation(root)
     root.mainloop()
+    try:
+        os._exit(0)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

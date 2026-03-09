@@ -8,47 +8,23 @@ import os
 
 
 class HebrewDate:
-    """Convert Gregorian date to Hebrew date."""
-    
-    HEBREW_MONTHS = [
-        "ניסן", "אייר", "סיוון", "תמוז", "אב", "אלול",
-        "תשרי", "חשוון", "כסלו", "טבת", "שבט", "אדר"
-    ]
-    
-    HEBREW_DAYS = [
-        "", "א'", "ב'", "ג'", "ד'", "ה'", "ו'", "ז'", "ח'", "ט'",
-        "י'", "י\"א", "י\"ב", "י\"ג", "י\"ד", "ט\"ו", "ט\"ז",
-        "י\"ז", "י\"ח", "י\"ט", "כ'", "כ\"א", "כ\"ב", "כ\"ג",
-        "כ\"ד", "כ\"ה", "כ\"ו", "כ\"ז", "כ\"ח", "כ\"ט", "ל'"
-    ]
-    
+    """Convert Gregorian date to Hebrew date using pyluach (accurate)."""
+
     @staticmethod
     def get_hebrew_date(date=None):
-        """
-        Get Hebrew date string.
-        Note: This is a simplified version. For accurate Hebrew calendar,
-        consider using the 'pyluach' library.
-        """
+        """Get Hebrew date string using pyluach via jewish_calendar module."""
         if date is None:
             date = datetime.now()
-        
-        # Simplified approximation - for production use pyluach
-        # This is just for display purposes
-        day = date.day
-        month = date.month
-        year = date.year
-        
-        # Approximate Hebrew year (5784 for 2024)
-        hebrew_year = year + 3760
-        
-        # Get Hebrew month (approximate)
-        hebrew_month_idx = (month + 6) % 12
-        hebrew_month = HebrewDate.HEBREW_MONTHS[hebrew_month_idx]
-        
-        # Get Hebrew day
-        hebrew_day = HebrewDate.HEBREW_DAYS[min(day, 30)]
-        
-        return f"{hebrew_day} {hebrew_month} {hebrew_year}"
+        try:
+            from jewish_calendar import hebrew_date_from_gregorian_str
+            greg_str = date.strftime('%Y-%m-%d')
+            result = hebrew_date_from_gregorian_str(greg_str)
+            if result:
+                return result
+        except Exception:
+            pass
+        # Fallback: return simple Gregorian date if pyluach unavailable
+        return date.strftime('%d/%m/%Y')
 
 
 class ThermalPrinter:

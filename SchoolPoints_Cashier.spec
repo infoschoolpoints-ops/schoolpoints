@@ -62,7 +62,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['PyQt5'],
+    excludes=['PyQt5', 'tkinter.test', 'unittest', 'test', 'tests'],
     noarchive=False,
     optimize=0,
 )
@@ -80,12 +80,28 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    manifest=_manifest_path,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    # צמצום שפות ואזורי זמן מיותרים
+    tcl_exclude=[
+        'tzdata/*',
+        'tzdata/Africa/*',
+        'tzdata/America/*',
+        'tzdata/Antarctica/*',
+        'tzdata/Arctic/*',
+        'tzdata/Asia/*',
+        'tzdata/Atlantic/*',
+        'tzdata/Australia/*',
+        'tzdata/Europe/*',
+        'tzdata/Indian/*',
+        'tzdata/Pacific/*',
+        'tzdata/*/*',
+        'msgcat',
+        'msgs/*',
+    ],
 )
 coll = COLLECT(
     exe,

@@ -164,15 +164,27 @@ def _open_date_picker_ddmmyyyy(parent, target_var: tk.StringVar):
 
 
 class MessagesManager:
-    def __init__(self, root):
+    def __init__(self, root, db=None):
         self.root = root
         self.root.title("ניהול הודעות - מערכת ניקוד")
         self.root.geometry("800x600")
         self.root.configure(bg='#ecf0f1')
         
-        # השתמש באותו מסד נתונים כמו המערכת הראשית
-        self.db = Database()
+        # השתמש ב-DB שהועבר או צור חדש אם לא הועבר
+        if db:
+            self.db = db
+        else:
+            self.db = Database()
         self.messages_db = MessagesDB(self.db.db_path)
+        # העברת הגדרות remote write מ-Database ל-MessagesDB (עמדה משנית)
+        try:
+            rw_url = getattr(self.db, '_remote_write_url', None)
+            rw_key = getattr(self.db, '_remote_write_api_key', 'local')
+            if rw_url:
+                self.messages_db._remote_write_url = rw_url
+                self.messages_db._remote_write_api_key = rw_key
+        except Exception:
+            pass
 
         # דגל פנימי כדי לא לבצע bind_all לקיצורי טקסט יותר מפעם אחת
         self._global_text_shortcuts_bound = False
@@ -496,6 +508,133 @@ class MessagesManager:
         # Bind to variable changes to save automatically
         ticker_speed_var.trace_add('write', lambda *args: on_speed_change())
 
+        # --- ימי הולדת עבריים בטיקר ---
+        bday_sep = tk.Frame(controls_frame, bg='#bdc3c8', height=1)
+        bday_sep.pack(fill=tk.X, pady=(10, 6))
+
+        row_bday = tk.Frame(controls_frame, bg='#ecf0f1')
+        row_bday.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(row_bday, text=fix_rtl_text("ימי הולדת בטיקר:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e').pack(side=tk.RIGHT, padx=5)
+
+        bday_var = tk.BooleanVar(value=get_bool_setting('news_show_birthdays', '0'))
+
+        def persist_bday_setting():
+            set_bool_setting('news_show_birthdays', bool(bday_var.get()))
+
+        ToggleSwitch(row_bday, variable=bday_var, command=persist_bday_setting).pack(side=tk.RIGHT, padx=4)
+        tk.Label(row_bday, text=fix_rtl_text("הצג ימי הולדת עבריים"), font=('Arial', 10), bg='#ecf0f1', anchor='e').pack(side=tk.RIGHT, padx=2)
+
+        def _open_birthday_settings_dialog():
+            dlg = tk.Toplevel(tab.winfo_toplevel())
+            dlg.title("הגדרות ימי הולדת בטיקר")
+            dlg.geometry("620x420")
+            dlg.configure(bg='#ecf0f1')
+            dlg.transient(tab.winfo_toplevel())
+            dlg.grab_set()
+            dlg.resizable(False, False)
+
+            # כותרת
+            hdr = tk.Frame(dlg, bg='#e67e22', height=50)
+            hdr.pack(fill=tk.X)
+            hdr.pack_propagate(False)
+            tk.Label(hdr, text="הגדרות הודעות יום הולדת", font=('Arial', 13, 'bold'), bg='#e67e22', fg='white').pack(pady=12)
+
+            body = tk.Frame(dlg, bg='#ecf0f1')
+            body.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+            # תבנית הודעה רגילה
+            tk.Label(body, text=fix_rtl_text("תבנית הודעת יום הולדת:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e').pack(anchor='e', pady=(10, 4))
+            bday_tmpl_var = tk.StringVar(value=str(self.db.get_setting('birthday_message_template', '') or '').strip())
+            bday_tmpl_entry = tk.Entry(body, textvariable=bday_tmpl_var, font=('Arial', 10), width=60, justify='right')
+            bday_tmpl_entry.pack(fill=tk.X, pady=(0, 2))
+
+            # כפתורי הוספת משתנים - תבנית רגילה
+            tok_frame1 = tk.Frame(body, bg='#ecf0f1')
+            tok_frame1.pack(anchor='e', pady=(2, 10))
+            tk.Label(tok_frame1, text="הוסף:", font=('Arial', 9, 'bold'), bg='#ecf0f1').pack(side=tk.RIGHT, padx=(0, 6))
+
+            def _ins_token_bday(token):
+                try:
+                    bday_tmpl_entry.focus_set()
+                    bday_tmpl_entry.insert(tk.INSERT, token)
+                except Exception:
+                    bday_tmpl_var.set(str(bday_tmpl_var.get() or '') + token)
+
+            for label, token in [("שם", "{name}"), ("כיתה", "{class}"), ("תו/תה", "{suffix}")]:
+                tk.Button(tok_frame1, text=label, command=lambda t=token: _ins_token_bday(t),
+                          font=('Arial', 9), bg='#bdc3c7', fg='black', padx=8, pady=2).pack(side=tk.RIGHT, padx=3)
+
+            # תבנית בר/בת מצווה
+            tk.Label(body, text=fix_rtl_text("תבנית הודעת בר/בת מצווה:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e').pack(anchor='e', pady=(6, 4))
+            bar_tmpl_var = tk.StringVar(value=str(self.db.get_setting('birthday_bar_mitzvah_template', '') or '').strip())
+            bar_tmpl_entry = tk.Entry(body, textvariable=bar_tmpl_var, font=('Arial', 10), width=60, justify='right')
+            bar_tmpl_entry.pack(fill=tk.X, pady=(0, 2))
+
+            # כפתורי הוספת משתנים - תבנית בר מצווה
+            tok_frame2 = tk.Frame(body, bg='#ecf0f1')
+            tok_frame2.pack(anchor='e', pady=(2, 10))
+            tk.Label(tok_frame2, text="הוסף:", font=('Arial', 9, 'bold'), bg='#ecf0f1').pack(side=tk.RIGHT, padx=(0, 6))
+
+            def _ins_token_bar(token):
+                try:
+                    bar_tmpl_entry.focus_set()
+                    bar_tmpl_entry.insert(tk.INSERT, token)
+                except Exception:
+                    bar_tmpl_var.set(str(bar_tmpl_var.get() or '') + token)
+
+            for label, token in [("שם", "{name}"), ("כיתה", "{class}"), ("תו/תה", "{suffix}"), ("בר/בת", "{bar_bat}")]:
+                tk.Button(tok_frame2, text=label, command=lambda t=token: _ins_token_bar(t),
+                          font=('Arial', 9), bg='#bdc3c7', fg='black', padx=8, pady=2).pack(side=tk.RIGHT, padx=3)
+
+            # כפתורי שמירה/סגירה
+            btn_frame = tk.Frame(dlg, bg='#ecf0f1')
+            btn_frame.pack(fill=tk.X, padx=20, pady=15)
+
+            def _save_and_close():
+                try:
+                    self.db.set_setting('birthday_message_template', bday_tmpl_var.get().strip())
+                    self.db.set_setting('birthday_bar_mitzvah_template', bar_tmpl_var.get().strip())
+                except Exception:
+                    pass
+                dlg.destroy()
+
+            tk.Button(btn_frame, text="💾 שמור", command=_save_and_close, font=('Arial', 10, 'bold'),
+                      bg='#27ae60', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=8)
+            tk.Button(btn_frame, text="✖ ביטול", command=dlg.destroy, font=('Arial', 10),
+                      bg='#95a5a6', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=8)
+
+        tk.Button(row_bday, text="⚙ הגדרות", command=_open_birthday_settings_dialog,
+                  font=('Arial', 9, 'bold'), bg='#3498db', fg='white', padx=10, pady=2).pack(side=tk.RIGHT, padx=8)
+
+        # כפתורי פעולה — מעל הטבלה כדי שתמיד יהיו נראים
+        btn_frame = tk.Frame(tab, bg='#ecf0f1')
+        btn_frame.pack(fill=tk.X, padx=20, pady=(0, 5))
+
+        tk.Button(
+            btn_frame, text="➕ הוסף חדשות", command=self.add_news,
+            bg='#27ae60', fg='white', font=('Arial', 10), padx=12, pady=4
+        ).pack(side=tk.LEFT, padx=3)
+        tk.Button(
+            btn_frame, text="✏️ ערוך", command=self.edit_news,
+            bg='#3498db', fg='white', font=('Arial', 10), padx=12, pady=4
+        ).pack(side=tk.LEFT, padx=3)
+        tk.Button(
+            btn_frame, text="🗑️ מחק", command=self.delete_news,
+            bg='#e74c3c', fg='white', font=('Arial', 10), padx=12, pady=4
+        ).pack(side=tk.LEFT, padx=3)
+        tk.Button(
+            btn_frame, text="🔄 כבה/הפעל", command=self.toggle_news,
+            bg='#f39c12', fg='white', font=('Arial', 10), padx=12, pady=4
+        ).pack(side=tk.LEFT, padx=3)
+        tk.Button(
+            btn_frame, text="⬆ למעלה", command=self.move_news_up,
+            bg='#95a5a6', fg='white', font=('Arial', 10), padx=10, pady=4
+        ).pack(side=tk.LEFT, padx=3)
+        tk.Button(
+            btn_frame, text="⬇ למטה", command=self.move_news_down,
+            bg='#95a5a6', fg='white', font=('Arial', 10), padx=10, pady=4
+        ).pack(side=tk.LEFT, padx=3)
+
         # טבלה להצגת פריטי החדשות
         columns = ('טקסט', 'תאריכים', 'סטטוס')
         self.news_tree = ttk.Treeview(tab, columns=columns, show='headings', height=12)
@@ -506,79 +645,6 @@ class MessagesManager:
         self.news_tree.column('תאריכים', width=200)
         self.news_tree.column('סטטוס', width=100)
         self.news_tree.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 10))
-
-        btn_frame = tk.Frame(tab, bg='#ecf0f1')
-        btn_frame.pack(pady=5)
-        btn_row1 = tk.Frame(btn_frame, bg='#ecf0f1')
-        btn_row1.pack()
-        btn_row2 = tk.Frame(btn_frame, bg='#ecf0f1')
-        btn_row2.pack(pady=(6, 0))
-
-        tk.Button(
-            btn_row1,
-            text="➕ הוסף חדשות",
-            command=self.add_news,
-            bg='#27ae60',
-            fg='white',
-            font=('Arial', 11),
-            padx=20,
-            pady=8
-        ).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(
-            btn_row1,
-            text="✏️ ערוך",
-            command=self.edit_news,
-            bg='#3498db',
-            fg='white',
-            font=('Arial', 11),
-            padx=20,
-            pady=8
-        ).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(
-            btn_row1,
-            text="🗑️ מחק",
-            command=self.delete_news,
-            bg='#e74c3c',
-            fg='white',
-            font=('Arial', 11),
-            padx=20,
-            pady=8
-        ).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(
-            btn_row1,
-            text="🔄 כבה/הפעל",
-            command=self.toggle_news,
-            bg='#f39c12',
-            fg='white',
-            font=('Arial', 11),
-            padx=20,
-            pady=8
-        ).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(
-            btn_row2,
-            text="⬆ למעלה",
-            command=self.move_news_up,
-            bg='#95a5a6',
-            fg='white',
-            font=('Arial', 11),
-            padx=16,
-            pady=8
-        ).pack(side=tk.LEFT, padx=5)
-
-        tk.Button(
-            btn_row2,
-            text="⬇ למטה",
-            command=self.move_news_down,
-            bg='#95a5a6',
-            fg='white',
-            font=('Arial', 11),
-            padx=16,
-            pady=8
-        ).pack(side=tk.LEFT, padx=5)
 
         self.load_news_items()
 
@@ -887,10 +953,6 @@ class MessagesManager:
         if not p or not os.path.exists(p):
             return ''
 
-        shared = self._get_shared_folder_for_media()
-        if not shared:
-            return ''
-
         try:
             ext = os.path.splitext(p)[1].lower()
         except Exception:
@@ -898,21 +960,47 @@ class MessagesManager:
         if ext not in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'):
             ext = '.png'
 
-        rel_dir = os.path.join('ads_media')
-        dst_dir = os.path.join(shared, rel_dir)
+        rel_dir = 'ads_media'
+        fname = f"{uuid.uuid4().hex}{ext}"
+
+        # נסה לשמור בתיקייה משותפת קודם
+        shared = self._get_shared_folder_for_media()
+        if shared:
+            dst_dir = os.path.join(shared, rel_dir)
+            try:
+                os.makedirs(dst_dir, exist_ok=True)
+                dst_abs = os.path.join(dst_dir, fname)
+                shutil.copy2(p, dst_abs)
+                return os.path.join(rel_dir, fname)
+            except Exception:
+                pass
+
+        # Fallback: שמור ליד קובץ ה-DB
+        try:
+            db_dir = os.path.dirname(os.path.abspath(self.messages_db.db_path))
+        except Exception:
+            db_dir = os.path.dirname(os.path.abspath(__file__))
+        dst_dir = os.path.join(db_dir, rel_dir)
         try:
             os.makedirs(dst_dir, exist_ok=True)
-        except Exception:
-            return ''
-
-        fname = f"{uuid.uuid4().hex}{ext}"
-        dst_abs = os.path.join(dst_dir, fname)
-        try:
+            dst_abs = os.path.join(dst_dir, fname)
             shutil.copy2(p, dst_abs)
+            return os.path.join(rel_dir, fname)
         except Exception:
-            return ''
+            pass
 
-        return os.path.join(rel_dir, fname)
+        # Fallback 2: שמור ליד הסקריפט עצמו
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            dst_dir = os.path.join(script_dir, rel_dir)
+            os.makedirs(dst_dir, exist_ok=True)
+            dst_abs = os.path.join(dst_dir, fname)
+            shutil.copy2(p, dst_abs)
+            return os.path.join(rel_dir, fname)
+        except Exception:
+            pass
+
+        return ''
     
     # פונקציות הודעות סטטיות
     def add_static(self):

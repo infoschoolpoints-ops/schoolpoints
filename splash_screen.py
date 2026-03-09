@@ -7,11 +7,14 @@ import threading
 import time
 
 class SplashScreen:
-    def __init__(self, title="מערכת ניהול נקודות", subtitle="אנא המתן, התוכנה עולה..."):
-        self.root = tk.Tk()
-        self.root.title("טוען...")
+    def __init__(self, root, title="טוען...", subtitle="אנא המתן"):
+        self.root = root
+        self.root.title("SchoolPoints - Loading")
         
-        # מסך מלא או מרכזי
+        # הסרה מלאה של overrideredirect כדי לאפשר מזעור
+        self.root.overrideredirect(False)  # מפורשות מאפשר מזעור
+        
+        # מיקום וגודל
         width = 500
         height = 300
         screen_width = self.root.winfo_screenwidth()
@@ -20,11 +23,14 @@ class SplashScreen:
         y = (screen_height - height) // 2
         
         self.root.geometry(f"{width}x{height}+{x}+{y}")
-        self.root.overrideredirect(True)  # ללא מסגרת חלון
         self.root.configure(bg='#2c3e50')
+        self.root.resizable(False, False)  # נעילת שינוי גודל
         
-        # הוספת צל (אפקט עומק)
-        self.root.attributes('-topmost', True)
+        # הגדרות חלון - ללא תכונות מיוחדות שמפריעות למזעור
+        try:
+            self.root.attributes('-topmost', True)  # נשאר בחזית
+        except:
+            pass
         
         # Frame מרכזי
         main_frame = tk.Frame(self.root, bg='#2c3e50')
@@ -130,7 +136,9 @@ def show_splash_and_run(main_function, title="מערכת ניהול נקודות
         title: כותרת ה-splash screen
         init_time: זמן מינימלי להצגת ה-splash (שניות - במילישניות למעשה)
     """
-    splash = SplashScreen(title=title)
+    # יצירת חלון חדש עבור ה-splash screen
+    splash_root = tk.Tk()
+    splash = SplashScreen(splash_root, title=title)
     
     # פונקציה שתרוץ אחרי ה-delay
     def close_and_run():
@@ -147,9 +155,12 @@ def show_splash_and_run(main_function, title="מערכת ניהול נקודות
     # הצגת splash
     try:
         splash.root.mainloop()
-    except:
-        # אם יש בעיה, רץ את התוכנה בלי splash
-        main_function()
+    except Exception:
+        # אם יש בעיה ב-splash עצמו, רץ את התוכנה בלי splash
+        try:
+            main_function()
+        except (KeyboardInterrupt, SystemExit):
+            pass
 
 
 if __name__ == "__main__":

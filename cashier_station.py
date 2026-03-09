@@ -27,7 +27,7 @@ from thermal_printer import ThermalPrinterCached, HebrewDate
 
 UNIVERSAL_MASTER_CODE = "05276247440527624744"
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.4"
 
 
 def _enable_windows_dpi_awareness():
@@ -116,6 +116,9 @@ class CashierStation:
                 pass
             return
 
+        # Initialize DB early so it's available for _setup_ui and _reload_products
+        self.db = Database()
+
         # הפעלת סנכרון רקע אוטומטי (Hybrid/Cloud בלבד)
         self._sync_agent_thread = None
         self._sync_agent_started = False
@@ -190,7 +193,162 @@ class CashierStation:
             # If license subsystem fails unexpectedly, do not block cashier startup
             pass
 
-        self.db = Database()
+        # טיפול ביציאה — flush + הודעה
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
+
+        # Initialize customer display (VeriFone MX980L or compatible) - DISABLED
+        # Customer display is temporarily disabled due to serial communication
+        # freezes.  Re-enable by removing the forced override below.
+        try:
+            self._customer_display_config = self._load_customer_display_config()
+        except Exception:
+            self._customer_display_config = {'enabled': False, 'com_port': 'COM1', 'baud_rate': 9600}
+        # --- forced disable ---
+        self._customer_display_enabled = False
+        self._customer_display_connecting = False
+        self.customer_display = None
+
+        # Must exist before _setup_ui() because product grid rendering uses it
+        self._locked = True
+
+        self._current_student = None
+        self._operator = None  # teacher/responsible who unlocked
+        self._operator_card = ''
+
+        # Timer / Stopwatch state
+        self._timer_mode = 'none'  # 'timer', 'stopwatch', 'none'
+        self._timer_minutes = 3
+        self._timer_start_epoch = 0  # time.time() when student logged in
+        self._timer_after_id = None  # after() callback id
+
+        # Debounce for card readers that deliver the same scan twice (e.g. Entry + bind, or driver quirks)
+        self._last_scanned_card = ''
+        self._last_scanned_ts = 0.0
+
+        self._products = []  # catalog products
+        self._product_by_id = {}
+        self._variant_by_id = {}
+        self._variants_by_product = {}  # pid -> [variant dict]
+        self._selected_variant_by_product = {}  # pid -> variant_id (0 for default)
+        self._product_categories = []
+        self._selected_category_id = 0  # 0=all
+        self._product_page = 0  # current page index for product grid pagination
+        self._cart = {}  # (product_id, variant_id) -> qty
+        self._scheduled_cart = []  # list of {'product_id','service_id','service_date','slot_start_time','duration_minutes'}
+        self._pending_payment = None
+        self._pending_payment_dialog = None
+        self._settings_auth_dialog = None
+        self._refund_auth_dialog = None
+        self._refund_auth_callback = None
+        self._master_actions_dialog = None
+        self._cart_row_meta = []  # list of {'type': 'product'|'scheduled', ...} aligned with cart_tree rows
+
+        self._last_activity_ts = time.time()
+        self._idle_job = None
+        self._hold_heartbeat_job = None
+        self._hold_ttl_minutes = 10
+        self._last_hold_refresh_ts = 0.0
+        self._exit_code = self._load_master_card()
+
+        try:
+            self.cashier_mode = self.db.get_cashier_mode()
+        except Exception:
+            self.cashier_mode = 'teacher'
+        try:
+            self.idle_timeout_sec = int(self.db.get_cashier_idle_timeout_sec())
+        except Exception:
+            self.idle_timeout_sec = 300
+
+        # Payment confirm mode is evaluated per-payment (can be threshold-based)
+        self.require_rescan_confirm = True
+
+        self._logo_imgtk = None
+        self._product_img_cache = {}
+
+        self._scheduled_by_pid = {}  # pid -> scheduled_service row
+        self._scheduled_dates_by_service = {}  # service_id -> [YYYY-MM-DD]
+
+        self._grid_cols = 3
+        self._grid_cols_locked = False
+        self._lock_overlay = None
+        self._lock_entry = None
+        self._scan_entry = None
+        self._scan_entry_submit_job = None
+
+        self._tile_last_qty_by_pid = {}
+
+        print('[DEBUG] before _setup_kiosk_window', flush=True)
+        self._setup_kiosk_window()
+        print('[DEBUG] before _setup_ui', flush=True)
+        self._setup_ui()
+        print('[DEBUG] after _setup_ui', flush=True)
+        # Ensure logo is loaded even if _setup_ui didn't complete fully
+        try:
+            if not getattr(self, '_logo_imgtk', None):
+                self._load_logo()
+        except Exception:
+            pass
+        self._bind_activity_tracking()
+
+        try:
+            self._apply_license_block_if_needed()
+        except Exception:
+            pass
+
+        try:
+            self.root.protocol('WM_DELETE_WINDOW', self._exit_app)
+        except Exception:
+            pass
+
+        self._lock()
+        self._schedule_idle_check()
+        self._schedule_hold_heartbeat()
+        try:
+            self._schedule_update_checks()
+        except Exception:
+            pass
+
+    def _on_closing(self):
+        """טיפול בסגירת עמדת הקופה — flush remote writes לפני יציאה"""
+        try:
+            from database import _RemoteSyncWorker
+            with _RemoteSyncWorker._lock:
+                has_workers = len(_RemoteSyncWorker._instances) > 0
+            if has_workers:
+                try:
+                    lbl = tk.Label(self.root, text="⏳ מסנכרן שינויים לפני סגירה...",
+                                   font=('Arial', 14, 'bold'), bg='#2c3e50', fg='#f1c40f')
+                    lbl.place(relx=0.5, rely=0.5, anchor='center')
+                    self.root.update_idletasks()
+                except Exception:
+                    pass
+                import threading
+                flush_done = threading.Event()
+                def _do_flush():
+                    try:
+                        _RemoteSyncWorker.flush_all(timeout=6)
+                    except Exception:
+                        pass
+                    flush_done.set()
+                t = threading.Thread(target=_do_flush, daemon=True)
+                t.start()
+                for _ in range(30):
+                    if flush_done.wait(0.2):
+                        break
+                    try:
+                        self.root.update()
+                    except Exception:
+                        break
+                _RemoteSyncWorker._flushed_at_exit = True
+        except Exception:
+            pass
+        self.root.destroy()
+        try:
+            import sys
+            sys.exit(0)
+        except SystemExit:
+            import os
+            os._exit(0)
 
     def _maybe_start_sync_agent(self) -> None:
         try:
@@ -238,10 +396,10 @@ class CashierStation:
                 return
 
         try:
-            interval_sec = int(cfg.get('sync_interval_sec') or 15)
+            interval_sec = int(cfg.get('sync_interval_sec') or 60)
         except Exception:
-            interval_sec = 15
-        interval_sec = max(10, int(interval_sec or 15))
+            interval_sec = 60
+        interval_sec = max(10, int(interval_sec or 60))
 
         def _run_sync_loop():
             try:
@@ -265,111 +423,28 @@ class CashierStation:
                 pass
             return
 
-        # Initialize customer display (VeriFone MX980L or compatible) - lazy/async connect
-        try:
-            self._customer_display_config = self._load_customer_display_config()
-        except Exception:
-            self._customer_display_config = {'enabled': False, 'com_port': 'COM1', 'baud_rate': 9600}
-        try:
-            self._customer_display_enabled = bool(self._customer_display_config.get('enabled', False))
-        except Exception:
-            self._customer_display_enabled = False
-        self._customer_display_connecting = False
-        self.customer_display = None
-        if self._customer_display_enabled:
-            try:
-                self.root.after(200, lambda: self._ensure_customer_display(show_welcome=True))
-            except Exception:
-                pass
-
-        # Must exist before _setup_ui() because product grid rendering uses it
-        self._locked = True
-
-        self._current_student = None
-        self._operator = None  # teacher/responsible who unlocked
-        self._operator_card = ''
-
-        # Debounce for card readers that deliver the same scan twice (e.g. Entry + bind, or driver quirks)
-        self._last_scanned_card = ''
-        self._last_scanned_ts = 0.0
-
-        self._products = []  # catalog products
-        self._product_by_id = {}
-        self._variant_by_id = {}
-        self._variants_by_product = {}  # pid -> [variant dict]
-        self._selected_variant_by_product = {}  # pid -> variant_id (0 for default)
-        self._product_categories = []
-        self._selected_category_id = 0  # 0=all
-        self._cart = {}  # (product_id, variant_id) -> qty
-        self._scheduled_cart = []  # list of {'product_id','service_id','service_date','slot_start_time','duration_minutes'}
-        self._pending_payment = None
-        self._pending_payment_dialog = None
-        self._settings_auth_dialog = None
-        self._master_actions_dialog = None
-        self._cart_row_meta = []  # list of {'type': 'product'|'scheduled', ...} aligned with cart_tree rows
-
-        self._last_activity_ts = time.time()
-        self._idle_job = None
-        self._hold_heartbeat_job = None
-        self._hold_ttl_minutes = 10
-        self._last_hold_refresh_ts = 0.0
-        self._exit_code = self._load_master_card()
-
-        try:
-            self.cashier_mode = self.db.get_cashier_mode()
-        except Exception:
-            self.cashier_mode = 'teacher'
-        try:
-            self.idle_timeout_sec = int(self.db.get_cashier_idle_timeout_sec())
-        except Exception:
-            self.idle_timeout_sec = 300
-
-        # Payment confirm mode is evaluated per-payment (can be threshold-based)
-        self.require_rescan_confirm = True
-
-        self._logo_imgtk = None
-        self._product_img_cache = {}
-
-        self._scheduled_by_pid = {}  # pid -> scheduled_service row
-        self._scheduled_dates_by_service = {}  # service_id -> [YYYY-MM-DD]
-
-        self._grid_cols = 3
-        self._grid_cols_locked = False
-        self._lock_overlay = None
-        self._lock_entry = None
-        self._scan_entry = None
-        self._scan_entry_submit_job = None
-
-        self._tile_last_qty_by_pid = {}
-
-        self._setup_kiosk_window()
-        self._setup_ui()
-        self._bind_activity_tracking()
-
-        try:
-            self._apply_license_block_if_needed()
-        except Exception:
-            pass
-
-        try:
-            self.root.protocol('WM_DELETE_WINDOW', self._exit_app)
-        except Exception:
-            pass
-
-        self._lock()
-        self._schedule_idle_check()
-        self._schedule_hold_heartbeat()
-        try:
-            self._schedule_update_checks()
-        except Exception:
-            pass
-
     def _refresh_tile_controls(self, product_id: int) -> bool:
         try:
             pid = int(product_id or 0)
         except Exception:
             pid = 0
         if not pid:
+            return False
+        try:
+            t = (self._tile_by_pid or {}).get(int(pid))
+            if t is None:
+                return False
+            # עדכון כמות
+            q = int(self._get_total_qty_for_product(int(pid)) or 0)
+            v = getattr(t, '_qty_var', None)
+            if v is not None and hasattr(v, 'set'):
+                v.set(str(q))
+            # בנייה מחדש של הכפתורים באריח הבודד
+            fn = getattr(t, '_refresh_controls', None)
+            if fn is not None and callable(fn):
+                fn()
+            return True
+        except Exception:
             return False
 
     def _build_thermal_text_receipt_bytes(
@@ -739,6 +814,17 @@ class CashierStation:
         if send_codepage:
             out += CODEPAGE
 
+        # Logo
+        logo_bytes = b''
+        try:
+            logo_bytes = self._get_cached_text_logo_bytes(str(logo_path or '').strip())
+        except Exception:
+            logo_bytes = b''
+        if logo_bytes:
+            out += CENTER
+            out += logo_bytes
+            out += b'\n'
+
         out += CENTER
         top_decoration = self._get_cached_text_decoration('stars')
         if top_decoration:
@@ -840,10 +926,43 @@ class CashierStation:
 
         out += RIGHT
         if item_name:
-            out += BOLD_ON
-            out += _enc(_rev(item_name))
-            out += b'\n'
-            out += BOLD_OFF
+            item_lines = item_name.split('\n')
+            if len(item_lines) <= 1:
+                # Single item - bold
+                out += BOLD_ON
+                out += _enc(_rev(item_name))
+                out += b'\n'
+                out += BOLD_OFF
+            else:
+                # Consolidated voucher - title + items with checkboxes
+                out += BOLD_ON
+                out += _enc(_rev(item_lines[0]))
+                out += b'\n'
+                out += BOLD_OFF
+                for sub_line in item_lines[1:]:
+                    sub_line = sub_line.strip()
+                    if not sub_line:
+                        continue
+                    # Strip "[ ] " prefix
+                    if sub_line.startswith('[ ] '):
+                        sub_line = sub_line[4:]
+                    # Parse "product_name - price" format
+                    # Printer is LTR + RIGHT-aligned: leftmost chars = left edge, rightmost = right edge
+                    # We want: RIGHT side = [ ] checkbox, then Hebrew name, then price on LEFT
+                    parts = sub_line.rsplit(' - ', 1)
+                    if len(parts) == 2:
+                        heb_part = parts[0].strip()
+                        num_part = parts[1].strip()
+                        # Check for "x2" quantity suffix in heb_part
+                        xq = ''
+                        if ' x' in heb_part:
+                            hp2, xq = heb_part.rsplit(' x', 1)
+                            heb_part = hp2.strip()
+                            xq = f" x{xq}"
+                        out += _enc(f"{num_part}{xq} - " + _rev(heb_part) + " ] [")
+                    else:
+                        out += _enc(_rev(sub_line) + " ] [")
+                    out += b'\n'
         if qty and qty != 1:
             out += _enc(f"{qty:d} :" + _rev('כמות'))
             out += b'\n'
@@ -1257,14 +1376,14 @@ class CashierStation:
                 try:
                     with open(shared_cfg_path, 'r', encoding='utf-8') as f:
                         shared_cfg = json.load(f)
-                    try:
-                        if isinstance(local_cfg, dict) and local_cfg.get('db_path'):
-                            merged = dict(shared_cfg) if isinstance(shared_cfg, dict) else {}
-                            merged['db_path'] = local_cfg.get('db_path')
-                            return merged
-                    except Exception:
-                        pass
-                    return shared_cfg
+                    # Merge: shared config is base, local station-specific settings overlay
+                    merged = dict(shared_cfg) if isinstance(shared_cfg, dict) else {}
+                    _STATION_LOCAL_KEYS = ('default_printer', 'customer_display', 'db_path', 'shared_folder', 'network_root')
+                    if isinstance(local_cfg, dict):
+                        for _sk in _STATION_LOCAL_KEYS:
+                            if _sk in local_cfg:
+                                merged[_sk] = local_cfg[_sk]
+                    return merged
                 except Exception:
                     pass
 
@@ -1304,10 +1423,12 @@ class CashierStation:
                         pass
                     with open(shared_cfg_path, 'w', encoding='utf-8') as f:
                         shared_cfg = dict(cfg) if isinstance(cfg, dict) else {}
-                        try:
-                            shared_cfg.pop('db_path', None)
-                        except Exception:
-                            pass
+                        # Remove station-specific settings from shared config
+                        for _sk in ('db_path', 'default_printer', 'customer_display'):
+                            try:
+                                shared_cfg.pop(_sk, None)
+                            except Exception:
+                                pass
                         json.dump(shared_cfg, f, ensure_ascii=False, indent=4)
             except Exception:
                 pass
@@ -1336,6 +1457,10 @@ class CashierStation:
             return True
 
     def _open_shared_folder_dialog(self, cfg: dict) -> bool:
+        try:
+            self.root.deiconify()
+        except Exception:
+            pass
         dialog = tk.Toplevel(self.root)
         dialog.title("הגדרת עמדת קופה - תיקיית רשת משותפת")
         dialog.geometry("760x320")
@@ -1549,6 +1674,7 @@ class CashierStation:
     # ----------------------------
 
     def _setup_ui(self):
+        print('[DEBUG] _setup_ui START', flush=True)
         try:
             style = ttk.Style()
             try:
@@ -1586,7 +1712,7 @@ class CashierStation:
         self.header = tk.Frame(self.root, bg='#0f0f14')
         try:
             # Keep header height stable so student card content doesn't push the whole UI down
-            self.header.configure(height=(96 if compact else 110))
+            self.header.configure(height=(126 if compact else 140))
             self.header.pack_propagate(False)
         except Exception:
             pass
@@ -1669,7 +1795,7 @@ class CashierStation:
 
         self.student_card = tk.Frame(header_right, bg='#14141c', highlightthickness=2, highlightbackground='#2c2c3a')
         try:
-            self.student_card.configure(width=(260 if compact else 320), height=(86 if compact else 96))
+            self.student_card.configure(width=(260 if compact else 320), height=(138 if compact else 148))
             self.student_card.pack_propagate(False)
         except Exception:
             pass
@@ -1703,6 +1829,16 @@ class CashierStation:
             anchor='e'
         )
         self.student_points_label.pack(fill=tk.X, pady=(2, 0))
+
+        self.timer_label = tk.Label(
+            sc_text,
+            text='',
+            font=('Arial', 14, 'bold'),
+            fg='#f39c12',
+            bg='#14141c',
+            anchor='e'
+        )
+        self.timer_label.pack(fill=tk.X, pady=(2, 0))
 
         self.title_label = None
 
@@ -1767,31 +1903,7 @@ class CashierStation:
         except Exception:
             pass
 
-        try:
-            self._cart_drag_y = None
-        except Exception:
-            pass
-
-        def _cart_touch_start(e=None):
-            try:
-                self._cart_drag_y = int(getattr(e, 'y_root', 0) or 0)
-                self.cart_canvas.scan_mark(0, int(getattr(e, 'y', 0) or 0))
-            except Exception:
-                self._cart_drag_y = None
-
-        def _cart_touch_move(e=None):
-            try:
-                if self._cart_drag_y is None:
-                    return
-                self.cart_canvas.scan_dragto(0, int(getattr(e, 'y', 0) or 0), gain=1)
-            except Exception:
-                pass
-
-        try:
-            self.cart_canvas.bind('<ButtonPress-1>', _cart_touch_start, add='+')
-            self.cart_canvas.bind('<B1-Motion>', _cart_touch_move, add='+')
-        except Exception:
-            pass
+        # Touch drag scrolling for cart is handled by the global root-level handler below
 
         self.summary_frame = tk.Frame(self.left_panel, bg='#14141c')
         self.summary_frame.grid(row=2, column=0, sticky='ew', padx=12, pady=(0, 10))
@@ -1896,9 +2008,56 @@ class CashierStation:
         self.status_label = tk.Label(self.right_panel, textvariable=self.status_var, font=('Arial', 12, 'bold'), fg='#ecf0f1', bg='#0f0f14', anchor='w')
         self.status_label.pack(fill=tk.X, padx=(0, 12), pady=(0, 8))
 
-        # Categories chips bar (above products)
-        self.categories_bar = tk.Frame(self.right_panel, bg='#0f0f14')
-        self.categories_bar.pack(fill=tk.X, padx=(0, 12), pady=(0, 10))
+        # Categories chips bar (above products) — scrollable for many categories
+        self._cat_outer = tk.Frame(self.right_panel, bg='#0f0f14')
+        self._cat_outer.pack(fill=tk.X, padx=(0, 12), pady=(0, 10))
+        self._cat_left_btn = tk.Button(self._cat_outer, text='◀', font=('Arial', 18, 'bold'),
+                                       bg='#2c3e50', fg='white', activebackground='#3498db',
+                                       activeforeground='white', bd=0, padx=14, pady=8,
+                                       cursor='hand2',
+                                       command=lambda: self._scroll_categories(-200))
+        self._cat_left_btn.pack(side=tk.LEFT, padx=(0, 4))
+        self._cat_canvas = tk.Canvas(self._cat_outer, bg='#0f0f14', highlightthickness=0, height=48)
+        self._cat_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._cat_right_btn = tk.Button(self._cat_outer, text='▶', font=('Arial', 18, 'bold'),
+                                        bg='#2c3e50', fg='white', activebackground='#3498db',
+                                        activeforeground='white', bd=0, padx=14, pady=8,
+                                        cursor='hand2',
+                                        command=lambda: self._scroll_categories(200))
+        self._cat_right_btn.pack(side=tk.LEFT, padx=(4, 0))
+        self.categories_bar = tk.Frame(self._cat_canvas, bg='#0f0f14')
+        self._cat_canvas_win = self._cat_canvas.create_window((0, 0), window=self.categories_bar, anchor='ne')
+        self.categories_bar.bind('<Configure>', lambda e: self._cat_canvas.configure(scrollregion=self._cat_canvas.bbox('all')))
+        self._cat_canvas.bind('<Configure>', lambda e: (self._cat_canvas.coords(self._cat_canvas_win, e.width, 0), self._cat_canvas.itemconfig(self._cat_canvas_win, height=e.height)))
+        # Mouse-wheel horizontal scroll on category bar
+        def _cat_mousewheel(event):
+            try:
+                if event.delta:
+                    self._scroll_categories(-event.delta)
+                elif event.num == 4:
+                    self._scroll_categories(-120)
+                elif event.num == 5:
+                    self._scroll_categories(120)
+            except Exception:
+                pass
+        self._cat_canvas.bind('<MouseWheel>', _cat_mousewheel)
+        self._cat_canvas.bind('<Button-4>', _cat_mousewheel)
+        self._cat_canvas.bind('<Button-5>', _cat_mousewheel)
+        # Drag/swipe horizontal scroll on category bar
+        self._cat_drag_x = None
+        def _cat_drag_start(event):
+            self._cat_drag_x = event.x
+        def _cat_drag_move(event):
+            if self._cat_drag_x is not None:
+                dx = self._cat_drag_x - event.x
+                if abs(dx) > 3:
+                    self._scroll_categories(dx)
+                    self._cat_drag_x = event.x
+        def _cat_drag_end(event):
+            self._cat_drag_x = None
+        self._cat_canvas.bind('<ButtonPress-1>', _cat_drag_start)
+        self._cat_canvas.bind('<B1-Motion>', _cat_drag_move)
+        self._cat_canvas.bind('<ButtonRelease-1>', _cat_drag_end)
 
         # Products column: scrollable products + actions below (classic cashier layout)
         self.products_area = tk.Frame(self.right_panel, bg='#0f0f14')
@@ -1915,6 +2074,7 @@ class CashierStation:
         except Exception:
             pass
 
+        print('[DEBUG] _setup_ui: creating products_container', flush=True)
         self.products_container = tk.Frame(self.products_canvas, bg='#0f0f14')
         self.products_window_id = self.products_canvas.create_window((0, 0), window=self.products_container, anchor='nw')
 
@@ -1933,32 +2093,6 @@ class CashierStation:
         try:
             self.products_container.bind('<Configure>', _on_frame_config)
             self.products_canvas.bind('<Configure>', _on_canvas_config)
-        except Exception:
-            pass
-
-        try:
-            self._products_drag_y = None
-        except Exception:
-            pass
-
-        def _products_touch_start(e=None):
-            try:
-                self._products_drag_y = int(getattr(e, 'y_root', 0) or 0)
-                self.products_canvas.scan_mark(0, int(getattr(e, 'y', 0) or 0))
-            except Exception:
-                self._products_drag_y = None
-
-        def _products_touch_move(e=None):
-            try:
-                if self._products_drag_y is None:
-                    return
-                self.products_canvas.scan_dragto(0, int(getattr(e, 'y', 0) or 0), gain=1)
-            except Exception:
-                pass
-
-        try:
-            self.products_canvas.bind('<ButtonPress-1>', _products_touch_start, add='+')
-            self.products_canvas.bind('<B1-Motion>', _products_touch_move, add='+')
         except Exception:
             pass
 
@@ -2010,13 +2144,14 @@ class CashierStation:
                     pass
                 try:
                     if w == self.products_canvas or _mw_is_descendant(w, self.products_canvas) or _mw_is_descendant(w, self.products_container):
-                        self.products_canvas.yview_scroll(step, 'units')
+                        self._change_product_page(step)
                         return
                 except Exception:
                     pass
             except Exception:
                 pass
 
+        print('[DEBUG] _setup_ui: binding mousewheel', flush=True)
         try:
             self.root.bind_all('<MouseWheel>', _mw_on_mousewheel_routed)
             self.root.bind_all('<Shift-MouseWheel>', _mw_on_mousewheel_routed)
@@ -2074,16 +2209,6 @@ class CashierStation:
                 self._touch_scroll_state['canvas'] = canvas
                 self._touch_scroll_state['start_y_root'] = int(getattr(e, 'y_root', 0) or 0)
                 self._touch_scroll_state['moved'] = False
-
-                try:
-                    cx = int(getattr(e, 'x_root', 0) or 0) - int(canvas.winfo_rootx() or 0)
-                    cy = int(getattr(e, 'y_root', 0) or 0) - int(canvas.winfo_rooty() or 0)
-                except Exception:
-                    cx, cy = 0, 0
-                try:
-                    canvas.scan_mark(int(cx), int(cy))
-                except Exception:
-                    pass
             except Exception:
                 pass
 
@@ -2095,23 +2220,34 @@ class CashierStation:
                 if canvas is None:
                     return
 
-                try:
-                    dy = int(getattr(e, 'y_root', 0) or 0) - int(self._touch_scroll_state.get('start_y_root') or 0)
-                except Exception:
-                    dy = 0
-                if abs(dy) < 6:
+                cur_y = int(getattr(e, 'y_root', 0) or 0)
+                prev_y = int(self._touch_scroll_state.get('start_y_root') or 0)
+                dy = prev_y - cur_y
+                if abs(dy) < 4:
                     return
                 self._touch_scroll_state['moved'] = True
+                self._touch_scroll_state['start_y_root'] = cur_y
 
+                # Products canvas: page navigation instead of scroll (avoids smearing)
                 try:
-                    cx = int(getattr(e, 'x_root', 0) or 0) - int(canvas.winfo_rootx() or 0)
-                    cy = int(getattr(e, 'y_root', 0) or 0) - int(canvas.winfo_rooty() or 0)
-                except Exception:
-                    cx, cy = 0, 0
-                try:
-                    canvas.scan_dragto(int(cx), int(cy), gain=1)
+                    if canvas == self.products_canvas:
+                        accum = int(self._touch_scroll_state.get('_accum_dy', 0) or 0) + dy
+                        self._touch_scroll_state['_accum_dy'] = accum
+                        if abs(accum) >= 80:
+                            self._change_product_page(1 if accum > 0 else -1)
+                            self._touch_scroll_state['_accum_dy'] = 0
+                        return
                 except Exception:
                     pass
+
+                # Cart canvas: normal scroll
+                bbox = canvas.bbox('all')
+                if bbox:
+                    total_h = bbox[3] - bbox[1]
+                    if total_h > 0:
+                        frac = dy / total_h
+                        cur_pos = canvas.yview()[0]
+                        canvas.yview_moveto(cur_pos + frac)
             except Exception:
                 pass
 
@@ -2119,9 +2255,11 @@ class CashierStation:
             try:
                 self._touch_scroll_state['active'] = False
                 self._touch_scroll_state['canvas'] = None
+                self._touch_scroll_state['_accum_dy'] = 0
             except Exception:
                 pass
 
+        print('[DEBUG] _setup_ui: binding touch scroll', flush=True)
         try:
             self.root.bind_all('<ButtonPress-1>', _touch_scroll_start, add='+')
             self.root.bind_all('<B1-Motion>', _touch_scroll_move, add='+')
@@ -2129,11 +2267,13 @@ class CashierStation:
         except Exception:
             pass
 
+        print('[DEBUG] _setup_ui: license check', flush=True)
         try:
             if bool(getattr(self, '_license_blocked', False)):
                 self._apply_license_block_if_needed()
         except Exception:
             pass
+        print('[DEBUG] _setup_ui END', flush=True)
 
     def _apply_license_block_if_needed(self):
         if not bool(getattr(self, '_license_blocked', False)):
@@ -2234,6 +2374,16 @@ class CashierStation:
         self._grid_cols = int(self._grid_cols or 3)
         try:
             self.root.update_idletasks()
+        except Exception:
+            pass
+
+        # Load products and show lock overlay after UI is ready
+        try:
+            self._reload_products()
+        except Exception:
+            pass
+        try:
+            self._show_lock_overlay()
         except Exception:
             pass
 
@@ -2457,10 +2607,35 @@ class CashierStation:
 
     def _reload_categories(self):
         try:
-            self._product_categories = self.db.get_product_categories(active_only=True) or []
+            _all_cats = self.db.get_product_categories(active_only=True) or []
+            self._product_categories = [c for c in _all_cats if int(c.get('show_in_catalog', 1) or 1) == 1]
         except Exception:
             self._product_categories = []
         self._render_categories_bar()
+
+    def _scroll_categories(self, delta):
+        try:
+            self._cat_canvas.xview_scroll(int(delta), 'units')
+        except Exception:
+            pass
+
+    def _update_cat_arrows(self):
+        try:
+            bbox = self._cat_canvas.bbox('all')
+            if not bbox:
+                self._cat_left_btn.pack_forget()
+                self._cat_right_btn.pack_forget()
+                return
+            content_w = bbox[2] - bbox[0]
+            canvas_w = self._cat_canvas.winfo_width()
+            if content_w <= canvas_w:
+                self._cat_left_btn.pack_forget()
+                self._cat_right_btn.pack_forget()
+            else:
+                self._cat_left_btn.pack(side=tk.LEFT, padx=(0, 2))
+                self._cat_right_btn.pack(side=tk.LEFT, padx=(2, 0))
+        except Exception:
+            pass
 
     def _render_categories_bar(self):
         try:
@@ -2481,10 +2656,11 @@ class CashierStation:
             def _choose():
                 self._touch_activity()
                 self._selected_category_id = int(cid or 0)
+                self._product_page = 0
                 self._render_categories_bar()
                 self._render_product_grid()
 
-            tk.Button(
+            btn = tk.Button(
                 self.categories_bar,
                 text=str(text or ''),
                 command=_choose,
@@ -2493,7 +2669,25 @@ class CashierStation:
                 fg=fg,
                 padx=14,
                 pady=8
-            ).pack(side=tk.RIGHT, padx=(0, 8))
+            )
+            btn.pack(side=tk.RIGHT, padx=(0, 8))
+            # Propagate mousewheel/drag from button to category canvas
+            try:
+                btn.bind('<MouseWheel>', lambda e: self._scroll_categories(-e.delta) if e.delta else None)
+                btn.bind('<Button-4>', lambda e: self._scroll_categories(-120))
+                btn.bind('<Button-5>', lambda e: self._scroll_categories(120))
+            except Exception:
+                pass
+
+        # Count products per category for display
+        _cat_product_counts = {}
+        try:
+            for p in (self._products or []):
+                _pcid = int(p.get('category_id') or 0)
+                if _pcid:
+                    _cat_product_counts[_pcid] = _cat_product_counts.get(_pcid, 0) + 1
+        except Exception:
+            pass
 
         _mk_btn('הכל', 0)
         for c in (self._product_categories or []):
@@ -2506,7 +2700,15 @@ class CashierStation:
             name = str(c.get('name') or '').strip()
             if not name:
                 continue
-            _mk_btn(name, cid)
+            cnt = _cat_product_counts.get(cid, 0)
+            btn_text = f"{name}\n({cnt} מוצרים)" if cnt > 0 else name
+            _mk_btn(btn_text, cid)
+
+        # Show/hide arrows after layout settles
+        try:
+            self.categories_bar.after(50, self._update_cat_arrows)
+        except Exception:
+            pass
 
     def _build_lock_overlay(self):
         if self._lock_overlay is not None:
@@ -2593,6 +2795,13 @@ class CashierStation:
     def _show_lock_overlay(self):
         if self._lock_overlay is None:
             self._build_lock_overlay()
+        # Update lock screen logo (may have been loaded after overlay was built)
+        try:
+            if getattr(self, '_logo_imgtk', None) is not None and hasattr(self, '_lock_logo_label'):
+                self._lock_logo_label.config(image=self._logo_imgtk)
+                self._lock_logo_label.image = self._logo_imgtk
+        except Exception:
+            pass
         try:
             if self.cashier_mode == 'self_service':
                 txt = 'העבר כרטיס תלמיד לפתיחה'
@@ -2645,20 +2854,59 @@ class CashierStation:
         except Exception:
             logo_path = None
         if not logo_path:
-            fallback = os.path.join(base_dir, "דובר שלום לוגו תת.jpg")
-            if os.path.exists(fallback):
-                logo_path = fallback
+            # Try shared_folder for logo files (updates when DB changes)
+            try:
+                shared = str((cfg or {}).get('shared_folder') or (cfg or {}).get('network_root') or '').strip()
+                if shared and os.path.isdir(shared):
+                    for logo_name in ["logo.png", "logo.jpg", "logo.jpeg", "logo.bmp"]:
+                        candidate = os.path.join(shared, logo_name)
+                        if os.path.exists(candidate):
+                            logo_path = candidate
+                            break
+            except Exception:
+                pass
+        if not logo_path:
+            # Try different logo filenames in app directory
+            for logo_name in [
+                "logo.png", "logo.jpg",
+                "לוגו אשראיכם.png", "לוגו אשראיכם_2.png",
+                "לוגו שחור לבן.png", "לוגו שחור לבן לא שקוף.png",
+                "דובר שלום לוגו תת.jpg", "דובר שלום.jpg",
+            ]:
+                fallback = os.path.join(base_dir, logo_name)
+                if os.path.exists(fallback):
+                    logo_path = fallback
+                    break
 
         if not logo_path or not os.path.exists(logo_path):
+            try:
+                print(f"[LOGO] No logo file found in config, shared folder, or app directory ({base_dir})")
+            except Exception:
+                pass
             return
+        try:
+            print(f"[LOGO] Loading: {logo_path}")
+        except Exception:
+            pass
         try:
             img = Image.open(logo_path)
             img = img.convert('RGBA')
             img.thumbnail((160, 80))
             self._logo_imgtk = ImageTk.PhotoImage(img)
             self.logo_label.config(image=self._logo_imgtk)
-        except Exception:
-            pass
+            self.logo_label.image = self._logo_imgtk
+            # Also set logo in header right if exists
+            try:
+                if hasattr(self, 'header_logo_label'):
+                    self.header_logo_label.config(image=self._logo_imgtk)
+                    self.header_logo_label.image = self._logo_imgtk
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                print(f"[LOGO] Failed to load {logo_path}: {e}")
+            except Exception:
+                pass
 
     # ----------------------------
     # Products
@@ -2672,8 +2920,21 @@ class CashierStation:
         self._product_by_id = {}
         self._variant_by_id = {}
         self._variants_by_product = {}
+        self._product_img_cache = {}
         self._scheduled_by_pid = {}
         self._scheduled_dates_by_service = {}
+
+        # Batch-load all active scheduled services (1 query instead of N)
+        _all_services_by_pid = {}
+        try:
+            _all_svcs = self.db.get_all_scheduled_services(active_only=True) or []
+            for _s in _all_svcs:
+                _spid = int(_s.get('product_id') or 0)
+                if _spid:
+                    _all_services_by_pid[_spid] = _s
+        except Exception:
+            pass
+
         for p in (self._products or []):
             try:
                 pid = int(p.get('id') or 0)
@@ -2683,10 +2944,7 @@ class CashierStation:
                 continue
             self._product_by_id[pid] = p
 
-            try:
-                s = self.db.get_scheduled_service_by_product(pid)
-            except Exception:
-                s = None
+            s = _all_services_by_pid.get(pid)
             if s and int(s.get('is_active', 1) or 0) == 1:
                 self._scheduled_by_pid[pid] = s
                 try:
@@ -2721,7 +2979,14 @@ class CashierStation:
         if getattr(self, '_rendering_grid', False):
             return
         self._rendering_grid = True
+        try:
+            self._render_product_grid_inner(y0)
+        except Exception:
+            pass
+        finally:
+            self._rendering_grid = False
 
+    def _render_product_grid_inner(self, y0):
         try:
             self._tile_by_pid = {}
         except Exception:
@@ -2742,7 +3007,7 @@ class CashierStation:
 
         products = list(self._products or [])
 
-        # Availability filtering by student (class / points)
+        # Availability checking by student (class / points / stock / category limits)
         st = self._current_student or {}
         try:
             st_points = int(st.get('points', 0) or 0)
@@ -2750,22 +3015,57 @@ class CashierStation:
             st_points = 0
         st_cls = str(st.get('class_name') or '').strip()
 
+        # Build category min_points map
+        _cat_min_pts = {}
+        try:
+            for _c in (self._product_categories or []):
+                _cid = int(_c.get('id') or 0)
+                if _cid:
+                    _cat_min_pts[_cid] = int(_c.get('min_points_required', 0) or 0)
+        except Exception:
+            pass
+
+        # Mark grayed-out products instead of hiding them
+        _grayed_pids = set()
         if self._current_student:
-            filtered = []
             for p in products:
+                try:
+                    _pid = int(p.get('id') or 0)
+                except Exception:
+                    continue
+                # Class restriction
                 allowed = str(p.get('allowed_classes') or '').strip()
                 if allowed and st_cls:
                     allowed_list = [x.strip() for x in allowed.split(',') if x.strip()]
                     if allowed_list and (st_cls not in allowed_list):
+                        _grayed_pids.add(_pid)
                         continue
+                # Product min points
                 try:
                     minp = int(p.get('min_points_required', 0) or 0)
                 except Exception:
                     minp = 0
                 if minp > 0 and st_points < minp:
+                    _grayed_pids.add(_pid)
                     continue
-                filtered.append(p)
-            products = filtered
+                # Category min points
+                try:
+                    _pcid = int(p.get('category_id') or 0)
+                    _cminp = _cat_min_pts.get(_pcid, 0)
+                    if _cminp > 0 and st_points < _cminp:
+                        _grayed_pids.add(_pid)
+                        continue
+                except Exception:
+                    pass
+                # Out of stock
+                try:
+                    _sq = p.get('stock_qty')
+                    if _sq is not None and int(_sq) <= 0:
+                        _grayed_pids.add(_pid)
+                        continue
+                except Exception:
+                    pass
+
         try:
             cid = int(self._selected_category_id or 0)
         except Exception:
@@ -2778,13 +3078,59 @@ class CashierStation:
 
         if not products:
             tk.Label(self.products_container, text='אין מוצרים פעילים', font=('Arial', 18, 'bold'), fg='white', bg='#0f0f14').pack(pady=30)
+            try:
+                self.products_canvas.after_idle(
+                    lambda: self.products_canvas.configure(scrollregion=self.products_canvas.bbox('all'))
+                )
+            except Exception:
+                pass
             return
 
         pad = 6 if compact else 10
-        for i, p in enumerate(products):
+
+        # --- Pagination: calculate how many rows fit in the viewport ---
+        try:
+            if compact:
+                if cols >= 4:
+                    _tile_h = 235
+                elif cols == 3:
+                    _tile_h = 245
+                else:
+                    _tile_h = 265
+            else:
+                _tile_h = 330 if cols <= 3 else 310
+            _row_h = _tile_h + pad * 2
+            _canvas_h = self.products_canvas.winfo_height()
+            if _canvas_h < 100:
+                _canvas_h = 600
+            _nav_h = 50
+            _rows_per_page = max(1, (_canvas_h - _nav_h) // _row_h)
+        except Exception:
+            _rows_per_page = 2
+        _per_page = _rows_per_page * cols
+        _total_pages = max(1, (len(products) + _per_page - 1) // _per_page)
+
+        page = int(getattr(self, '_product_page', 0) or 0)
+        if page >= _total_pages:
+            page = _total_pages - 1
+        if page < 0:
+            page = 0
+        self._product_page = page
+        self._product_total_pages = _total_pages
+
+        _start = page * _per_page
+        page_products = products[_start:_start + _per_page]
+
+        for i, p in enumerate(page_products):
             r = i // cols
             c = i % cols
-            tile = tk.Frame(self.products_container, bg='#14141c', relief='raised', bd=3, highlightbackground='#2c2c3a', highlightthickness=2)
+            try:
+                _is_grayed = int(p.get('id') or 0) in _grayed_pids
+            except Exception:
+                _is_grayed = False
+            _tile_bg = '#1a1a1a' if _is_grayed else '#14141c'
+            _tile_border = '#555555' if _is_grayed else '#2c2c3a'
+            tile = tk.Frame(self.products_container, bg=_tile_bg, relief='raised', bd=3, highlightbackground=_tile_border, highlightthickness=2)
             try:
                 tile._is_product_tile = True
             except Exception:
@@ -2829,7 +3175,7 @@ class CashierStation:
             scheduled = self._scheduled_by_pid.get(pid)
             if scheduled:
                 try:
-                    badge = tk.Label(tile, text='⏱', font=('Arial', 12, 'bold'), fg='#f1c40f', bg='#14141c')
+                    badge = tk.Label(tile, text='⏱', font=('Arial', 12, 'bold'), fg='#f1c40f', bg=_tile_bg)
                     badge.place(relx=1.0, rely=0.0, x=-6, y=6, anchor='ne')
                 except Exception:
                     pass
@@ -2877,7 +3223,7 @@ class CashierStation:
                 except Exception:
                     price = int(base_price)
 
-            body = tk.Frame(tile, bg='#14141c')
+            body = tk.Frame(tile, bg=_tile_bg)
             body.pack(fill=tk.BOTH, expand=True, padx=(6 if compact else 10), pady=(6 if compact else 10))
             try:
                 body.grid_rowconfigure(0, weight=0)
@@ -2887,7 +3233,7 @@ class CashierStation:
             except Exception:
                 pass
 
-            img_wrap = tk.Frame(body, bg='#14141c')
+            img_wrap = tk.Frame(body, bg=_tile_bg)
             img_wrap.grid(row=0, column=0, sticky='n')
             try:
                 img_wrap.configure(width=int(img_sz), height=int(img_sz))
@@ -2895,7 +3241,7 @@ class CashierStation:
             except Exception:
                 pass
 
-            img_lbl = tk.Label(img_wrap, bg='#14141c')
+            img_lbl = tk.Label(img_wrap, bg=_tile_bg)
             img_lbl.pack(fill=tk.BOTH, expand=True)
 
             imgtk = self._get_product_img(pid)
@@ -2903,9 +3249,12 @@ class CashierStation:
                 img_lbl.config(image=imgtk)
                 img_lbl.image = imgtk
             else:
-                img_lbl.config(text='🛒', font=('Arial', 44), fg='#bdc3c7')
+                img_lbl.config(text='🛒', font=('Arial', 44), fg='#555555' if _is_grayed else '#bdc3c7')
 
-            mid = tk.Frame(body, bg='#14141c')
+            _name_fg = '#555555' if _is_grayed else '#93c5fd'
+            _price_fg = '#666666' if _is_grayed else 'white'
+
+            mid = tk.Frame(body, bg=_tile_bg)
             mid.grid(row=1, column=0, sticky='nsew', pady=(10, 6))
 
             name_wrap = 150 if (compact and cols >= 4) else (190 if compact else (220 if cols >= 4 else (250 if cols == 3 else 280)))
@@ -2913,31 +3262,35 @@ class CashierStation:
                 mid,
                 text=name,
                 font=('Arial', 12 if compact else 15, 'bold'),
-                fg='#93c5fd',
-                bg='#14141c',
+                fg=_name_fg,
+                bg=_tile_bg,
                 anchor='center',
                 justify='center',
                 wraplength=name_wrap
             ).pack(fill=tk.X, pady=(0, 4 if compact else 4))
             if len(vars_) > 1:
                 vtxt = 'בחר אפשרות' if not selected_variant else self._strip_asterisk_annotations(str((selected_variant or {}).get('variant_name') or '').strip())
-                tk.Label(mid, text=vtxt, font=('Arial', 12, 'bold'), fg='#f1c40f', bg='#14141c', anchor='center').pack(fill=tk.X, pady=(0, 2))
+                tk.Label(mid, text=vtxt, font=('Arial', 12, 'bold'), fg='#666666' if _is_grayed else '#f1c40f', bg=_tile_bg, anchor='center').pack(fill=tk.X, pady=(0, 2))
 
-            price_row = tk.Frame(mid, bg='#14141c')
+            # Show gray 'לא זמין' label for grayed-out products
+            if _is_grayed:
+                tk.Label(mid, text='לא זמין', font=('Arial', 10, 'bold'), fg='#e74c3c', bg=_tile_bg, anchor='center').pack(fill=tk.X, pady=(2, 0))
+
+            price_row = tk.Frame(mid, bg=_tile_bg)
             price_row.pack(fill=tk.X)
             # RLM prefix keeps "75 נקודות" order stable in RTL environments
             price_txt = f"\u200f{price} נקודות"
-            tk.Label(price_row, text=price_txt, font=('Arial', 16 if compact else 22, 'bold'), fg='white', bg='#14141c', anchor='center', justify='center').pack(fill=tk.X)
+            tk.Label(price_row, text=price_txt, font=('Arial', 16 if compact else 22, 'bold'), fg=_price_fg, bg=_tile_bg, anchor='center', justify='center').pack(fill=tk.X)
 
             qty = int(self._get_total_qty_for_product(int(pid)) or 0)
             qty_var = tk.StringVar(value=str(qty))
 
-            ctl = tk.Frame(body, bg='#14141c')
+            ctl = tk.Frame(body, bg=_tile_bg)
             ctl.grid(row=2, column=0, sticky='sew', pady=(2, 0))
-            disabled = (self._locked or (not self._current_student))
+            disabled = (self._locked or (not self._current_student) or _is_grayed)
 
             # Capture loop variables in default args to avoid closure bug
-            def _refresh_controls_for_tile(_ctl=ctl, _qty_var=qty_var, _pid=pid, _scheduled=scheduled, _compact=compact):
+            def _refresh_controls_for_tile(_ctl=ctl, _qty_var=qty_var, _pid=pid, _scheduled=scheduled, _compact=compact, _p=p, _price=price):
                 try:
                     for ww in list(_ctl.winfo_children()):
                         try:
@@ -2954,6 +3307,28 @@ class CashierStation:
                     q_now = 0
 
                 disabled_now = (self._locked or (not self._current_student))
+
+                # אכיפת הגבלות בממשק: max_per_student + בדיקת נקודות
+                plus_disabled = disabled_now
+                if not disabled_now:
+                    try:
+                        _mps = (_p or {}).get('max_per_student', None)
+                        _mps = (int(_mps) if _mps is not None and str(_mps).strip() != '' else None)
+                        if _mps is not None and int(_mps) >= 0 and int(q_now) >= int(_mps):
+                            plus_disabled = True
+                    except Exception:
+                        pass
+                    if not plus_disabled:
+                        try:
+                            _deduct = 1 if int((_p or {}).get('deduct_points', 1) or 0) == 1 else 0
+                            if _deduct == 1 and int(_price or 0) > 0:
+                                _student_pts = int((self._current_student or {}).get('points', 0) or 0)
+                                _total_deduct = int(self._get_total_deduct_points() or 0)
+                                _remaining = _student_pts - _total_deduct
+                                if _remaining < int(_price or 0):
+                                    plus_disabled = True
+                        except Exception:
+                            pass
 
                 if _scheduled:
                     _ctl.grid_columnconfigure(0, weight=1)
@@ -2979,16 +3354,18 @@ class CashierStation:
                     self._touch_activity()
                     self._increment_product(__pid)
 
+                _limit_gray = (plus_disabled and not disabled_now)
+
                 if int(q_now or 0) <= 0:
                     _ctl.grid_columnconfigure(0, weight=1)
                     tk.Button(
                         _ctl,
                         text='הוסף',
                         command=_mk_inc,
-                        state=(tk.DISABLED if disabled_now else tk.NORMAL),
+                        state=(tk.DISABLED if plus_disabled else tk.NORMAL),
                         font=('Arial', 14 if _compact else 18, 'bold'),
-                        bg='#27ae60',
-                        fg='white',
+                        bg=('#555' if _limit_gray else '#27ae60'),
+                        fg=('#999' if _limit_gray else 'white'),
                         activebackground='#27ae60',
                         activeforeground='white',
                         padx=16,
@@ -3002,7 +3379,7 @@ class CashierStation:
                     btn_minus = tk.Button(_ctl, text='-', command=_mk_dec, state=(tk.DISABLED if disabled_now else tk.NORMAL), font=('Arial', 16 if _compact else 20, 'bold'), bg='#dc2626', fg='white', activebackground='#dc2626', activeforeground='white', width=3, height=1)
                     btn_minus.grid(row=0, column=0, sticky='ew', padx=(0, 6))
                     tk.Label(_ctl, textvariable=_qty_var, font=('Arial', 14 if _compact else 18, 'bold'), bg='#ecf0f1', fg='#2c3e50', width=3 if _compact else 4).grid(row=0, column=1, sticky='ew')
-                    btn_plus = tk.Button(_ctl, text='+', command=_mk_inc, state=(tk.DISABLED if disabled_now else tk.NORMAL), font=('Arial', 18 if _compact else 20, 'bold'), bg='#16a34a', fg='white', activebackground='#16a34a', activeforeground='white', width=2 if _compact else 3, height=1)
+                    btn_plus = tk.Button(_ctl, text='+', command=_mk_inc, state=(tk.DISABLED if plus_disabled else tk.NORMAL), font=('Arial', 18 if _compact else 20, 'bold'), bg=('#555' if _limit_gray else '#16a34a'), fg=('#999' if _limit_gray else 'white'), activebackground='#16a34a', activeforeground='white', width=2 if _compact else 3, height=1)
                     btn_plus.grid(row=0, column=2, sticky='ew', padx=(4 if _compact else 6, 0))
 
             # initial controls build
@@ -3016,22 +3393,54 @@ class CashierStation:
             except Exception:
                 pass
 
-        # Restore scroll position smoothly
-        if y0 and y0 != (0.0, 1.0):
-            try:
-                self.root.after(50, lambda: self._restore_scroll_position(y0))
-            except Exception:
-                pass
-        
-        # Clear rendering flag after a short delay
-        self.root.after(100, lambda: setattr(self, '_rendering_grid', False))
+        # --- Navigation bar (pagination) ---
+        if _total_pages > 1:
+            nav_row = max(len(page_products) // cols, 1) + (1 if len(page_products) % cols else 0)
+            nav = tk.Frame(self.products_container, bg='#0f0f14')
+            nav.grid(row=nav_row, column=0, columnspan=cols, pady=(6, 4), sticky='ew')
 
-    def _restore_scroll_position(self, yview):
-        """Restore scroll position smoothly"""
+            nav.grid_columnconfigure(0, weight=1)
+            nav.grid_columnconfigure(1, weight=1)
+            nav.grid_columnconfigure(2, weight=1)
+
+            if page > 0:
+                tk.Button(nav, text='◀ הקודם', command=lambda: self._change_product_page(-1),
+                          font=('Arial', 14, 'bold'), bg='#34495e', fg='white',
+                          padx=16, pady=6).grid(row=0, column=2, sticky='e', padx=6)
+            if page < _total_pages - 1:
+                tk.Button(nav, text='הבא ▶', command=lambda: self._change_product_page(1),
+                          font=('Arial', 14, 'bold'), bg='#34495e', fg='white',
+                          padx=16, pady=6).grid(row=0, column=0, sticky='w', padx=6)
+
+            tk.Label(nav, text=f'{page + 1} / {_total_pages}',
+                     font=('Arial', 13, 'bold'), fg='#bdc3c7', bg='#0f0f14'
+                     ).grid(row=0, column=1)
+
         try:
-            self.products_canvas.yview_moveto(yview[0])
+            self.products_canvas.after_idle(
+                lambda: self.products_canvas.configure(scrollregion=self.products_canvas.bbox('all'))
+            )
         except Exception:
             pass
+        
+
+    def _change_product_page(self, delta: int):
+        """Navigate product grid pages"""
+        try:
+            self._touch_activity()
+        except Exception:
+            pass
+        old_page = int(getattr(self, '_product_page', 0) or 0)
+        total = int(getattr(self, '_product_total_pages', 1) or 1)
+        new_page = old_page + int(delta)
+        if new_page < 0:
+            new_page = 0
+        if new_page >= total:
+            new_page = total - 1
+        if new_page == old_page:
+            return
+        self._product_page = new_page
+        self._render_product_grid()
 
     def _refresh_single_tile(self, tile, product_id):
         """Refresh a single product tile without re-rendering the entire grid"""
@@ -3174,58 +3583,12 @@ class CashierStation:
         
         self._refresh_cart_ui()
 
-        # First: update displayed qty var immediately (cheap and reliable)
+        # עדכון האריח הבודד — ללא בנייה מחדש של כל הגריד
         try:
-            q_total = int(self._sync_tile_qty_var(int(pid)) or 0)
-        except Exception:
-            q_total = 0
-
-        # If we crossed the 0<->1 boundary we must rebuild the controls to swap "הוסף" <-> "+/-".
-        try:
-            prev = int((self._tile_last_qty_by_pid or {}).get(int(pid), -999999))
-        except Exception:
-            prev = -999999
-        try:
-            self._tile_last_qty_by_pid[int(pid)] = int(q_total)
-        except Exception:
-            pass
-        crossed_boundary = (prev == -999999) or ((prev <= 0) != (int(q_total) <= 0))
-
-        # Update only the affected tile to avoid flicker and keep scroll position.
-        # Schedule refresh as well (some UI paths delay updates until next event).
-        refreshed = False
-        try:
-            refreshed = bool(self._refresh_tile_controls(int(pid)))
-        except Exception:
-            refreshed = False
-        try:
-            self.root.after(0, lambda _pid=int(pid): self._refresh_tile_controls(_pid))
-        except Exception:
-            pass
-        try:
-            self.root.after_idle(lambda _pid=int(pid): self._refresh_tile_controls(_pid))
-        except Exception:
-            pass
-        # In some Tk/Windows setups, the 0<->1 swap can still be visually delayed.
-        # Retry a couple of targeted refreshes ONLY when crossing the boundary.
-        if bool(crossed_boundary):
-            try:
-                self.root.after(20, lambda _pid=int(pid): self._refresh_tile_controls(_pid))
-            except Exception:
-                pass
-            try:
-                self.root.after(80, lambda _pid=int(pid): self._refresh_tile_controls(_pid))
-            except Exception:
-                pass
-        # Fallback: if tile reference isn't available (or refresh failed), re-render grid.
-        # Avoid full re-render just because we crossed 0<->1; tile refresh handles swapping controls.
-        if not refreshed:
-            try:
+            self._sync_tile_qty_var(int(pid))
+            if not self._refresh_tile_controls(int(pid)):
+                # fallback: אם אין אריח (נדיר), בנה מחדש את הגריד
                 self.root.after(1, self._render_product_grid)
-            except Exception:
-                pass
-        try:
-            self.root.update_idletasks()
         except Exception:
             pass
 
@@ -3303,6 +3666,13 @@ class CashierStation:
             except Exception:
                 return -1
 
+        # class_grouping mode
+        use_class_grouping = False
+        try:
+            use_class_grouping = int(svc.get('class_grouping', 0) or 0) == 1
+        except Exception:
+            use_class_grouping = False
+
         for d in dates:
             try:
                 slots = self.db.get_scheduled_service_slots(service_id=int(sid), service_date=str(d)) or []
@@ -3350,33 +3720,74 @@ class CashierStation:
 
                 return False
 
+            # Build list of available (non-full, non-conflicting) slots
+            available = []
             for s in slots:
                 if int(s.get('remaining', 0) or 0) <= 0:
                     continue
                 stt = str(s.get('slot_start_time') or '').strip()
                 if _conflicts(stt):
                     continue
-                hr = self.db.create_scheduled_hold(
-                    station_id=str(self.station_id or '').strip(),
-                    student_id=int(student_id or 0),
-                    service_id=int(sid),
-                    service_date=str(d),
-                    slot_start_time=str(stt),
-                    duration_minutes=int(dur0),
-                )
-                if not hr or not hr.get('ok'):
-                    continue
-                self._scheduled_cart.append({
-                    'product_id': int(pid),
-                    'variant_id': int(vid_selected or 0),
-                    'service_id': int(sid),
-                    'service_date': str(d),
-                    'slot_start_time': stt,
-                    'duration_minutes': int(dur0),
-                })
-                self._refresh_cart_ui()
-                self._render_product_grid()
-                return
+                available.append(stt)
+
+            if not available:
+                continue
+
+            chosen_slot = None
+
+            if use_class_grouping and st_cls:
+                # תור כיתתי: עדיפות 1 = סלוט עם אותה כיתה, 2 = סלוט ריק, 3 = ערבוב
+                try:
+                    slot_classes = self.db.get_slot_classes_map(service_id=int(sid), service_date=str(d)) or {}
+                except Exception:
+                    slot_classes = {}
+
+                same_class_slots = []
+                empty_slots = []
+                mixed_slots = []
+
+                for stt in available:
+                    classes_in_slot = slot_classes.get(stt, [])
+                    if not classes_in_slot:
+                        empty_slots.append(stt)
+                    elif st_cls in classes_in_slot:
+                        same_class_slots.append(stt)
+                    else:
+                        mixed_slots.append(stt)
+
+                if same_class_slots:
+                    chosen_slot = same_class_slots[0]
+                elif empty_slots:
+                    chosen_slot = empty_slots[0]
+                elif mixed_slots:
+                    chosen_slot = mixed_slots[0]
+            else:
+                chosen_slot = available[0]
+
+            if not chosen_slot:
+                continue
+
+            hr = self.db.create_scheduled_hold(
+                station_id=str(self.station_id or '').strip(),
+                student_id=int(student_id or 0),
+                service_id=int(sid),
+                service_date=str(d),
+                slot_start_time=str(chosen_slot),
+                duration_minutes=int(dur0),
+            )
+            if not hr or not hr.get('ok'):
+                continue
+            self._scheduled_cart.append({
+                'product_id': int(pid),
+                'variant_id': int(vid_selected or 0),
+                'service_id': int(sid),
+                'service_date': str(d),
+                'slot_start_time': chosen_slot,
+                'duration_minutes': int(dur0),
+            })
+            self._refresh_cart_ui()
+            self._refresh_all_tile_controls()
+            return
 
         messagebox.showwarning('אין זמן פנוי', 'אין סלוט פנוי שאינו מתנגש עם אתגר אחר של התלמיד')
         return
@@ -3529,7 +3940,7 @@ class CashierStation:
             })
             dlg.destroy()
             self._refresh_cart_ui()
-            self._render_product_grid()
+            self._refresh_all_tile_controls()
 
         # equal-size buttons
         tk.Button(btns, text='אוטומטי', command=lambda: (dlg.destroy(), self._add_scheduled_service_to_cart(pid, mode='auto')),
@@ -3627,31 +4038,6 @@ class CashierStation:
             return
 
         self._set_cart_qty(pid, int(vid), int(self._cart.get(key, 0) or 0) + 1)
-        # Force immediate redraw of the tile controls (avoid waiting for an unrelated UI refresh)
-        try:
-            t = self._tile_by_pid.get(int(pid))
-            if t is not None and callable(getattr(t, '_refresh_controls', None)):
-                t._refresh_controls()
-        except Exception:
-            pass
-        # Some Windows/Tk setups can delay the visual swap from "הוסף" to +/-.
-        # Retry a couple of targeted refreshes (not full grid render).
-        try:
-            self.root.after(0, lambda _pid=int(pid): self._refresh_tile_controls(_pid))
-        except Exception:
-            pass
-        try:
-            self.root.after(30, lambda _pid=int(pid): self._refresh_tile_controls(_pid))
-        except Exception:
-            pass
-        try:
-            self.root.after(120, lambda _pid=int(pid): self._refresh_tile_controls(_pid))
-        except Exception:
-            pass
-        try:
-            self.root.update_idletasks()
-        except Exception:
-            pass
 
     def _decrement_product(self, product_id: int):
         if self._locked:
@@ -3791,15 +4177,6 @@ class CashierStation:
                 self._set_cart_qty(pid, int(_vid), int(self._cart.get(key, 0) or 0) + 1)
                 try:
                     dlg.destroy()
-                except Exception:
-                    pass
-                # Ensure the underlying tile redraw happens after dialog/grab releases.
-                try:
-                    self.root.after(0, lambda _pid=int(pid): (self._tile_by_pid.get(_pid) and getattr(self._tile_by_pid.get(_pid), '_refresh_controls', lambda: None)()))
-                except Exception:
-                    pass
-                try:
-                    self.root.after_idle(self._refresh_all_tile_controls)
                 except Exception:
                     pass
 
@@ -4035,7 +4412,7 @@ class CashierStation:
             except Exception:
                 pass
             self._refresh_cart_ui()
-            self._render_product_grid()
+            self._refresh_all_tile_controls()
             return
 
         if meta.get('type') == 'scheduled':
@@ -4075,7 +4452,7 @@ class CashierStation:
                 break
             if removed:
                 self._refresh_cart_ui()
-                self._render_product_grid()
+                self._refresh_all_tile_controls()
 
     def _on_cart_tree_click(self, event=None):
         if self._locked:
@@ -4170,7 +4547,7 @@ class CashierStation:
                 break
             if removed:
                 self._refresh_cart_ui()
-                self._render_product_grid()
+                self._refresh_all_tile_controls()
             return
 
     def _remove_one_selected_cart_item(self):
@@ -4411,6 +4788,10 @@ class CashierStation:
             if not pids:
                 return
 
+            # ביטול קנייה דורש כרטיס מורה/מנהל בכל מצב
+            self._request_teacher_auth_for_refund(pids, parent_dlg=dlg)
+
+        def _do_refund(pids, teacher_approver=None):
             # confirm
             count = len(pids)
             msg = f'לבטל {count} רכישות ולהחזיר נקודות?' if count > 1 else 'לבטל רכישה זו ולהחזיר נקודות?'
@@ -4420,25 +4801,31 @@ class CashierStation:
             # No reason needed
             reason = ''
 
-            # operator identity
-            op = getattr(self, '_operator', None) or {}
-            op_name = ''
-            try:
-                op_name = str(op.get('name') or '').strip()
-            except Exception:
-                op_name = ''
-            if not op_name:
+            # operator identity — prefer teacher_approver if provided
+            if teacher_approver:
+                op_name = str(teacher_approver.get('name') or '').strip()
                 try:
-                    op_name = f"{str(op.get('first_name') or '').strip()} {str(op.get('last_name') or '').strip()}".strip()
+                    op_id = int(teacher_approver.get('id') or 0)
+                except Exception:
+                    op_id = 0
+            else:
+                op = getattr(self, '_operator', None) or {}
+                op_name = ''
+                try:
+                    op_name = str(op.get('name') or '').strip()
                 except Exception:
                     op_name = ''
-            if not op_name:
-                op_name = 'מפעיל'
-
-            try:
-                op_id = int(op.get('id') or 0)
-            except Exception:
-                op_id = 0
+                if not op_name:
+                    try:
+                        op_name = f"{str(op.get('first_name') or '').strip()} {str(op.get('last_name') or '').strip()}".strip()
+                    except Exception:
+                        op_name = ''
+                if not op_name:
+                    op_name = 'מפעיל'
+                try:
+                    op_id = int(op.get('id') or 0)
+                except Exception:
+                    op_id = 0
 
             approver = {'id': int(op_id) if op_id else None, 'name': str(op_name or '').strip()}
 
@@ -4987,6 +5374,7 @@ class CashierStation:
             self._clear_cart_state(clear_db=True, show_lock_overlay=False, reload_products=False, reload_categories=False)
         except Exception:
             self._pending_payment = None
+        self._stop_timer()
         self._current_student = None
         self.student_label.config(text='')
         try:
@@ -5036,6 +5424,7 @@ class CashierStation:
             self._clear_cart_state(clear_db=True)
         except Exception:
             self._pending_payment = None
+        self._stop_timer()
         self._current_student = None
         self.student_label.config(text='')
         try:
@@ -5061,6 +5450,11 @@ class CashierStation:
         self._operator = operator
         self._operator_card = str(card or '').strip()
         self._touch_activity()
+        # Reload products on each unlock so admin changes propagate without restart
+        try:
+            self._reload_products()
+        except Exception:
+            pass
         self._hide_lock_overlay()
         self._set_status('קופה פתוחה. העבר כרטיס תלמיד לתחילת קנייה', is_error=False)
         try:
@@ -5129,6 +5523,103 @@ class CashierStation:
             self._refresh_all_tile_controls()
         except Exception:
             pass
+        self._start_timer()
+
+    def _start_timer(self):
+        self._stop_timer()
+        try:
+            self._timer_mode = self.db.get_cashier_timer_mode()
+        except Exception:
+            self._timer_mode = 'none'
+        if self._timer_mode == 'none':
+            try:
+                self.timer_label.config(text='')
+            except Exception:
+                pass
+            return
+        try:
+            self._timer_minutes = self.db.get_cashier_timer_minutes()
+        except Exception:
+            self._timer_minutes = 3
+        import time as _time_mod
+        self._timer_start_epoch = _time_mod.time()
+        self._tick_timer()
+
+    def _stop_timer(self):
+        if self._timer_after_id:
+            try:
+                self.root.after_cancel(self._timer_after_id)
+            except Exception:
+                pass
+            self._timer_after_id = None
+        self._timer_start_epoch = 0
+        try:
+            self.timer_label.config(text='')
+        except Exception:
+            pass
+
+    def _tick_timer(self):
+        self._timer_after_id = None
+        if not self._current_student:
+            self._stop_timer()
+            return
+        if self._timer_mode == 'none':
+            try:
+                self.timer_label.config(text='')
+            except Exception:
+                pass
+            return
+
+        import time as _time_mod
+        elapsed = int(_time_mod.time() - self._timer_start_epoch)
+        if elapsed < 0:
+            elapsed = 0
+
+        if self._timer_mode == 'stopwatch':
+            m, s = divmod(elapsed, 60)
+            h, m = divmod(m, 60)
+            txt = f"{h:02d}:{m:02d}:{s:02d}"
+            try:
+                self.timer_label.config(text=txt, fg='#f39c12')
+            except Exception:
+                pass
+        elif self._timer_mode == 'timer':
+            total_sec = int(self._timer_minutes) * 60
+            remaining = total_sec - elapsed
+            if remaining <= 0:
+                try:
+                    self.timer_label.config(text='00:00:00', fg='#e74c3c')
+                except Exception:
+                    pass
+                try:
+                    self._auto_logout_timer()
+                except Exception:
+                    pass
+                return
+            m, s = divmod(remaining, 60)
+            h, m = divmod(m, 60)
+            txt = f"{h:02d}:{m:02d}:{s:02d}"
+            fg = '#e74c3c' if remaining <= 30 else '#f39c12'
+            try:
+                self.timer_label.config(text=txt, fg=fg)
+            except Exception:
+                pass
+
+        try:
+            self._timer_after_id = self.root.after(1000, self._tick_timer)
+        except Exception:
+            pass
+
+    def _auto_logout_timer(self):
+        self._stop_timer()
+        try:
+            self._set_status('הזמן נגמר – יציאה אוטומטית', is_error=True)
+        except Exception:
+            pass
+        try:
+            self._student_exit()
+        except Exception:
+            pass
 
     def on_card_scanned(self, card_number: str):
         if bool(getattr(self, '_license_blocked', False)):
@@ -5170,6 +5661,55 @@ class CashierStation:
                 self._open_master_actions_dialog()
             except Exception:
                 pass
+            return
+
+        # Settings auth by admin card (must check before operator re-lock)
+        if self._settings_auth_dialog is not None:
+            teacher = self._find_teacher_by_card(card_number)
+            if not teacher:
+                self._set_status('כרטיס מנהל לא נמצא', is_error=True)
+                return
+            try:
+                is_admin = int(teacher.get('is_admin', 0) or 0) == 1
+            except Exception:
+                is_admin = False
+            if not is_admin:
+                self._set_status('נדרש כרטיס מנהל לפתיחת הגדרות', is_error=True)
+                return
+            try:
+                self._settings_auth_dialog.destroy()
+            except Exception:
+                pass
+            self._settings_auth_dialog = None
+            try:
+                self._open_cashier_settings_dialog()
+            except Exception:
+                pass
+            return
+
+        # Refund auth by teacher card (must check before operator re-lock)
+        if self._refund_auth_dialog is not None:
+            print(f"[REFUND-AUTH] Card scanned while refund auth dialog open: {card_number[:6]}...")
+            teacher = self._find_teacher_by_card(card_number)
+            if not teacher:
+                print(f"[REFUND-AUTH] Teacher NOT found for card {card_number[:6]}...")
+                self._set_status('כרטיס מורה לא נמצא', is_error=True)
+                return
+            print(f"[REFUND-AUTH] Teacher found: {teacher.get('name', '?')}")
+            cb = self._refund_auth_callback
+            try:
+                self._refund_auth_dialog.destroy()
+            except Exception:
+                pass
+            self._refund_auth_dialog = None
+            self._refund_auth_callback = None
+            if cb:
+                try:
+                    cb(teacher)
+                except Exception as _cb_err:
+                    print(f"[REFUND-AUTH] Callback error: {_cb_err}")
+                    import traceback
+                    traceback.print_exc()
             return
 
         # If open with operator: card of operator again locks
@@ -5233,29 +5773,7 @@ class CashierStation:
             self._finalize_payment()
             return
 
-        # Settings auth by admin card
-        if self._settings_auth_dialog is not None:
-            teacher = self._find_teacher_by_card(card_number)
-            if not teacher:
-                self._set_status('כרטיס מנהל לא נמצא', is_error=True)
-                return
-            try:
-                is_admin = int(teacher.get('is_admin', 0) or 0) == 1
-            except Exception:
-                is_admin = False
-            if not is_admin:
-                self._set_status('נדרש כרטיס מנהל לפתיחת הגדרות', is_error=True)
-                return
-            try:
-                self._settings_auth_dialog.destroy()
-            except Exception:
-                pass
-            self._settings_auth_dialog = None
-            try:
-                self._open_cashier_settings_dialog()
-            except Exception:
-                pass
-            return
+        # Settings auth + Refund auth are handled earlier (before operator re-lock check)
 
         # Unlocked: student scan sets current student
         student = self._find_student_by_card(card_number)
@@ -5460,6 +5978,19 @@ class CashierStation:
                 'purchase_item_index': int(purchase_item_index),
             })
 
+        # Block purchase if student doesn't have enough points
+        try:
+            student_points = int(self._current_student.get('points', 0) or 0)
+            if total > student_points:
+                self._set_status('אין מספיק נקודות לתלמיד', is_error=True)
+                messagebox.showwarning('אין מספיק נקודות',
+                    f'לתלמיד יש {student_points} נקודות בלבד.\n'
+                    f'סה"כ עלות העגלה: {total} נקודות.\n\n'
+                    f'יש להסיר פריטים מהעגלה.')
+                return
+        except Exception:
+            pass
+
         # refresh setting so changes from admin apply without restart
         try:
             self.require_rescan_confirm = bool(self.db.should_cashier_require_rescan_confirm(int(total)))
@@ -5567,10 +6098,10 @@ class CashierStation:
             try:
                 student = self.db.get_student_by_id(int(student_id or 0))
                 
-                # Get student balance
-                balance_before = student.get('points', 0) if student else 0
-                total_cost = sum(item.get('price', 0) for item in items)
-                balance_after = balance_before - total_cost
+                # Get student balance from purchase result (accurate before/after)
+                balance_before = int(res.get('old_points', 0) or 0)
+                total_cost = int(res.get('total_deduct_points', 0) or 0)
+                balance_after = int(res.get('new_points', 0) or 0)
                 
                 receipt_items = []
                 for item in (items or []):
@@ -5699,7 +6230,11 @@ class CashierStation:
                     if idx >= 0:
                         by_idx[idx] = sr
 
-                for it in (items or []):
+                # Separate items into consolidated (grouped by category) and individual
+                consolidated_groups = {}  # category_id -> list of item dicts
+                individual_items = []
+
+                for i_idx, it in enumerate(items or []):
                     try:
                         pid = int(it.get('product_id') or 0)
                     except Exception:
@@ -5707,29 +6242,97 @@ class CashierStation:
                     if pid <= 0:
                         continue
                     p = self._product_by_id.get(pid) or {}
+                    is_consolidated = int(p.get('consolidated_voucher', 0) or 0) == 1
+                    cat_id = int(p.get('category_id', 0) or 0)
+
+                    if is_consolidated and cat_id:
+                        consolidated_groups.setdefault(cat_id, []).append((i_idx, it, p))
+                    else:
+                        individual_items.append((i_idx, it, p))
+
+                # Print consolidated vouchers (one per category)
+                for cat_id, group_items in consolidated_groups.items():
+                    try:
+                        cat_name = ''
+                        try:
+                            cat_name = str(group_items[0][2].get('category_name') or '').strip()
+                        except Exception:
+                            pass
+                        if not cat_name:
+                            cat_name = f"קטגוריה {cat_id}"
+
+                        lines = []
+                        total_points = 0
+                        for _gi_idx, gi_it, gi_p in group_items:
+                            gi_pname = (str(gi_p.get('display_name') or '').strip() or str(gi_p.get('name') or '').strip())
+                            try:
+                                gi_vid = int(gi_it.get('variant_id') or 0)
+                            except Exception:
+                                gi_vid = 0
+                            gi_v = self._get_variant_for_cart_key(int(gi_p.get('id', 0) or 0), gi_vid)
+                            gi_vname = str(gi_v.get('variant_name') or '').strip()
+                            try:
+                                gi_price = int(gi_v.get('price_points', gi_p.get('price_points', 0)) or 0)
+                            except Exception:
+                                gi_price = 0
+                            try:
+                                gi_qty = int(gi_it.get('qty') or 1)
+                            except Exception:
+                                gi_qty = 1
+                            gi_label = gi_pname if (not gi_vid or not gi_vname or gi_vname == 'ברירת מחדל') else f"{gi_pname} {gi_vname}".strip()
+                            line_total = gi_price * gi_qty
+                            total_points += line_total
+                            if gi_qty > 1:
+                                lines.append(f"[ ] {gi_label} x{gi_qty} - {line_total}")
+                            else:
+                                lines.append(f"[ ] {gi_label} - {line_total}")
+
+                        consolidated_label = f"שובר מרוכז - {cat_name}\n" + "\n".join(lines)
+
+                        self._print_item_voucher_to_thermal(
+                            student_id=int(student_id or 0),
+                            item_label=consolidated_label,
+                            qty=1,
+                            price_points=total_points,
+                            slot_text='',
+                            duration_minutes=0,
+                            service_date='',
+                            slot_time='',
+                        )
+                    except Exception as e:
+                        print(f"Consolidated voucher print error: {e}")
+
+                # Print individual vouchers
+                for i_idx, it, p in individual_items:
+                    try:
+                        pid = int(p.get('id', it.get('product_id', 0)) or 0)
+                    except Exception:
+                        pid = 0
+                    if pid <= 0:
+                        continue
                     pname = (str(p.get('display_name') or '').strip() or str(p.get('name') or '').strip() or f"מוצר {pid}")
-                    
+
                     try:
                         vid = int(it.get('variant_id') or 0)
                     except Exception:
                         vid = 0
                     v = self._get_variant_for_cart_key(pid, vid)
                     vname = str(v.get('variant_name') or '').strip()
-                    
+
                     try:
                         price = int(v.get('price_points', p.get('price_points', 0)) or 0)
                     except Exception:
                         price = 0
-                    
+
                     try:
                         qty = int(it.get('qty') or 1)
                     except Exception:
                         qty = 1
-                    
+
                     label = pname if (not vid or not vname or vname == 'ברירת מחדל') else f"{pname} {vname}".strip()
-                    
+
                     # Check if this is a scheduled service (challenge)
-                    sr = by_idx.get(int(items.index(it)))
+                    sr = by_idx.get(i_idx)
                     sdate = ''
                     stt = ''
                     dur_mins = 0
@@ -5746,20 +6349,28 @@ class CashierStation:
                         elif stt:
                             slot_txt = stt
 
-                    # Print voucher for ALL items (both products and challenges)
-                    try:
-                        self._print_item_voucher_to_thermal(
-                            student_id=int(student_id or 0),
-                            item_label=str(label or '').strip(),
-                            qty=int(qty or 1),
-                            price_points=int(price or 0),
-                            slot_text=str(slot_txt or '').strip(),
-                            duration_minutes=int(dur_mins or 0),
-                            service_date=str(sdate or '').strip(),
-                            slot_time=str(stt or '').strip(),
-                        )
-                    except Exception as e:
-                        print(f"Voucher print error: {e}")
+                    # שובר לכל יחידה: הדפסת שובר נפרד לכל יחידה שנרכשה
+                    is_per_unit = int(p.get('voucher_per_unit', 0) or 0) == 1
+                    print_count = qty if is_per_unit else 1
+                    print_qty = 1 if is_per_unit else qty
+
+                    for _vu in range(print_count):
+                        try:
+                            vu_label = label
+                            if is_per_unit and qty > 1:
+                                vu_label = f"{label} ({_vu + 1}/{qty})"
+                            self._print_item_voucher_to_thermal(
+                                student_id=int(student_id or 0),
+                                item_label=str(vu_label or '').strip(),
+                                qty=int(print_qty),
+                                price_points=int(price or 0),
+                                slot_text=str(slot_txt or '').strip(),
+                                duration_minutes=int(dur_mins or 0),
+                                service_date=str(sdate or '').strip(),
+                                slot_time=str(stt or '').strip(),
+                            )
+                        except Exception as e:
+                            print(f"Voucher print error: {e}")
             except Exception as e:
                 print(f"Voucher loop error: {e}")
 
@@ -5889,6 +6500,172 @@ class CashierStation:
             pass
 
         self._settings_auth_dialog = dlg
+
+    def _request_teacher_auth_for_refund(self, pids: list, parent_dlg=None):
+        """הצגת דיאלוג דרישת כרטיס מורה לאישור ביטול קנייה (self_service / responsible_student)."""
+        self._touch_activity()
+
+        try:
+            if self._refund_auth_dialog is not None:
+                try:
+                    self._refund_auth_dialog.destroy()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self._refund_auth_dialog = None
+        self._refund_auth_callback = None
+
+        auth_dlg = tk.Toplevel(self.root)
+        auth_dlg.title('⛔ ביטול קנייה — אישור מורה')
+        auth_dlg.configure(bg='#0f0f14')
+        auth_dlg.transient(self.root)
+        auth_dlg.grab_set()
+        try:
+            auth_dlg.minsize(520, 340)
+        except Exception:
+            pass
+        try:
+            auth_dlg.resizable(False, False)
+        except Exception:
+            pass
+
+        tk.Label(auth_dlg, text='ביטול קנייה דורש אישור מורה', font=('Arial', 20, 'bold'), fg='white', bg='#0f0f14', anchor='e', justify='right').pack(padx=18, pady=(20, 6), anchor='e')
+        tk.Label(auth_dlg, text='העבר כרטיס מורה או הקש קוד:', font=('Arial', 22, 'bold'), fg='#f1c40f', bg='#0f0f14', anchor='e', justify='right').pack(padx=18, pady=(0, 10), anchor='e')
+
+        # Entry field for manual code/card input
+        _entry_frame = tk.Frame(auth_dlg, bg='#0f0f14')
+        _entry_frame.pack(padx=18, pady=(0, 10), fill='x')
+        _code_var = tk.StringVar()
+        _code_entry = tk.Entry(_entry_frame, textvariable=_code_var, font=('Arial', 24), justify='center', width=20)
+        _code_entry.pack(side='right', padx=(8, 0))
+        _status_label = tk.Label(auth_dlg, text='', font=('Arial', 16), fg='#e74c3c', bg='#0f0f14')
+        _status_label.pack(padx=18, pady=(0, 6))
+
+        def _submit_code(event=None):
+            self._touch_activity()
+            code = str(_code_var.get() or '').strip()
+            try:
+                code = re.sub(r'[^0-9A-Za-z]', '', code)
+            except Exception:
+                pass
+            if not code:
+                return
+            print(f"[REFUND-AUTH] Manual code submitted: {code[:6]}...")
+            teacher = self._find_teacher_by_card(code)
+            if not teacher:
+                print(f"[REFUND-AUTH] Teacher NOT found for code {code[:6]}...")
+                _status_label.config(text='כרטיס/קוד מורה לא נמצא')
+                _code_var.set('')
+                try:
+                    _code_entry.focus_set()
+                except Exception:
+                    pass
+                return
+            print(f"[REFUND-AUTH] Teacher found: {teacher.get('name', '?')}")
+            cb = self._refund_auth_callback
+            _close()
+            if cb:
+                try:
+                    cb(teacher)
+                except Exception as _cb_err:
+                    print(f"[REFUND-AUTH] Callback error: {_cb_err}")
+                    import traceback
+                    traceback.print_exc()
+
+        tk.Button(_entry_frame, text='אישור', command=_submit_code, font=('Arial', 18, 'bold'), bg='#27ae60', fg='white', padx=18, pady=6).pack(side='right', padx=(0, 8))
+        _code_entry.bind('<Return>', _submit_code)
+        _code_entry.bind('<KP_Enter>', _submit_code)
+
+        def _close():
+            self._touch_activity()
+            try:
+                auth_dlg.destroy()
+            except Exception:
+                pass
+            self._refund_auth_dialog = None
+            self._refund_auth_callback = None
+
+        tk.Button(auth_dlg, text='ביטול', command=_close, font=('Arial', 18, 'bold'), bg='#7f8c8d', fg='white', padx=22, pady=12).pack(pady=(4, 18))
+        try:
+            auth_dlg.protocol('WM_DELETE_WINDOW', _close)
+        except Exception:
+            pass
+
+        # Card scanner sends keystrokes to the focused widget.
+        # Keep focus on the Entry so scanner input goes there directly.
+        # Bind Tab too (some scanners send Tab instead of Enter).
+        _code_entry.bind('<Tab>', _submit_code)
+        def _refocus_entry(event=None):
+            try:
+                _code_entry.focus_set()
+            except Exception:
+                pass
+        # If focus leaves the Entry (e.g. user clicks button), refocus after 200ms
+        _code_entry.bind('<FocusOut>', lambda e: auth_dlg.after(200, _refocus_entry))
+        try:
+            _code_entry.focus_set()
+        except Exception:
+            pass
+
+        # הגדרת callback שיקרא לאחר אימות מורה מוצלח
+        _parent_dlg = parent_dlg
+        _pids = list(pids)
+
+        def _on_teacher_auth(teacher):
+            # מורה אומת — בצע ביטול עם פרטי המורה כ-approver
+            approver = {'id': int(teacher.get('id') or 0) or None, 'name': str(teacher.get('name') or '').strip()}
+            # confirm
+            count = len(_pids)
+            msg = f'לבטל {count} רכישות ולהחזיר נקודות?' if count > 1 else 'לבטל רכישה זו ולהחזיר נקודות?'
+            if not self._touch_confirm(title='ביטול קנייה', message=msg, ok_text='בטל קנייה', cancel_text='חזור'):
+                return
+
+            total_refunded = 0
+            failed_count = 0
+            for pid in _pids:
+                try:
+                    rr = self.db.refund_purchase(
+                        purchase_id=int(pid),
+                        approved_by_teacher=approver,
+                        reason='',
+                        station_type='cashier',
+                    )
+                    if rr and rr.get('ok'):
+                        try:
+                            total_refunded += int((rr or {}).get('refunded_points') or 0)
+                        except Exception:
+                            pass
+                    else:
+                        failed_count += 1
+                except Exception:
+                    failed_count += 1
+
+            if failed_count > 0:
+                messagebox.showwarning('בוצע חלקית', f'בוטלו {len(_pids) - failed_count} מתוך {len(_pids)} קניות\nהוחזרו {total_refunded} נקודות')
+            else:
+                messagebox.showinfo('בוצע', f'בוטלו {len(_pids)} קניות והוחזרו {total_refunded} נקודות')
+
+            # refresh student balance
+            try:
+                if self._current_student:
+                    sid = int(self._current_student.get('id') or 0)
+                    if sid:
+                        self._current_student = self.db.get_student_by_id(sid)
+                        pts = int((self._current_student or {}).get('points') or 0)
+                        self.student_points_label.config(text=f'{pts} נקודות')
+            except Exception:
+                pass
+
+            # refresh history dialog if still open
+            try:
+                if _parent_dlg and _parent_dlg.winfo_exists():
+                    _parent_dlg.destroy()
+            except Exception:
+                pass
+
+        self._refund_auth_dialog = auth_dlg
+        self._refund_auth_callback = _on_teacher_auth
 
     def _select_db_path_for_station(self):
         self._touch_activity()
@@ -6228,20 +7005,31 @@ class CashierStation:
                 'האם אתה בטוח שברצונך לנתק את העמדה מהמוסד הנוכחי?\n\n'
                 'לאחר הניתוק, התוכנה תיסגר ובפתיחה הבאה תופיע מסך הגדרות ראשוניות לחיבור למוסד אחר.',
                 parent=dlg):
-                # Clear configuration
-                new_cfg = {}
+                # Clear ALL config file locations
+                paths_to_remove = set()
+                for env_name in ('PROGRAMDATA', 'LOCALAPPDATA', 'APPDATA'):
+                    try:
+                        root_dir = os.environ.get(env_name)
+                        if root_dir:
+                            paths_to_remove.add(os.path.join(root_dir, 'SchoolPoints', 'config.json'))
+                    except:
+                        pass
+                # live config (first writable location)
                 try:
-                    os.remove(os.path.join(os.environ.get('PROGRAMDATA', r'C:\ProgramData'), 'SchoolPoints', 'config.json'))
+                    paths_to_remove.add(self._get_config_file_path())
                 except:
                     pass
+                # base config next to exe
                 try:
-                    os.remove(os.path.join(os.environ.get('LOCALAPPDATA', os.path.expanduser('~\\AppData\\Local')), 'SchoolPoints', 'config.json'))
+                    paths_to_remove.add(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json'))
                 except:
                     pass
-                try:
-                    os.remove(os.path.join(os.environ.get('APPDATA', os.path.expanduser('~\\AppData\\Roaming')), 'SchoolPoints', 'config.json'))
-                except:
-                    pass
+                for p in paths_to_remove:
+                    try:
+                        if p and os.path.exists(p):
+                            os.remove(p)
+                    except:
+                        pass
                 
                 messagebox.showinfo('ניתוק בוצע', 'העמדה נותקה בהצלחה.\nהתוכנה תיסגר כעת.')
                 dlg.destroy()
@@ -6277,25 +7065,25 @@ class CashierStation:
             receipt += "TEST RECEIPT\n".encode('cp862', errors='ignore')
             receipt += BOLD_OFF
             receipt += "================================\n".encode('cp862', errors='ignore')
-            receipt += "\n"
+            receipt += b"\n"
             receipt += LEFT
             receipt += "Date: {}\n".format(datetime.now().strftime('%d/%m/%Y')).encode('cp862', errors='ignore')
             receipt += "Time: {}\n".format(datetime.now().strftime('%H:%M:%S')).encode('cp862', errors='ignore')
-            receipt += "\n"
-            receipt += BOLD_ON + "ITEMS:\n".encode('cp862', errors='ignore') + BOLD_OFF
-            receipt += "--------------------------------\n".encode('cp862', errors='ignore')
+            receipt += b"\n"
+            receipt += BOLD_ON + b"ITEMS:\n" + BOLD_OFF
+            receipt += b"--------------------------------\n"
             receipt += "Test Item 1          10 pts\n".encode('cp862', errors='ignore')
             receipt += "Test Item 2          20 pts\n".encode('cp862', errors='ignore')
             receipt += "Test Item 3          15 pts\n".encode('cp862', errors='ignore')
-            receipt += "--------------------------------\n".encode('cp862', errors='ignore')
+            receipt += b"--------------------------------\n"
             receipt += BOLD_ON
-            receipt += "TOTAL:               45 pts\n".encode('cp862', errors='ignore')
+            receipt += b"TOTAL:               45 pts\n"
             receipt += BOLD_OFF
-            receipt += "\n"
+            receipt += b"\n"
             receipt += CENTER
-            receipt += "Thank You!\n".encode('cp862', errors='ignore')
-            receipt += "Thermal Print Test OK\n".encode('cp862', errors='ignore')
-            receipt += "\n\n\n"
+            receipt += b"Thank You!\n"
+            receipt += b"Thermal Print Test OK\n"
+            receipt += b"\n\n\n"
             receipt += CUT
             
             # Send to printer using existing method
@@ -6326,30 +7114,16 @@ class CashierStation:
                 return
             
             # Reconnect customer display with new settings (lazy/async)
+            # NOTE: Customer display is temporarily force-disabled due to serial
+            # communication freezes.  Settings are saved but connection is skipped.
             try:
                 if self.customer_display:
                     self.customer_display.close()
             except Exception:
                 pass
-            try:
-                self.customer_display = None
-            except Exception:
-                pass
-            try:
-                self._customer_display_config = self._load_customer_display_config()
-                self._customer_display_enabled = bool(self._customer_display_config.get('enabled', False))
-            except Exception:
-                self._customer_display_config = {'enabled': False, 'com_port': 'COM1', 'baud_rate': 9600}
-                self._customer_display_enabled = False
-            try:
-                self._customer_display_connecting = False
-            except Exception:
-                pass
-            if bool(self._customer_display_enabled):
-                try:
-                    self.root.after(200, lambda: self._ensure_customer_display(show_welcome=True))
-                except Exception:
-                    pass
+            self.customer_display = None
+            self._customer_display_enabled = False
+            self._customer_display_connecting = False
             
             try:
                 dlg.destroy()
@@ -6866,9 +7640,49 @@ class CashierStation:
                         pass
                 
             except ImportError as e:
-                # Fallback: python-escpos not installed, try direct COM port
+                # Fallback: python-escpos not installed — use text mode via win32print
+                # (same mechanism as the working test print button)
                 print(f"[PRINT] python-escpos not available: {e}")
-                return self._print_to_thermal_printer_fallback(receipt_data)
+                try:
+                    printer_name = ''
+                    try:
+                        printer_name = str((cfg or {}).get('default_printer') or '').strip()
+                    except Exception:
+                        printer_name = ''
+                    if not printer_name:
+                        printer_name = 'Cash Printer'
+                    text_encoding = str(printer_cfg.get('text_encoding') or 'cp862').strip()
+                    try:
+                        text_codepage = int(printer_cfg.get('text_codepage', 0x0F))
+                    except Exception:
+                        text_codepage = 0x0F
+                    send_codepage = bool(printer_cfg.get('send_codepage', True))
+                    _logo_path = ''
+                    try:
+                        _logo_path = self.db.get_cashier_bw_logo_path() or cfg.get('logo_path', '')
+                    except Exception:
+                        _logo_path = cfg.get('logo_path', '')
+                    _closing = ''
+                    try:
+                        _closing = self.db.get_cashier_closing_message() or ''
+                    except Exception:
+                        try:
+                            _closing = self.db.get_cashier_receipt_footer_text() or ''
+                        except Exception:
+                            _closing = ''
+                    data = self._build_thermal_text_receipt_bytes(
+                        receipt_data,
+                        encoding=text_encoding,
+                        codepage=text_codepage,
+                        send_codepage=send_codepage,
+                        logo_path=_logo_path,
+                        closing_message=_closing,
+                    )
+                    print(f"[PRINT] Fallback: sending text receipt to {printer_name} via win32print")
+                    return bool(self._send_raw_bytes_to_printer(printer_name, data))
+                except Exception as _fb_err:
+                    print(f"[PRINT] Text fallback also failed: {_fb_err}")
+                    return self._print_to_thermal_printer_fallback(receipt_data)
             except Exception as e:
                 print(f"[PRINT] Printer error: {e}")
                 import traceback
@@ -7133,8 +7947,39 @@ class CashierStation:
                         pass
                 
             except ImportError as e:
-                print(f"python-escpos not available for voucher printing: {e}")
-                return False
+                print(f"[PRINT] python-escpos not available for voucher: {e}")
+                # Fallback: use text mode via win32print
+                try:
+                    printer_name = ''
+                    try:
+                        printer_name = str((cfg or {}).get('default_printer') or '').strip()
+                    except Exception:
+                        printer_name = ''
+                    if not printer_name:
+                        printer_name = 'Cash Printer'
+                    text_encoding = str((printer_cfg or {}).get('text_encoding') or 'cp862').strip()
+                    try:
+                        text_codepage = int((printer_cfg or {}).get('text_codepage', 0x0F))
+                    except Exception:
+                        text_codepage = 0x0F
+                    send_codepage = bool((printer_cfg or {}).get('send_codepage', True))
+                    _vlogo = ''
+                    try:
+                        _vlogo = self.db.get_cashier_bw_logo_path() or cfg.get('logo_path', '')
+                    except Exception:
+                        _vlogo = cfg.get('logo_path', '')
+                    data = self._build_thermal_text_voucher_bytes(
+                        voucher_data,
+                        encoding=text_encoding,
+                        codepage=text_codepage,
+                        send_codepage=send_codepage,
+                        logo_path=_vlogo,
+                    )
+                    print(f"[PRINT] Voucher fallback: sending text to {printer_name} via win32print")
+                    return bool(self._send_raw_bytes_to_printer(printer_name, data))
+                except Exception as _vfb_err:
+                    print(f"[PRINT] Voucher text fallback failed: {_vfb_err}")
+                    return False
             
         except Exception as e:
             print(f"Voucher thermal printer error: {e}")
@@ -8021,6 +8866,11 @@ class CashierStation:
 
 def main():
     try:
+        import sp_logger
+        sp_logger.install()
+    except Exception:
+        pass
+    try:
         _enable_windows_dpi_awareness()
     except Exception:
         pass
@@ -8049,6 +8899,13 @@ def main():
     except Exception:
         pass
     root.mainloop()
+    # Force-kill all background threads (sync agent, remote write workers).
+    # Without this, .pyw processes linger as zombies holding WAL locks,
+    # preventing the next launch from copying/opening the local DB.
+    try:
+        os._exit(0)
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':

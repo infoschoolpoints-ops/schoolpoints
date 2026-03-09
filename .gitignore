@@ -61,3 +61,37 @@ Thumbs.db
 /deep_structure1_analysis.py
 /create_all4shop_from_text.py
 /print_all4shop_with_text.py
+
+# Large backup directories
+/backups/
+/גיבוי רובע/
+
+# Large backup/installer files (exceed GitHub 100MB limit)
+*.exe
+*.db.backup*
+school_points_backup_*.db
+school_points_local.db
+crash_log.txt
+stderr_log.txt
+
+# Debug/test scripts (not runtime)
+_check_*.py
+_debug_*.py
+_diag_*.py
+_fix_*.py
+_start_*.py
+_test_*.py
+analyze_*.py
+check_sync_state.py
+db_repair*.py
+db_scan*.py
+debug_*.py
+fix_*.py
+run_sync_server.py
+sp_logger.py
+sync_*_audit.py
+test_*.py
+update_*_from_excel.py
+build_v2_excel.py
+update_excel_v2.py
+cashier_station_fixed.py

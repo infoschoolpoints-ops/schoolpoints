@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
@@ -6,6 +7,7 @@ from typing import Any, Dict, List, Optional
 import sqlite3
 import socket
 import uuid
+import time
 
 from database import Database
 import sync_agent
@@ -30,19 +32,27 @@ class _WriteSerializer:
             try:
                 self._conn.execute('PRAGMA journal_mode=WAL')
                 self._conn.execute('PRAGMA busy_timeout=5000')
+                self._conn.execute('PRAGMA synchronous=NORMAL')
+                self._conn.execute('PRAGMA cache_size=-8000')
+                self._conn.execute('PRAGMA temp_store=MEMORY')
+                self._conn.execute('PRAGMA mmap_size=67108864')
             except Exception:
                 pass
             sync_agent._ensure_change_log(self._conn)
         return self._conn
 
     def execute_many(self, statements: list) -> list:
-        """Execute SQL statements under a single lock + connection."""
+        """Execute SQL statements under a single lock + connection.
+        Uses savepoints so a failed non-critical statement (e.g. INSERT INTO change_log)
+        doesn't roll back the actual data changes (e.g. UPDATE students).
+        """
         with self._lock:
             conn = self._get_conn()
             cur = conn.cursor()
             results = []
+            failed_count = 0
             try:
-                for stmt in statements:
+                for i, stmt in enumerate(statements):
                     if not isinstance(stmt, dict):
                         continue
                     sql = str(stmt.get('sql') or '').strip()
@@ -52,9 +62,30 @@ class _WriteSerializer:
                     sql_upper = sql.upper().strip()
                     if any(kw in sql_upper for kw in ('DROP ', 'ALTER ', 'ATTACH ', 'DETACH ', 'PRAGMA ', 'VACUUM')):
                         continue
-                    cur.execute(sql, params)
-                    results.append({'lastrowid': cur.lastrowid, 'rowcount': cur.rowcount})
+                    try:
+                        cur.execute(f'SAVEPOINT sp_{i}')
+                        cur.execute(sql, params)
+                        cur.execute(f'RELEASE sp_{i}')
+                        results.append({'lastrowid': cur.lastrowid, 'rowcount': cur.rowcount})
+                    except Exception as stmt_err:
+                        failed_count += 1
+                        try:
+                            cur.execute(f'ROLLBACK TO sp_{i}')
+                            cur.execute(f'RELEASE sp_{i}')
+                        except Exception:
+                            pass
+                        try:
+                            print(f"[LOCAL-SYNC] execute_many stmt[{i}] FAILED: {stmt_err}")
+                            print(f"[LOCAL-SYNC]   sql={sql[:120]}")
+                        except Exception:
+                            pass
+                        results.append({'error': str(stmt_err)})
                 conn.commit()
+                if failed_count > 0:
+                    try:
+                        print(f"[LOCAL-SYNC] execute_many: {len(results)-failed_count} OK, {failed_count} failed")
+                    except Exception:
+                        pass
             except Exception:
                 try:
                     conn.rollback()
@@ -76,9 +107,27 @@ class _WriteSerializer:
         try:
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA busy_timeout=5000')
+            conn.execute('PRAGMA cache_size=-8000')
+            conn.execute('PRAGMA temp_store=MEMORY')
+            conn.execute('PRAGMA mmap_size=67108864')
         except Exception:
             pass
-        sync_agent._ensure_change_log(conn)
+        try:
+            sync_agent._ensure_change_log(conn)
+        except Exception as e:
+            try:
+                print(f"[LOCAL-SYNC] _ensure_change_log error: {e}")
+            except Exception:
+                pass
+        # Validate connection can actually read
+        try:
+            conn.execute('SELECT 1 FROM change_log LIMIT 0')
+        except Exception as ve:
+            try:
+                print(f"[LOCAL-SYNC] read_conn validation failed: {ve}")
+            except Exception:
+                pass
+            raise
         return conn
 
     def write_with_conn(self, fn):
@@ -153,36 +202,66 @@ def _ensure_station_id(conn: sqlite3.Connection, row_id: int, station_id: Option
 
 
 def _fetch_changes(conn: sqlite3.Connection, since_id: int, limit: int) -> List[Dict[str, Any]]:
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, event_id, station_id, entity_type, entity_id, action_type, payload_json, created_at
-          FROM change_log
-         WHERE id > ?
-         ORDER BY id ASC
-         LIMIT ?
-        """,
-        (int(since_id), int(limit))
-    )
-    rows = cur.fetchall() or []
-    items: List[Dict[str, Any]] = []
-    for r in rows:
-        item = dict(r)
-        eid = _ensure_event_id(conn, int(item.get('id') or 0), item.get('event_id'))
-        sid = _ensure_station_id(conn, int(item.get('id') or 0), item.get('station_id'))
-        item['event_id'] = eid
-        item['station_id'] = sid
-        # אם ה-payload ריק (מ-trigger אוטומטי), מלא אותו מהטבלה
-        pj = str(item.get('payload_json') or '').strip()
-        if not pj or pj == '{}':
+    """משיכת שינויים עם טיפול בנעילה"""
+    # Safety: ensure _sync_paused is not stuck (would block ALL triggers)
+    try:
+        _pc = conn.execute('SELECT flag FROM _sync_paused WHERE rowid = 1').fetchone()
+        if _pc and int(_pc[0] or 0) != 0:
+            conn.execute('UPDATE _sync_paused SET flag = 0 WHERE rowid = 1')
+            conn.commit()
             try:
-                filled = _fill_payload_from_table(conn, item)
-                if filled:
-                    item['payload_json'] = filled
+                print("[LOCAL-SYNC] WARNING: _sync_paused was stuck at 1 — reset to 0")
             except Exception:
                 pass
-        items.append(item)
-    return items
+    except Exception:
+        pass
+    cur = conn.cursor()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            cur.execute(
+                """
+                SELECT id, event_id, station_id, entity_type, entity_id, action_type, payload_json, created_at
+                  FROM change_log
+                 WHERE id > ?
+                 ORDER BY id ASC
+                 LIMIT ?
+                """,
+                (int(since_id), int(limit))
+            )
+            rows = cur.fetchall() or []
+            items: List[Dict[str, Any]] = []
+            for r in rows:
+                item = {
+                    'id': r[0],
+                    'event_id': r[1],
+                    'station_id': r[2],
+                    'entity_type': r[3],
+                    'entity_id': r[4],
+                    'action_type': r[5],
+                    'payload_json': r[6],
+                    'created_at': r[7]
+                }
+                # מילוי payload ריק מהטבלה (trigger-generated entries)
+                pj = str(item.get('payload_json') or '').strip()
+                if pj in ('', '{}') and str(item.get('action_type') or '') != 'delete':
+                    try:
+                        filled = _fill_payload_from_table(conn, item)
+                        if filled and filled != '{}':
+                            item['payload_json'] = filled
+                    except Exception:
+                        pass
+                items.append(item)
+            return items
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e).lower() and attempt < max_retries - 1:
+                # המתנה קצרה וניסיון חוזר
+                time.sleep(0.1 * (attempt + 1))
+                continue
+            else:
+                # אם זו לא שגיאת נעילה או נגמרו הניסיונות, זרוק את השגיאה
+                raise
+    return []
 
 
 # מיפוי entity_type -> (table_name, id_column)
@@ -244,12 +323,15 @@ def _fill_payload_from_table(conn: sqlite3.Connection, item: Dict[str, Any]) -> 
             for k, v in d.items():
                 if v is not None and not isinstance(v, (int, float, str, bool)):
                     d[k] = str(v)
-            # הסר points מ-student entity - נקודות מסונכרנות רק דרך student_points delta
-            if entity_type == 'student':
-                d.pop('points', None)
             return json.dumps(d, ensure_ascii=False)
-    except Exception:
-        pass
+        else:
+            # Entity was deleted after trigger fired
+            return ''
+    except Exception as e:
+        try:
+            print(f"[LOCAL-SYNC] _fill_payload error: {entity_type}/{entity_id}: {e}")
+        except Exception:
+            pass
     return ''
 
 
@@ -337,7 +419,9 @@ def _calc_recommended_interval(num_stations: int) -> int:
     3-4 עמדות: 15 שניות
     5-7 עמדות: 20 שניות
     8-10 עמדות: 30 שניות
-    11+ עמדות: 45 שניות
+    11-29 עמדות: 45 שניות
+    30-49 עמדות: 60 שניות
+    50+ עמדות: 90 שניות
     """
     if num_stations <= 2:
         return 10
@@ -347,8 +431,12 @@ def _calc_recommended_interval(num_stations: int) -> int:
         return 20
     elif num_stations <= 10:
         return 30
-    else:
+    elif num_stations <= 29:
         return 45
+    elif num_stations <= 49:
+        return 60
+    else:
+        return 90
 
 
 def make_handler(db_path: str, api_key: str, tenant_id: str):
@@ -409,10 +497,11 @@ def make_handler(db_path: str, api_key: str, tenant_id: str):
                 except Exception:
                     limit = 500
                 limit = max(1, min(2000, limit))
-                conn = self._open_conn()
+                conn = None
                 try:
+                    conn = self._open_conn()
                     items = _fetch_changes(conn, since_id, limit)
-                    max_id = since_id
+                    max_id = 0
                     for it in items:
                         try:
                             max_id = max(max_id, int(it.get('id') or 0))
@@ -422,26 +511,42 @@ def make_handler(db_path: str, api_key: str, tenant_id: str):
                     # כדי שהלקוח יזהה אם ה-since_id שלו גבוה מדי
                     if not items:
                         try:
-                            cur2 = conn.cursor()
-                            cur2.execute('SELECT MAX(id) FROM change_log')
-                            r2 = cur2.fetchone()
-                            real_max = int((r2[0] if r2 else 0) or 0)
-                            if real_max < since_id:
-                                max_id = real_max
+                            cur = conn.cursor()
+                            cur.execute('SELECT MAX(id) FROM change_log')
+                            r = cur.fetchone()
+                            if r and r[0] is not None:
+                                max_id = int(r[0])
                         except Exception:
                             pass
+                    # אם עדיין 0 ויש since_id, שמור על since_id רק אם הוא סביר
+                    if max_id == 0 and items:
+                        max_id = since_id
+                    n = self._active_station_count()
+                    try:
+                        if items or max_id != since_id:
+                            print(f"[LOCAL-SYNC] pull since_id={since_id} -> items={len(items)} max_id={max_id} next_since_id={max_id}")
+                    except Exception:
+                        pass
+                    return _json_response(self, 200, {'ok': True, 'items': items, 'max_id': max_id, 'next_since_id': max_id, 'stations': n, 'recommended_interval': _calc_recommended_interval(n)})
+                except sqlite3.OperationalError as e:
+                    if 'database is locked' in str(e).lower():
+                        # DB נעול - החזר שגיאה ספציפית
+                        return _json_response(self, 503, {'ok': False, 'error': 'database_locked', 'retry_after': 1})
+                    else:
+                        # שגיאת DB אחרת
+                        print(f"[SYNC] DB error in _fetch_changes: {e}")
+                        return _json_response(self, 500, {'ok': False, 'error': 'database_error'})
+                except Exception as e:
+                    import traceback
+                    print(f"[SYNC] Unexpected error in pull: {e}")
+                    traceback.print_exc()
+                    return _json_response(self, 500, {'ok': False, 'error': str(e)})
                 finally:
-                    conn.close()
-                n = self._active_station_count()
-                return _json_response(self, 200, {
-                    'ok': True,
-                    'tenant_id': str(tenant_id or ''),
-                    'since_id': int(since_id or 0),
-                    'next_since_id': int(max_id),
-                    'items': items,
-                    'recommended_interval': _calc_recommended_interval(n),
-                    'stations': n,
-                })
+                    if conn:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
 
             if parsed.path == '/sync/snapshot':
                 if not self._auth_ok():
@@ -452,6 +557,80 @@ def make_handler(db_path: str, api_key: str, tenant_id: str):
                 finally:
                     conn.close()
                 return _json_response(self, 200, payload)
+
+            if parsed.path == '/health':
+                # endpoint ניטור — לא דורש auth, קריאה בלבד
+                health = {'ok': True}
+                try:
+                    n = self._active_station_count()
+                    health['active_stations'] = n
+                    health['recommended_interval'] = _calc_recommended_interval(n)
+                except Exception:
+                    pass
+                conn = None
+                try:
+                    conn = self._open_conn()
+                    cur = conn.cursor()
+                    # גודל change_log (כמה רשומות ממתינות)
+                    try:
+                        cur.execute('SELECT COUNT(*) FROM change_log WHERE synced_at IS NULL')
+                        r = cur.fetchone()
+                        health['pending_changes'] = int(r[0] or 0) if r else 0
+                    except Exception:
+                        pass
+                    try:
+                        cur.execute('SELECT COUNT(*) FROM change_log')
+                        r = cur.fetchone()
+                        health['total_changes'] = int(r[0] or 0) if r else 0
+                    except Exception:
+                        pass
+                    # גודל DB
+                    try:
+                        health['db_size_mb'] = round(os.path.getsize(db_path) / (1024 * 1024), 1)
+                    except Exception:
+                        pass
+                    # גודל WAL
+                    try:
+                        wal_path = db_path + '-wal'
+                        if os.path.exists(wal_path):
+                            health['wal_size_mb'] = round(os.path.getsize(wal_path) / (1024 * 1024), 1)
+                        else:
+                            health['wal_size_mb'] = 0
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        if conn:
+                            conn.close()
+                    except Exception:
+                        pass
+                return _json_response(self, 200, health)
+
+            if parsed.path == '/sync/reconnect':
+                # Force reconnect: drop cached write connection so next request uses fresh one
+                try:
+                    with _serializer._lock:
+                        if _serializer._conn:
+                            try:
+                                _serializer._conn.close()
+                            except Exception:
+                                pass
+                            _serializer._conn = None
+                    print("[LOCAL-SYNC] Reconnect: write connection reset")
+                except Exception as e:
+                    print(f"[LOCAL-SYNC] Reconnect error: {e}")
+                # Verify read works
+                test_ok = False
+                try:
+                    tc = self._open_conn()
+                    tc.execute('SELECT COUNT(*) FROM change_log')
+                    tc.close()
+                    test_ok = True
+                except Exception as te:
+                    print(f"[LOCAL-SYNC] Reconnect read test failed: {te}")
+                return _json_response(self, 200, {'ok': test_ok, 'reconnected': True})
 
             return _json_response(self, 404, {'ok': False, 'error': 'not_found'})
 
@@ -476,31 +655,30 @@ def make_handler(db_path: str, api_key: str, tenant_id: str):
                 sql_upper = sql.upper().strip()
                 if any(kw in sql_upper for kw in ('DROP ', 'ALTER ', 'ATTACH ', 'DETACH ', 'PRAGMA ', 'VACUUM')):
                     return _json_response(self, 403, {'ok': False, 'error': 'forbidden sql'})
-                conn = self._open_conn()
-                try:
-                    cur = conn.cursor()
-                    cur.execute(sql, params)
-                    conn.commit()
-                    lastrowid = cur.lastrowid
-                    rowcount = cur.rowcount
-                    # אם זה SELECT, החזר תוצאות
-                    rows = None
-                    if sql_upper.startswith('SELECT'):
+                # SELECT: חיבור קריאה נפרד (לא חוסם כתיבות)
+                if sql_upper.startswith('SELECT'):
+                    conn = self._open_conn()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute(sql, params)
                         rows = [dict(r) for r in cur.fetchall()]
+                        return _json_response(self, 200, {'ok': True, 'lastrowid': 0, 'rowcount': 0, 'rows': rows})
+                    except Exception as e:
+                        return _json_response(self, 500, {'ok': False, 'error': str(e)})
+                    finally:
+                        conn.close()
+                # כתיבה: דרך ה-serializer (lock + connection אחד) — מונע database is locked
+                try:
+                    results = _serializer.execute_many([{'sql': sql, 'params': params}])
+                    r = results[0] if results else {}
                     return _json_response(self, 200, {
                         'ok': True,
-                        'lastrowid': lastrowid,
-                        'rowcount': rowcount,
-                        'rows': rows
+                        'lastrowid': r.get('lastrowid', 0),
+                        'rowcount': r.get('rowcount', 0),
+                        'rows': None
                     })
                 except Exception as e:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
                     return _json_response(self, 500, {'ok': False, 'error': str(e)})
-                finally:
-                    conn.close()
 
             # נתיב חדש: הרצת כמה פקודות SQL בטרנזקציה אחת
             if parsed.path == '/db/execute_many':
@@ -536,20 +714,30 @@ def make_handler(db_path: str, api_key: str, tenant_id: str):
             if not isinstance(changes, list):
                 changes = []
 
-            conn = self._open_conn()
-            applied = 0
-            try:
+            # כתיבות דרך ה-serializer למניעת database is locked ביום יריד
+            for ch in changes:
+                if not isinstance(ch, dict):
+                    continue
+                if not ch.get('event_id'):
+                    ch['event_id'] = uuid.uuid4().hex
+                if not ch.get('station_id'):
+                    ch['station_id'] = str(socket.gethostname() or '').strip() or 'client'
+
+            def _do_push(conn):
                 for ch in changes:
                     if not isinstance(ch, dict):
                         continue
-                    if not ch.get('event_id'):
-                        ch['event_id'] = uuid.uuid4().hex
-                    if not ch.get('station_id'):
-                        ch['station_id'] = str(socket.gethostname() or '').strip() or 'client'
                     _insert_change(conn, ch)
-                applied = _apply_changes(conn, changes)
-            finally:
-                conn.close()
+                return _apply_changes(conn, changes)
+
+            applied = 0
+            try:
+                applied = _serializer.write_with_conn(_do_push)
+            except Exception as e:
+                try:
+                    print(f"[LocalSync] push error: {e}")
+                except Exception:
+                    pass
 
             return _json_response(self, 200, {
                 'ok': True,
@@ -561,14 +749,30 @@ def make_handler(db_path: str, api_key: str, tenant_id: str):
 
 
 def run_server(host: str = '0.0.0.0', port: int = _DEFAULT_PORT, *, db_path: Optional[str] = None, api_key: str = 'local', tenant_id: str = 'local') -> None:
-    db_path = db_path or Database().db_path
+    try:
+        if not db_path:
+            try:
+                print(f"[LocalSync] db_path=None, resolving via Database()...")
+            except Exception:
+                pass
+            db_path = Database().db_path
+        print(f"[LocalSync] Starting server on {host}:{port} db={db_path}")
+    except Exception as e:
+        try:
+            print(f"[LocalSync] ERROR resolving db_path: {e}")
+        except Exception:
+            pass
+        return
     handler = make_handler(db_path, api_key, tenant_id)
     try:
         server = ThreadingHTTPServer((host, int(port)), handler)
+        print(f"[LocalSync] Server listening on port {port}")
         server.serve_forever()
     except OSError as e:
         # פורט תפוס - שרת כבר רץ, לא קריטי
         print(f"[LocalSync] Port {port} already in use: {e}")
+    except Exception as e:
+        print(f"[LocalSync] Server error: {e}")
 
 
 def start_in_thread(host: str = '0.0.0.0', port: int = _DEFAULT_PORT, *, db_path: Optional[str] = None, api_key: str = 'local', tenant_id: str = 'local') -> threading.Thread:

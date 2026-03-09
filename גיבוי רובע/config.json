@@ -1,0 +1,76 @@
+{
+    "logo_path": "//OLDCITY/Schoolpoints$/לוגו אשראיכם.png",
+    "campaign_name": "אשראיכם",
+    "theme": "dark",
+    "background_mode": "default",
+    "background_color": "#2980b9",
+    "background_interval_sec": 5,
+    "panel_style": "solid",
+    "background_layout": "tile",
+    "slideshow_display_mode": "grid_dynamic",
+    "slideshow_grid_cols": 4,
+    "shared_folder": "//10.20.30.175/Schoolpoints",
+    "excel_path": "\\\\OLDCITY\\Schoolpoints\\טבלה למבצע אשראי.xlsx",
+    "screen_orientation": "portrait",
+    "background_template": "template1",
+    "restart_public_stations_token": "25",
+    "photos_folder": "//OLDCITY/Schoolpoints$/תמונות",
+    "update_manifest_url": "",
+    "update_download_url": "",
+    "update_message": "",
+    "news_ticker_speed": "fast",
+    "anti_spam_enabled": true,
+    "anti_spam_rules": [
+        {
+            "type": "warning",
+            "count": 10,
+            "minutes": 1,
+            "duration": 0,
+            "message": "תפסיק לבזבז את הזמן, תיקפת {count} פעמים בדקה האחרונה",
+            "sound_key": "001 אזהרה"
+        },
+        {
+            "type": "warning",
+            "count": 15,
+            "minutes": 1,
+            "duration": 0,
+            "message": "החלטת לבזבז את זמנך על {count} תיקופים בדקה אחת! עוד מעט תיחסם לשעתיים!",
+            "sound_key": "002 אזהרה"
+        },
+        {
+            "type": "block",
+            "count": 20,
+            "minutes": 1,
+            "duration": 60,
+            "message": "הכרטיס נחסם לשעה עקב ניצול יתר. תוכל לחזור בעוד {time_left}.",
+            "sound_key": "003 חסימה"
+        },
+        {
+            "type": "block",
+            "count": 30,
+            "minutes": 1,
+            "duration": 120,
+            "message": "הכרטיס נחסם לשעתיים, אוטוטו יוריד נקודות! ניתן לחזור בעוד {time_left}",
+            "sound_key": "004 חסימה"
+        }
+    ],
+    "sounds_enabled": "1",
+    "sound_volume": "100",
+    "time_bonus_first_today": {
+        "enabled": true,
+        "mode": "first_per_class",
+        "n": 1,
+        "text": "*הגעת  מכיתתך ראשון להיום!*"
+    },
+    "deployment_mode": "hybrid",
+    "quiet_mode_ranges": "[{\"start\": \"08:00\", \"end\": \"09:00\", \"mode\": \"silent\", \"volume\": 0}, {\"start\": \"09:30\", \"end\": \"10:30\", \"mode\": \"silent\", \"volume\": 0}, {\"start\": \"10:45\", \"end\": \"11:45\", \"mode\": \"silent\", \"volume\": 0}, {\"start\": \"12:00\", \"end\": \"13:00\", \"mode\": \"silent\", \"volume\": 0}, {\"start\": \"13:45\", \"end\": \"14:35\", \"mode\": \"silent\", \"volume\": 0}, {\"start\": \"14:50\", \"end\": \"15:40\", \"mode\": \"silent\", \"volume\": 0}, {\"start\": \"15:55\", \"end\": \"16:45\", \"mode\": \"silent\", \"volume\": 0}, {\"start\": \"17:05\", \"end\": \"18:00\", \"mode\": \"silent\", \"volume\": 0}]",
+    "sync_tenant_id": "62670",
+    "ads_popup_enabled": true,
+    "ads_popup_idle_sec": 10,
+    "ads_popup_show_sec": 30.0,
+    "ads_popup_gap_sec": 1.0,
+    "ads_popup_border": true,
+    "background_image_path": "",
+    "background_folder": "",
+    "system_mode": "normal"
+}

@@ -137,7 +137,7 @@ class MessagesDB:
         except Exception:
             pass
         try:
-            conn.execute('PRAGMA busy_timeout = 30000')
+            conn.execute('PRAGMA busy_timeout = 10000')
         except Exception:
             pass
         try:
@@ -347,7 +347,13 @@ class MessagesDB:
         cursor.execute('''
             INSERT INTO static_messages (message, show_always) VALUES (?, ?)
         ''', (message, 1 if show_always else 0))
-        message_id = cursor.lastrowid
+        # lastrowid עלול להשתנות ע"י trigger — שליפה ישירה
+        try:
+            cursor.execute('SELECT MAX(id) FROM static_messages')
+            _r = cursor.fetchone()
+            message_id = int(_r[0]) if _r and _r[0] else 0
+        except Exception:
+            message_id = cursor.lastrowid or 0
         try:
             self._log_change(cursor, entity_type='static_message', entity_id=str(message_id), action_type='create',
                              payload={'id': message_id, 'message': message, 'show_always': 1 if show_always else 0, 'is_active': 1})
@@ -440,7 +446,12 @@ class MessagesDB:
             INSERT INTO threshold_messages (min_points, max_points, message)
             VALUES (?, ?, ?)
         ''', (min_points, max_points, message))
-        message_id = cursor.lastrowid
+        try:
+            cursor.execute('SELECT MAX(id) FROM threshold_messages')
+            _r = cursor.fetchone()
+            message_id = int(_r[0]) if _r and _r[0] else 0
+        except Exception:
+            message_id = cursor.lastrowid or 0
         try:
             self._log_change(cursor, entity_type='threshold_message', entity_id=str(message_id), action_type='create',
                              payload={'id': message_id, 'min_points': min_points, 'max_points': max_points, 'message': message, 'is_active': 1})
@@ -558,7 +569,12 @@ class MessagesDB:
             cursor.execute('''
                 INSERT INTO news_items (text, start_date, end_date) VALUES (?, ?, ?)
             ''', (text, start_date, end_date))
-        news_id = cursor.lastrowid
+        try:
+            cursor.execute('SELECT MAX(id) FROM news_items')
+            _r = cursor.fetchone()
+            news_id = int(_r[0]) if _r and _r[0] else 0
+        except Exception:
+            news_id = cursor.lastrowid or 0
         try:
             self._log_change(cursor, entity_type='news_item', entity_id=str(news_id), action_type='create',
                              payload={'id': news_id, 'text': text, 'start_date': start_date, 'end_date': end_date, 'is_active': 1})
@@ -756,7 +772,12 @@ class MessagesDB:
                 ''',
                 (text, image_path, start_date, end_date)
             )
-        ads_id = cursor.lastrowid
+        try:
+            cursor.execute('SELECT MAX(id) FROM ads_items')
+            _r = cursor.fetchone()
+            ads_id = int(_r[0]) if _r and _r[0] else 0
+        except Exception:
+            ads_id = cursor.lastrowid or 0
         try:
             self._log_change(cursor, entity_type='ads_item', entity_id=str(ads_id), action_type='create',
                              payload={'id': ads_id, 'text': text, 'start_date': start_date, 'end_date': end_date, 'image_path': image_path, 'is_active': 1})
@@ -924,7 +945,12 @@ class MessagesDB:
             INSERT INTO student_messages (student_id, message)
             VALUES (?, ?)
         ''', (student_id, message))
-        message_id = cursor.lastrowid
+        try:
+            cursor.execute('SELECT MAX(id) FROM student_messages')
+            _r = cursor.fetchone()
+            message_id = int(_r[0]) if _r and _r[0] else 0
+        except Exception:
+            message_id = cursor.lastrowid or 0
         try:
             self._log_change(cursor, entity_type='student_message', entity_id=str(message_id), action_type='create',
                              payload={'id': message_id, 'student_id': student_id, 'message': message, 'is_active': 1})

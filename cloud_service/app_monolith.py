@@ -2324,10 +2324,15 @@ def _public_web_shell(title: str, body_html: str, request: Request = None) -> st
         }
         .content-body h2, .content-body h3, .content-body h4,
         .content-body label, .content-body p, .content-body span,
-        .content-body li, .content-body div, .content-body small {
+        .content-body li, .content-body div, .content-body small,
+        .content-body td, .content-body th {
           color: #1f2d3a;
         }
         .content-body a { color: #2980b9; }
+        .content-body input, .content-body textarea, .content-body select { color: #1f2d3a; background: #fff; }
+        .content-body table { background: #fff; }
+        .content-body th { background: #f8f9fa !important; color: #555 !important; }
+        .content-body .status-dot { color: transparent; }
         .content-body .green, .content-body .blue, .content-body .gray,
         .content-body .red, .content-body button.green, .content-body button.blue { color: #fff; }
 
@@ -2685,10 +2690,14 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
         }
         .content-body h2, .content-body h3, .content-body h4,
         .content-body label, .content-body p, .content-body span,
-        .content-body li, .content-body div, .content-body small {
+        .content-body li, .content-body div, .content-body small,
+        .content-body td, .content-body th {
           color: #1f2d3a;
         }
         .content-body a { color: #2980b9; }
+        .content-body input, .content-body textarea, .content-body select { color: #1f2d3a; background: #fff; }
+        .content-body table { background: #fff; }
+        .content-body th { background: #f8f9fa !important; color: #555 !important; }
         .content-body .status-dot { color: transparent; }
         .content-body .tab { color: #555; border-bottom: 3px solid transparent; cursor: pointer; padding: 10px 20px; font-weight: 600; }
         .content-body .tab.active { color: #2c3e50; border-bottom-color: #3498db; }
@@ -2696,6 +2705,8 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
         .content-body .tabs { border-bottom: 1px solid #e1e8ee; display: flex; margin-bottom: 20px; }
         .content-body .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
         .content-body .modal { background: #fff; color: #1f2d3a; padding: 20px; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+        .content-body .modal h3 { color: #2c3e50; }
+        .content-body .modal label { color: #2c3e50; }
         .content-body .green, .content-body .blue, .content-body .gray,
         .content-body .red, .content-body button.green, .content-body button.blue { color: #fff; }
         .content-body .btn-icon { color: #1f2d3a; }
@@ -2703,11 +2714,13 @@ def _basic_web_shell(title: str, body_html: str, request: Request = None) -> str
         .content-body .data-table th { background: #f8f9fa; color: #555; font-weight: 700; }
         .content-body .data-table td { color: #1f2d3a; }
         .content-body .data-table tr:hover { background: #f8f9fa; }
+        .content-body .data-table tr:nth-child(even) { background: #fafbfc; }
         .content-body .form-group label { color: #1f2d3a; font-weight: 600; }
         .content-body .stat-num { color: #2c3e50; }
         .content-body .stat-label { color: #7f8c8d; }
         .content-body .list-header { color: #2c3e50; }
         .content-body .list-val { color: #3498db; }
+        .content-body .card { background: #fff; border: 1px solid #eee; border-radius: 10px; }
 
         .footerbar {
           margin-top: 16px;
@@ -4543,6 +4556,19 @@ class AdsSettingsPayload(BaseModel):
 class GenericSettingPayload(BaseModel):
     key: str
     value: Dict[str, Any]
+
+
+class TimeBonusSavePayload(BaseModel):
+    id: int | None = None
+    name: str
+    start_time: str | None = None
+    end_time: str | None = None
+    bonus_points: int = 0
+    is_active: int | None = None
+
+
+class TimeBonusDeletePayload(BaseModel):
+    id: int
 
 
 def _safe_int(v: Any, default: int = 0) -> int:
@@ -10750,29 +10776,29 @@ def web_messages(request: Request):
     
     html_content = """
     <style>
-      .tabs { display: flex; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
-      .tab { padding: 10px 20px; cursor: pointer; border-bottom: 3px solid transparent; font-weight: 600; color: var(--text-sub); }
-      .tab.active { border-bottom-color: var(--primary); color: var(--text-main); }
-      .tab:hover { background: rgba(0,0,0,0.02); }
+      .tabs { display: flex; border-bottom: 2px solid #e1e8ee; margin-bottom: 20px; }
+      .tab { padding: 10px 20px; cursor: pointer; border-bottom: 3px solid transparent; font-weight: 600; color: #555; }
+      .tab.active { border-bottom-color: #3498db; color: #2c3e50; }
+      .tab:hover { background: rgba(0,0,0,0.04); }
       .tab-content { display: none; }
       .tab-content.active { display: block; }
-      .toolbar { display: flex; gap: 10px; margin-bottom: 10px; }
+      .toolbar { display: flex; gap: 10px; margin-bottom: 15px; }
       .data-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-      .data-table th, .data-table td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; }
+      .data-table th, .data-table td { padding: 12px; text-align: right; border-bottom: 1px solid #eee; color: #1f2d3a; }
       .data-table th { background: #f8f9fa; font-weight: 700; color: #555; }
-      .data-table tr:hover { background: #fdfdfd; }
-      .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 5px; }
+      .data-table tr:hover { background: #f8f9fa; }
+      .data-table tr:nth-child(even) { background: #fafbfc; }
+      .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-left: 5px; }
       .status-active { background: #2ecc71; }
       .status-inactive { background: #e74c3c; }
-      .btn-icon { cursor: pointer; padding: 4px; border-radius: 4px; border: none; background: transparent; }
+      .btn-icon { cursor: pointer; padding: 4px 6px; border-radius: 4px; border: none; background: transparent; font-size: 16px; color: #1f2d3a; }
       .btn-icon:hover { background: #eee; }
-      /* Modal styles */
       .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); display: none; align-items: center; justify-content: center; z-index: 1000; }
-      .modal { background: #fff; padding: 20px; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
-      .modal h3 { margin-top: 0; }
+      .modal { background: #fff; color: #1f2d3a; padding: 24px; border-radius: 12px; width: 90%; max-width: 500px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); }
+      .modal h3 { margin-top: 0; color: #2c3e50; }
       .form-group { margin-bottom: 15px; }
-      .form-group label { display: block; margin-bottom: 5px; font-weight: 600; }
-      .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
+      .form-group label { display: block; margin-bottom: 5px; font-weight: 600; color: #2c3e50; }
+      .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; color: #1f2d3a; background: #fff; }
       .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
     </style>
 
@@ -12249,6 +12275,7 @@ def web_time_bonus(request: Request):
             <th style="padding:12px; text-align:right; color:#555; font-weight:700;">שם הכלל</th>
             <th style="padding:12px; text-align:right; color:#555; font-weight:700;">שעות</th>
             <th style="padding:12px; text-align:right; color:#555; font-weight:700;">בונוס (נקודות)</th>
+            <th style="padding:12px; text-align:center; color:#555; font-weight:700;">פעיל</th>
             <th style="padding:12px; text-align:right; color:#555; font-weight:700;">פעולות</th>
           </tr>
         </thead>
@@ -12260,7 +12287,7 @@ def web_time_bonus(request: Request):
     <div id="modal-rule" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
       <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:450px; box-shadow:0 4px 20px rgba(0,0,0,0.2); direction:rtl;">
         <h3 id="modal-title" style="margin-top:0;">כלל בונוס זמן</h3>
-        <input type="hidden" id="rule-index">
+        <input type="hidden" id="rule-id">
         <div class="form-group" style="margin-bottom:15px;">
           <label style="display:block; margin-bottom:5px; font-weight:600;">שם הכלל (לדוגמה: שחרית)</label>
           <input id="rule-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
@@ -12291,9 +12318,9 @@ def web_time_bonus(request: Request):
 
       async function loadRules() {
         try {
-          const res = await fetch('/api/settings/time_bonus');
+          const res = await fetch('/api/time-bonus/list');
           const data = await res.json();
-          rules = Array.isArray(data.rules) ? data.rules : [];
+          rules = Array.isArray(data.items) ? data.items : [];
           renderRules();
         } catch(e) {}
       }
@@ -12301,24 +12328,28 @@ def web_time_bonus(request: Request):
       function renderRules() {
         const tbody = document.getElementById('rules-list');
         if (rules.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" style="padding:20px; text-align:center; color:#888;">אין כללים מוגדרים</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="5" style="padding:20px; text-align:center; color:#888;">אין כללים מוגדרים</td></tr>';
             return;
         }
         tbody.innerHTML = rules.map((r, idx) => `
-          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
-            <td style="padding:12px;">${esc(r.name)}</td>
-            <td style="padding:12px; direction:ltr; text-align:right;">${r.start_time} - ${r.end_time}</td>
-            <td style="padding:12px;">${r.points}</td>
+          <tr style="border-bottom:1px solid #eee; background:${idx % 2 === 0 ? '#fff' : '#fafbfc'};">
+            <td style="padding:12px; color:#1f2d3a; font-weight:600;">${esc(r.name)}</td>
+            <td style="padding:12px; color:#1f2d3a; direction:ltr; text-align:right;">${r.start_time || ''} - ${r.end_time || ''}</td>
+            <td style="padding:12px; color:#1f2d3a; font-weight:600;">${r.bonus_points}</td>
+            <td style="padding:12px; text-align:center;">
+              <span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:${r.is_active ? '#2ecc71' : '#e74c3c'};"></span>
+            </td>
             <td style="padding:12px;">
-              <button onclick="editRule(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
-              <button onclick="deleteRule(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+              <button onclick="editRule(${r.id})" style="background:none; border:none; cursor:pointer; font-size:16px; color:#1f2d3a;">✏️</button>
+              <button onclick="toggleRule(${r.id})" style="background:none; border:none; cursor:pointer; font-size:16px; color:#1f2d3a;" title="הפעל/השבת">🔄</button>
+              <button onclick="deleteRule(${r.id})" style="background:none; border:none; cursor:pointer; font-size:16px; color:#1f2d3a;">🗑️</button>
             </td>
           </tr>
         `).join('');
       }
 
       function openRuleModal() {
-        document.getElementById('rule-index').value = '-1';
+        document.getElementById('rule-id').value = '';
         document.getElementById('rule-name').value = '';
         document.getElementById('rule-start').value = '';
         document.getElementById('rule-end').value = '';
@@ -12331,19 +12362,20 @@ def web_time_bonus(request: Request):
         document.getElementById('modal-rule').style.display = 'none';
       }
 
-      function editRule(idx) {
-        const r = rules[idx];
-        document.getElementById('rule-index').value = idx;
+      function editRule(id) {
+        const r = rules.find(x => x.id === id);
+        if (!r) return;
+        document.getElementById('rule-id').value = r.id;
         document.getElementById('rule-name').value = r.name || '';
         document.getElementById('rule-start').value = r.start_time || '';
         document.getElementById('rule-end').value = r.end_time || '';
-        document.getElementById('rule-points').value = r.points || 0;
+        document.getElementById('rule-points').value = r.bonus_points || 0;
         document.getElementById('modal-title').textContent = 'עריכת כלל';
         document.getElementById('modal-rule').style.display = 'flex';
       }
 
       async function saveRule() {
-        const idx = parseInt(document.getElementById('rule-index').value);
+        const ruleId = document.getElementById('rule-id').value;
         const name = document.getElementById('rule-name').value.trim();
         const start = document.getElementById('rule-start').value;
         const end = document.getElementById('rule-end').value;
@@ -12351,32 +12383,46 @@ def web_time_bonus(request: Request):
         
         if (!name) return alert('נא להזין שם');
 
-        const newRule = { name, start_time: start, end_time: end, points };
+        const payload = { name, start_time: start, end_time: end, bonus_points: points };
         
-        if (idx >= 0) {
-            rules[idx] = newRule;
+        if (ruleId) {
+            payload.id = parseInt(ruleId);
+            await fetch('/api/time-bonus/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
         } else {
-            rules.push(newRule);
+            await fetch('/api/time-bonus/save', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
         }
         
-        await saveToServer();
         closeRuleModal();
-        renderRules();
+        await loadRules();
       }
 
-      async function deleteRule(idx) {
-        if (!confirm('למחוק?')) return;
-        rules.splice(idx, 1);
-        await saveToServer();
-        renderRules();
-      }
-
-      async function saveToServer() {
-        await fetch('/api/settings/save', {
+      async function deleteRule(id) {
+        if (!confirm('למחוק כלל זה?')) return;
+        await fetch('/api/time-bonus/delete', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ key: 'time_bonus', value: { rules: rules } })
+            body: JSON.stringify({ id })
         });
+        await loadRules();
+      }
+
+      async function toggleRule(id) {
+        const r = rules.find(x => x.id === id);
+        if (!r) return;
+        await fetch('/api/time-bonus/save', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ id: r.id, name: r.name, start_time: r.start_time, end_time: r.end_time, bonus_points: r.bonus_points, is_active: !r.is_active })
+        });
+        await loadRules();
       }
 
       function esc(s) {
@@ -12387,6 +12433,77 @@ def web_time_bonus(request: Request):
     </script>
     """
     return _basic_web_shell("בונוס זמנים", html_content, request=request)
+
+
+@app.get('/api/time-bonus/list')
+def api_time_bonus_list(request: Request) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, group_name, start_time, end_time, bonus_points, is_active FROM time_bonus_schedules ORDER BY name")
+        rows = [dict(r) if not isinstance(r, dict) else r for r in (cur.fetchall() or [])]
+        return {'ok': True, 'items': rows}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.post('/api/time-bonus/save')
+def api_time_bonus_save(request: Request, payload: TimeBonusSavePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        if payload.id and int(payload.id) > 0:
+            is_active = payload.is_active if payload.is_active is not None else 1
+            cur.execute(
+                _sql_placeholder('UPDATE time_bonus_schedules SET name=?, start_time=?, end_time=?, bonus_points=?, is_active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?'),
+                (payload.name, payload.start_time or '', payload.end_time or '', payload.bonus_points, is_active, int(payload.id))
+            )
+            conn.commit()
+            rid = int(payload.id)
+            _record_tenant_change(tenant_id, 'time_bonus', rid, 'update', payload.dict())
+        else:
+            cur.execute(
+                _sql_placeholder('INSERT INTO time_bonus_schedules (name, start_time, end_time, bonus_points, is_active) VALUES (?, ?, ?, ?, 1)'),
+                (payload.name, payload.start_time or '', payload.end_time or '', payload.bonus_points)
+            )
+            conn.commit()
+            rid = cur.lastrowid
+            if not rid:
+                cur.execute("SELECT lastval()")
+                row = cur.fetchone()
+                rid = row[0] if row else 0
+            _record_tenant_change(tenant_id, 'time_bonus', rid, 'create', payload.dict())
+        return {'ok': True, 'id': rid}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.post('/api/time-bonus/delete')
+def api_time_bonus_delete(request: Request, payload: TimeBonusDeletePayload) -> Dict[str, Any]:
+    guard = _web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401)
+    tenant_id = _web_tenant_from_cookie(request)
+    conn = _tenant_school_db(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('DELETE FROM time_bonus_schedules WHERE id=?'), (int(payload.id),))
+        conn.commit()
+        _record_tenant_change(tenant_id, 'time_bonus', payload.id, 'delete', None)
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
 
 
 @app.get("/web/cashier", response_class=HTMLResponse)
