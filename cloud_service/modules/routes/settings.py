@@ -278,6 +278,18 @@ def web_system_settings(request: Request):
         <label style="display:block; margin-bottom:5px; font-weight:600;">נתיב לוגו (אופציונלי)</label>
         <input id="sys-logo" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
       </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">שם מבצע</label>
+        <input id="sys-campaign" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">תיקיית תמונות תלמידים (נתיב)</label>
+        <input id="sys-photos" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">מדפסת ברירת מחדל (אופציונלי)</label>
+        <input id="sys-printer" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr; text-align:left;">
+      </div>
       <div>
         <button class="green" onclick="saveSystem()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
       </div>
@@ -292,6 +304,9 @@ def web_system_settings(request: Request):
           document.getElementById('sys-work-mode').value = data.work_mode || 'points';
           document.getElementById('sys-shared').value = data.shared_folder || '';
           document.getElementById('sys-logo').value = data.logo_path || '';
+          document.getElementById('sys-campaign').value = data.campaign_name || '';
+          document.getElementById('sys-photos').value = data.photos_folder || '';
+          document.getElementById('sys-printer').value = data.default_printer || '';
         } catch(e) {}
       }
 
@@ -300,7 +315,10 @@ def web_system_settings(request: Request):
             deployment_mode: document.getElementById('sys-mode').value,
             work_mode: document.getElementById('sys-work-mode').value,
             shared_folder: document.getElementById('sys-shared').value,
-            logo_path: document.getElementById('sys-logo').value
+            logo_path: document.getElementById('sys-logo').value,
+            campaign_name: document.getElementById('sys-campaign').value,
+            photos_folder: document.getElementById('sys-photos').value,
+            default_printer: document.getElementById('sys-printer').value
         };
         await fetch('/api/settings/save', {
             method: 'POST',
