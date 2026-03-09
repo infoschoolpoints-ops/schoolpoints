@@ -29,19 +29,53 @@ def web_messages(request: Request):
         <h2 style="margin-bottom:20px;">ניהול הודעות</h2>
         
         <div class="tabs" style="display:flex; gap:10px; margin-bottom:20px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:10px;">
-            <button class="tab-btn active" onclick="switchTab('static')">הודעות רצות</button>
-            <button class="tab-btn" onclick="switchTab('news')">חדשות</button>
-            <button class="tab-btn" onclick="switchTab('ads')">פרסומות</button>
+            <button class="tab-btn active" onclick="switchTab('static')">📢 הודעות כלליות</button>
+            <button class="tab-btn" onclick="switchTab('threshold')">🎯 לפי ניקוד</button>
+            <button class="tab-btn" onclick="switchTab('news')">📰 חדשות</button>
+            <button class="tab-btn" onclick="switchTab('timebonus')">⏰ בונוס זמנים</button>
+            <button class="tab-btn" onclick="switchTab('ads')">🪧 פרסומות</button>
         </div>
 
         <!-- Static Messages -->
         <div id="tab-static" class="tab-content">
             <div class="card" style="padding:15px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                    <h3>הודעות רצות (פס גלילה)</h3>
+                    <h3>הודעות כלליות (מופיעות לכולם)</h3>
                     <button class="blue" onclick="addStatic()">➕ הוסף הודעה</button>
                 </div>
                 <div id="list-static">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Threshold (score-based) Messages -->
+        <div id="tab-threshold" class="tab-content" style="display:none;">
+            <div class="card" style="padding:15px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+                    <h3>הודעות לפי טווח נקודות</h3>
+                    <button class="blue" onclick="addThreshold()">➕ הוסף טווח</button>
+                </div>
+                <div id="list-threshold">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Time Bonus Message -->
+        <div id="tab-timebonus" class="tab-content" style="display:none;">
+            <div class="card" style="padding:15px;">
+                <h3>הודעת "הגעת ראשון להיום"</h3>
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label class="ck" style="display:flex;align-items:center;gap:8px;font-weight:600;">
+                        <input type="checkbox" id="tb-enabled" style="width:18px;height:18px;"> הפעל הודעה
+                    </label>
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label style="display:block;margin-bottom:5px;font-weight:600;">מספר ראשונים (N)</label>
+                    <input type="number" id="tb-n" min="1" value="1" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;">
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label style="display:block;margin-bottom:5px;font-weight:600;">טקסט ההודעה</label>
+                    <input id="tb-text" value="*הגעת ראשון להיום!*" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;">
+                </div>
+                <button class="green" onclick="saveTimeBonus()">שמירה</button>
             </div>
         </div>
 
@@ -76,7 +110,9 @@ def web_messages(request: Request):
             document.getElementById('tab-' + name).style.display = 'block';
             document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
             event.target.classList.add('active');
-            load(name);
+            if (name === 'timebonus') { loadTimeBonus(); }
+            else if (name === 'threshold') { load('threshold'); }
+            else { load(name); }
         }
         
         async function load(type) {
@@ -112,6 +148,7 @@ def web_messages(request: Request):
         }
         
         function addStatic() { alert('פונקציונליות בבנייה (API קיים)'); }
+        function addThreshold() { alert('פונקציונליות בבנייה'); }
         function addNews() { alert('פונקציונליות בבנייה (API קיים)'); }
         function addAd() { alert('פונקציונליות בבנייה (API קיים)'); }
         function edit(type, id) { alert('עריכה: ' + type + ' ' + id); }
@@ -123,6 +160,27 @@ def web_messages(request: Request):
                 body: JSON.stringify({id: id})
             });
             load(type);
+        }
+
+        async function loadTimeBonus() {
+            try {
+                const r = await fetch('/api/settings/time_bonus_message');
+                const d = await r.json();
+                document.getElementById('tb-enabled').checked = !!d.enabled;
+                document.getElementById('tb-n').value = d.n || 1;
+                document.getElementById('tb-text').value = d.text || '*הגעת ראשון להיום!*';
+            } catch(e) {}
+        }
+        async function saveTimeBonus() {
+            await fetch('/api/settings/save', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({key:'time_bonus_message', value:{
+                    enabled: document.getElementById('tb-enabled').checked,
+                    n: parseInt(document.getElementById('tb-n').value)||1,
+                    text: document.getElementById('tb-text').value
+                }})
+            });
+            alert('נשמר');
         }
 
         load('static');

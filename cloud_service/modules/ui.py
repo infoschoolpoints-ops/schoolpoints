@@ -61,6 +61,17 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
           color: #1f2d3a;
           background: #ffffff;
         }
+        .card label, .card .form-group label { color: #2c3e50 !important; }
+        .card h2, .card h3, .card p, .card span { color: #1f2d3a; }
+        .card select option { color: #1f2d3a; background: #fff; }
+
+        /* Modal dark text on white background */
+        .modal { color: #1f2d3a; }
+        .modal label, .modal .form-group label { color: #2c3e50 !important; }
+        .modal h2, .modal h3, .modal h4 { color: #2c3e50; }
+        .modal input, .modal select, .modal textarea { color: #1f2d3a; background: #fff; }
+        .modal select option { color: #1f2d3a; background: #fff; }
+        .modal .gray, .modal button.gray { color: #fff; }
 
         /* Fix input visibility in dark theme context */
         input, select, textarea {
@@ -327,10 +338,13 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
         {'url': '/web/messages', 'icon': '💬', 'label': 'הודעות כלליות'},
         {'url': '/web/special-bonus', 'icon': '🎁', 'label': 'בונוס מיוחד'},
         {'url': '/web/time-bonus', 'icon': '⏰', 'label': 'בונוס זמנים'},
-        {'url': '/web/system-settings', 'icon': '⚙', 'label': 'הגדרות מערכת'},
-        {'url': '/web/display-settings', 'icon': '🖥', 'label': 'הגדרות תצוגה'},
+        {'url': '/web/upgrades', 'icon': '🎨', 'label': 'שדרוגים'},
         {'url': '/web/purchases', 'icon': '🛒', 'label': 'קניות'},
         {'url': '/web/holidays', 'icon': '📅', 'label': 'חגים'},
+        {'url': '/web/max-points', 'icon': '📉', 'label': 'מגבלת ניקוד'},
+        {'url': '/web/anti-spam', 'icon': '🛡️', 'label': 'אנטי-ספאם'},
+        {'url': '/web/quiet-mode', 'icon': '🌙', 'label': 'מצב שקט'},
+        {'url': '/web/settings', 'icon': '⚙', 'label': 'הגדרות'},
         {'url': '/web/import', 'icon': '📥', 'label': 'ייבוא'},
         {'url': '/web/reports', 'icon': '📤', 'label': 'ייצוא / דוחות'},
         {'url': '/web/personal', 'icon': '👤', 'label': 'אזור אישי'},

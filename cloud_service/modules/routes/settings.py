@@ -93,8 +93,9 @@ def api_time_bonus_list(request: Request) -> Dict[str, Any]:
     try:
         cur = conn.cursor()
         cur.execute(
-            'SELECT id, name, start_time, end_time, bonus_points, is_active '
-            'FROM time_bonus_schedules ORDER BY start_time'
+            'SELECT id, name, group_name, start_time, end_time, bonus_points, is_active, '
+            'is_general, classes, days_of_week '
+            'FROM time_bonus_schedules ORDER BY group_name, start_time'
         )
         rows = cur.fetchall() or []
         rules = []
@@ -103,10 +104,14 @@ def api_time_bonus_list(request: Request) -> Dict[str, Any]:
             rules.append({
                 'id': rr.get('id'),
                 'name': rr.get('name') or '',
+                'group_name': rr.get('group_name') or rr.get('name') or '',
                 'start_time': rr.get('start_time') or '',
                 'end_time': rr.get('end_time') or '',
                 'points': int(rr.get('bonus_points') or 0),
-                'is_active': int(rr.get('is_active') or 0)
+                'is_active': int(rr.get('is_active') or 0),
+                'is_general': int(rr.get('is_general') or 1),
+                'classes': rr.get('classes') or '',
+                'days_of_week': rr.get('days_of_week') or '',
             })
         return {'rules': rules}
     finally:
@@ -1263,53 +1268,16 @@ def web_upgrades(request: Request):
     guard = web_require_admin_teacher(request)
     if guard: return guard
     
-    html_content = """
-    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
-      <div class="form-group" style="margin-bottom:15px;">
-        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
-          <input type="checkbox" id="upg-auto" style="width:18px; height:18px;"> עדכון אוטומטי
-        </label>
-      </div>
-      <div class="form-group" style="margin-bottom:15px;">
-        <label style="display:block; margin-bottom:5px; font-weight:600;">ערוץ עדכון</label>
-        <select id="upg-channel" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
-          <option value="stable">יציב (Stable)</option>
-          <option value="beta">בטא (Beta)</option>
-          <option value="dev">פיתוח (Dev)</option>
-        </select>
-      </div>
-      <div>
-        <button class="green" onclick="saveUpgrades()" style="padding:10px 20px; border-radius:6px; border:none; background:#2ecc71; color:white; font-weight:bold; cursor:pointer;">שמירה</button>
-      </div>
-    </div>
-
-    <script>
-      async function loadUpgrades() {
-        try {
-          const res = await fetch('/api/settings/upgrades_settings');
-          const data = await res.json();
-          document.getElementById('upg-auto').checked = !!data.auto_update;
-          document.getElementById('upg-channel').value = data.channel || 'stable';
-        } catch(e) {}
-      }
-
-      async function saveUpgrades() {
-        const payload = {
-            auto_update: document.getElementById('upg-auto').checked,
-            channel: document.getElementById('upg-channel').value
-        };
-        await fetch('/api/settings/save', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ key: 'upgrades_settings', value: payload })
-        });
-        alert('נשמר בהצלחה');
-      }
-
-      loadUpgrades();
-    </script>
-    """
-    return basic_web_shell("עדכון מערכת", html_content, request=request)
+    tiles = [
+        ('/web/sounds', '🔊', 'צלילים'),
+        ('/web/colors', '🎨', 'צבעים'),
+        ('/web/coins', '🪙', 'מטבעות ויהלומים'),
+        ('/web/goals', '🎯', 'יעדים'),
+        ('/web/bonuses', '🎁', 'בונוסים'),
+    ]
+    grid = ''.join(f'<a href="{u}" style="display:block;padding:24px;background:#fff;border-radius:12px;border:1px solid #eee;text-align:center;text-decoration:none;"><div style="font-size:36px;margin-bottom:10px;">{ic}</div><div style="font-weight:700;color:#2c3e50;font-size:16px;">{lb}</div></a>' for u,ic,lb in tiles)
+    html_content = f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;">{grid}</div>'
+    return basic_web_shell("שדרוגים", html_content, request=request)
 
 @router.get("/web/special-bonus", response_class=HTMLResponse)
 def web_special_bonus(request: Request):
@@ -1521,17 +1489,31 @@ def web_time_bonus(request: Request):
             tbody.innerHTML = '<tr><td colspan="4" style="padding:20px; text-align:center; color:#888;">אין כללים מוגדרים</td></tr>';
             return;
         }
-        tbody.innerHTML = rules.map((r, idx) => `
-          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
-            <td style="padding:12px;">${esc(r.name)}</td>
-            <td style="padding:12px; direction:ltr; text-align:right;">${r.start_time} - ${r.end_time}</td>
-            <td style="padding:12px;">${r.points}</td>
-            <td style="padding:12px;">
-              <button onclick="editRule(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
-              <button onclick="deleteRule(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
-            </td>
-          </tr>
-        `).join('');
+        // Group by group_name
+        const groups = {};
+        rules.forEach((r, idx) => {
+            const g = r.group_name || r.name || 'ללא קבוצה';
+            if (!groups[g]) groups[g] = [];
+            groups[g].push({...r, _idx: idx});
+        });
+        let html = '';
+        let gIdx = 0;
+        for (const [gName, items] of Object.entries(groups)) {
+            if (gIdx > 0) html += '<tr><td colspan="4" style="padding:4px; background:#dfe6e9;"></td></tr>';
+            html += '<tr style="background:rgba(52,152,219,0.15);"><td colspan="4" style="padding:10px 12px; font-weight:bold; color:#2c3e50;">📋 ' + esc(gName) + ' (' + items.length + ' כללים)</td></tr>';
+            items.forEach(r => {
+                html += '<tr style="border-bottom:1px solid #eee;">' +
+                  '<td style="padding:10px 12px 10px 12px;">' + esc(r.name) + '</td>' +
+                  '<td style="padding:10px 12px; direction:ltr; text-align:right;">' + r.start_time + ' - ' + r.end_time + '</td>' +
+                  '<td style="padding:10px 12px;">' + r.points + '</td>' +
+                  '<td style="padding:10px 12px;">' +
+                    '<button onclick="editRule(' + r._idx + ')" style="background:none;border:none;cursor:pointer;font-size:16px;">✏️</button>' +
+                    '<button onclick="deleteRule(' + r._idx + ')" style="background:none;border:none;cursor:pointer;font-size:16px;">🗑️</button>' +
+                  '</td></tr>';
+            });
+            gIdx++;
+        }
+        tbody.innerHTML = html;
       }
 
       function openRuleModal() {
@@ -1981,3 +1963,123 @@ def api_max_points_save(request: Request, payload: Dict[str, Any]) -> Dict[str, 
     finally:
         try: conn.close()
         except: pass
+
+
+@router.get("/web/max-points", response_class=HTMLResponse)
+def web_max_points(request: Request):
+    guard = web_require_admin_teacher(request)
+    if guard: return guard
+    html_content = """
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">מגבלת נקודות יומית (0 = ללא מגבלה)</label>
+        <input type="number" id="max-pts-daily" min="0" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
+          <input type="checkbox" id="max-pts-enabled" style="width:18px; height:18px;"> מגבלה פעילה
+        </label>
+      </div>
+      <button class="green" onclick="saveMaxPoints()">שמירה</button>
+    </div>
+    <script>
+      async function loadMaxPoints() {
+        try {
+          const res = await fetch('/api/settings/max-points');
+          const data = await res.json();
+          document.getElementById('max-pts-daily').value = data.daily_limit || 0;
+          document.getElementById('max-pts-enabled').checked = !!data.enabled;
+        } catch(e) {}
+      }
+      async function saveMaxPoints() {
+        const payload = {
+          daily_limit: parseInt(document.getElementById('max-pts-daily').value) || 0,
+          enabled: document.getElementById('max-pts-enabled').checked
+        };
+        await fetch('/api/settings/max-points', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        alert('נשמר בהצלחה');
+      }
+      loadMaxPoints();
+    </script>
+    """
+    return basic_web_shell("הגבלת ניקוד", html_content, request=request)
+
+
+@router.get("/web/quiet-mode", response_class=HTMLResponse)
+def web_quiet_mode(request: Request):
+    return web_anti_spam(request)
+
+
+@router.get("/web/settings", response_class=HTMLResponse)
+def web_settings_hub(request: Request):
+    guard = web_require_admin_teacher(request)
+    if guard: return guard
+    tiles = [
+        ('/web/system-settings', '⚙', 'הגדרות מערכת'),
+        ('/web/display-settings', '🖥', 'הגדרות תצוגה'),
+        ('/web/max-points', '📉', 'מגבלת ניקוד'),
+        ('/web/anti-spam', '🛡️', 'אנטי-ספאם'),
+        ('/web/quiet-mode', '🌙', 'מצב שקט'),
+        ('/web/holidays', '📅', 'חגים וחופשות'),
+    ]
+    grid = ''.join(f'<a href="{u}" style="display:block;padding:20px;background:#fff;border-radius:12px;border:1px solid #eee;text-align:center;text-decoration:none;"><div style="font-size:32px;margin-bottom:8px;">{ic}</div><div style="font-weight:700;color:#2c3e50;">{lb}</div></a>' for u,ic,lb in tiles)
+    html_content = f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;">{grid}</div>'
+    return basic_web_shell("הגדרות", html_content, request=request)
+
+
+@router.get("/web/purchases", response_class=HTMLResponse)
+def web_purchases(request: Request):
+    guard = web_require_admin_teacher(request)
+    if guard: return guard
+    html_content = """
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <div class="form-group" style="margin-bottom:15px;">
+        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
+          <input type="checkbox" id="purch-enabled" style="width:18px; height:18px;"> חנות פעילה
+        </label>
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">מינימום נקודות</label>
+        <input type="number" id="purch-min" min="0" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+      </div>
+      <button class="green" onclick="savePurch()">שמירה</button>
+    </div>
+    <script>
+      async function loadPurch(){try{const r=await fetch('/api/settings/purchases');const d=await r.json();document.getElementById('purch-enabled').checked=!!d.enabled;document.getElementById('purch-min').value=d.min_points||0;}catch(e){}}
+      async function savePurch(){await fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'purchases',value:{enabled:document.getElementById('purch-enabled').checked,min_points:parseInt(document.getElementById('purch-min').value)||0}})});alert('נשמר');}
+      loadPurch();
+    </script>
+    """
+    return basic_web_shell("קניות", html_content, request=request)
+
+
+@router.get("/web/personal", response_class=HTMLResponse)
+def web_personal(request: Request):
+    guard = web_require_admin_teacher(request)
+    if guard: return guard
+    html_content = """
+    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">שם המורה</label>
+        <input id="per-name" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">אימייל</label>
+        <input id="per-email" type="email" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
+      </div>
+      <div class="form-group" style="margin-bottom:15px;">
+        <label style="display:block; margin-bottom:5px; font-weight:600;">סיסמה חדשה (השאר ריק אם אין שינוי)</label>
+        <input id="per-pass" type="password" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
+      </div>
+      <button class="green" onclick="savePersonal()">שמירה</button>
+    </div>
+    <script>
+      async function loadPersonal(){try{const r=await fetch('/api/settings/personal');const d=await r.json();document.getElementById('per-name').value=d.name||'';document.getElementById('per-email').value=d.email||'';}catch(e){}}
+      async function savePersonal(){const p={name:document.getElementById('per-name').value,email:document.getElementById('per-email').value};const pw=document.getElementById('per-pass').value;if(pw)p.password=pw;await fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'personal',value:p})});alert('נשמר');}
+      loadPersonal();
+    </script>
+    """
+    return basic_web_shell("אזור אישי", html_content, request=request)
