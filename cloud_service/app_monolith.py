@@ -13308,6 +13308,8 @@ def _super_admin_shell(title: str, body: str, request: Request = None) -> str:
     nav_links = [
         {"href": "/admin/dashboard", "label": "דשבורד"},
         {"href": "/admin/institutions", "label": "ניהול מוסדות"},
+        {"href": "/admin/pricing", "label": "תמחור"},
+        {"href": "/admin/registrations", "label": "בקשות הרשמה"},
         {"href": "/admin/setup", "label": "הקמת מוסד"},
         {"href": "/admin/global-settings", "label": "הגדרות שרת"},
         {"href": "/admin/logout", "label": "יציאה", "class": "red"},
@@ -13411,9 +13413,12 @@ def admin_dashboard(request: Request, admin_key: str = '') -> str:
     
     <div class="card">
       <h3>קיצורי דרך</h3>
-      <div style="display:flex; gap:10px;">
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
         <a href="/admin/setup"><button class="btn-green">+ הקמת מוסד חדש</button></a>
         <a href="/admin/institutions"><button>ניהול מוסדות</button></a>
+        <a href="/admin/pricing"><button style="background:#8e44ad;">תמחור</button></a>
+        <a href="/admin/registrations"><button style="background:#e67e22;">בקשות הרשמה</button></a>
+        <a href="/admin/sync-status"><button style="background:#16a085;">סטטוס סנכרון</button></a>
       </div>
     </div>
     """
@@ -13485,6 +13490,238 @@ def admin_global_settings(request: Request, admin_key: str = '') -> str:
     </div>
     """
     return _super_admin_shell("הגדרות שרת", body, request)
+
+def _ensure_pricing_plans_table():
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute('''CREATE TABLE IF NOT EXISTS pricing_plans (
+                id BIGSERIAL PRIMARY KEY, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+                price_monthly REAL DEFAULT 0, price_yearly REAL DEFAULT 0, max_stations INTEGER DEFAULT 0,
+                description TEXT, features TEXT, is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP)''')
+        else:
+            cur.execute('''CREATE TABLE IF NOT EXISTS pricing_plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
+                price_monthly REAL DEFAULT 0, price_yearly REAL DEFAULT 0, max_stations INTEGER DEFAULT 0,
+                description TEXT, features TEXT, is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP)''')
+        conn.commit()
+        cur.execute('SELECT COUNT(*) FROM pricing_plans')
+        row = cur.fetchone()
+        cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
+        if cnt == 0:
+            for d in [
+                ('basic','בסיסי (Basic)',50,500,2,'עד 2 עמדות','ניהול תלמידים,ממשק מורים',1,1),
+                ('extended','מורחב (Extended)',100,1000,5,'עד 5 עמדות','הכל בבסיסי,שדרוגים,גיבוי ענן',1,2),
+                ('unlimited','ללא הגבלה (Unlimited)',200,2000,0,'ללא הגבלה','הכל פתוח,תמיכה מועדפת',1,3),
+                ('trial','ניסיון (Trial)',0,0,2,'30 יום חינם','כל הפיצ\'רים ל-30 יום',1,0),
+            ]:
+                try:
+                    cur.execute(_sql_placeholder('INSERT INTO pricing_plans (code,name,price_monthly,price_yearly,max_stations,description,features,is_active,sort_order) VALUES (?,?,?,?,?,?,?,?,?)'), d)
+                except Exception: pass
+            conn.commit()
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@app.get("/admin/pricing", response_class=HTMLResponse)
+def admin_pricing(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    _ensure_pricing_plans_table()
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM pricing_plans ORDER BY sort_order, id')
+        rows = cur.fetchall() or []
+    finally:
+        conn.close()
+    items = ""
+    for r in rows:
+        d = dict(r) if isinstance(r, dict) else {}
+        if not d:
+            cols = ['id','code','name','price_monthly','price_yearly','max_stations','description','features','is_active','sort_order']
+            d = {cols[i]: r[i] for i in range(min(len(cols), len(r)))}
+        active_b = '<span style="color:#2ecc71;font-weight:bold;">פעיל</span>' if int(d.get('is_active',0) or 0) else '<span style="color:#e74c3c;">מושבת</span>'
+        ms = str(d.get('max_stations',0) or 0)
+        if ms == '0': ms = '∞'
+        items += f"""<tr>
+          <td style="font-weight:600;">{html.escape(str(d.get('name','')))}</td>
+          <td><code>{html.escape(str(d.get('code','')))}</code></td>
+          <td>₪{int(d.get('price_monthly',0) or 0)}/חודש</td>
+          <td>₪{int(d.get('price_yearly',0) or 0)}/שנה</td>
+          <td>{ms}</td><td>{active_b}</td>
+          <td><a href='/admin/pricing/edit?plan_id={d.get("id",0)}'><button style="padding:4px 8px;font-size:11px;background:#f39c12;color:white;border:none;border-radius:4px;cursor:pointer;">ערוך</button></a></td>
+        </tr>"""
+    body = f"""
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+      <h2>ניהול תמחור ({len(rows)} מסלולים)</h2>
+      <a href="/admin/pricing/new"><button class="btn-green">+ מסלול חדש</button></a>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;"><thead>
+        <tr style="text-align:right;background:#f8f9fa;border-bottom:1px solid #eee;">
+          <th style="padding:10px;">שם</th><th style="padding:10px;">קוד</th><th style="padding:10px;">חודשי</th>
+          <th style="padding:10px;">שנתי</th><th style="padding:10px;">עמדות</th><th style="padding:10px;">סטטוס</th><th style="padding:10px;">פעולות</th>
+        </tr></thead><tbody>{items}</tbody></table>
+    </div>
+    <div class="card" style="margin-top:20px;"><h3>מוסדות לפי מסלול</h3>
+      <div id="ps">טוען...</div>
+    </div>
+    <script>
+      fetch('/admin/api/plan-stats').then(r=>r.json()).then(data=>{{
+        const el=document.getElementById('ps');
+        if(!data||!data.stats){{el.textContent='אין';return;}}
+        el.innerHTML='';
+        for(const [p,c] of Object.entries(data.stats))
+          el.innerHTML+='<div style="display:inline-block;background:#f8f9fa;padding:12px 20px;border-radius:8px;text-align:center;margin:4px;"><div style="font-size:24px;font-weight:bold;">'+c+'</div><div style="font-size:13px;color:#7f8c8d;">'+p+'</div></div>';
+      }});
+    </script>"""
+    return _super_admin_shell("תמחור", body, request)
+
+
+@app.get("/admin/api/plan-stats")
+def admin_api_plan_stats(request: Request, admin_key: str = '') -> Dict[str, Any]:
+    guard = _admin_require(request, admin_key)
+    if guard: return {"stats": {}}
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(plan,'ללא') AS p, COUNT(*) AS c FROM institutions GROUP BY plan ORDER BY c DESC")
+        stats = {}
+        for r in (cur.fetchall() or []):
+            if isinstance(r, dict): stats[str(r.get('p','ללא'))] = int(r.get('c',0) or 0)
+            else: stats[str(r[0] or 'ללא')] = int(r[1] or 0)
+        return {"stats": stats}
+    finally:
+        conn.close()
+
+
+@app.get("/admin/pricing/new", response_class=HTMLResponse)
+def admin_pricing_new(request: Request, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    body = """
+    <h2>מסלול חדש</h2>
+    <form method="post" action="/admin/pricing/save">
+      <input type="hidden" name="plan_id" value="0" />
+      <label>קוד מסלול (באנגלית)</label>
+      <input name="code" required placeholder="e.g. premium" />
+      <label>שם מסלול</label>
+      <input name="name" required placeholder="פרימיום" />
+      <label>מחיר חודשי (₪)</label>
+      <input name="price_monthly" type="number" value="0" min="0" />
+      <label>מחיר שנתי (₪)</label>
+      <input name="price_yearly" type="number" value="0" min="0" />
+      <label>מקסימום עמדות (0 = ללא הגבלה)</label>
+      <input name="max_stations" type="number" value="0" min="0" />
+      <label>תיאור קצר</label>
+      <input name="description" />
+      <label>פיצ'רים (מופרדים בפסיק)</label>
+      <textarea name="features" rows="3"></textarea>
+      <label>סדר מיון</label>
+      <input name="sort_order" type="number" value="0" />
+      <div style="margin-top:10px;">
+        <label><input type="checkbox" name="is_active" value="1" checked /> פעיל</label>
+      </div>
+      <div style="margin-top:20px; display:flex; gap:10px;">
+        <button type="submit" class="btn-green">שמירה</button>
+        <a href="/admin/pricing" class="btn-gray" style="text-decoration:none;">ביטול</a>
+      </div>
+    </form>
+    """
+    return _super_admin_shell("מסלול חדש", body, request)
+
+
+@app.get("/admin/pricing/edit", response_class=HTMLResponse)
+def admin_pricing_edit(request: Request, plan_id: int, admin_key: str = '') -> str:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    _ensure_pricing_plans_table()
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        cur.execute(_sql_placeholder('SELECT * FROM pricing_plans WHERE id = ? LIMIT 1'), (plan_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return _super_admin_shell("שגיאה", "<h3>מסלול לא נמצא</h3>", request)
+    d = dict(row) if isinstance(row, dict) else {}
+    if not d:
+        cols = ['id','code','name','price_monthly','price_yearly','max_stations','description','features','is_active','sort_order']
+        d = {cols[i]: row[i] for i in range(min(len(cols), len(row)))}
+    checked = 'checked' if int(d.get('is_active', 0) or 0) else ''
+    body = f"""
+    <h2>עריכת מסלול</h2>
+    <form method="post" action="/admin/pricing/save">
+      <input type="hidden" name="plan_id" value="{d.get('id',0)}" />
+      <label>קוד מסלול</label>
+      <input name="code" value="{html.escape(str(d.get('code','')))}" required />
+      <label>שם מסלול</label>
+      <input name="name" value="{html.escape(str(d.get('name','')))}" required />
+      <label>מחיר חודשי (₪)</label>
+      <input name="price_monthly" type="number" value="{int(d.get('price_monthly',0) or 0)}" min="0" />
+      <label>מחיר שנתי (₪)</label>
+      <input name="price_yearly" type="number" value="{int(d.get('price_yearly',0) or 0)}" min="0" />
+      <label>מקסימום עמדות (0 = ללא הגבלה)</label>
+      <input name="max_stations" type="number" value="{int(d.get('max_stations',0) or 0)}" min="0" />
+      <label>תיאור קצר</label>
+      <input name="description" value="{html.escape(str(d.get('description','')))}" />
+      <label>פיצ'רים (מופרדים בפסיק)</label>
+      <textarea name="features" rows="3">{html.escape(str(d.get('features','')))}</textarea>
+      <label>סדר מיון</label>
+      <input name="sort_order" type="number" value="{int(d.get('sort_order',0) or 0)}" />
+      <div style="margin-top:10px;">
+        <label><input type="checkbox" name="is_active" value="1" {checked} /> פעיל</label>
+      </div>
+      <div style="margin-top:20px; display:flex; gap:10px;">
+        <button type="submit" class="btn-green">שמירה</button>
+        <a href="/admin/pricing" class="btn-gray" style="text-decoration:none;">ביטול</a>
+      </div>
+    </form>
+    """
+    return _super_admin_shell("עריכת מסלול", body, request)
+
+
+@app.post("/admin/pricing/save", response_class=HTMLResponse)
+def admin_pricing_save(
+    request: Request,
+    plan_id: int = Form(default=0),
+    code: str = Form(default=''),
+    name: str = Form(default=''),
+    price_monthly: float = Form(default=0),
+    price_yearly: float = Form(default=0),
+    max_stations: int = Form(default=0),
+    description: str = Form(default=''),
+    features: str = Form(default=''),
+    sort_order: int = Form(default=0),
+    is_active: str = Form(default=''),
+    admin_key: str = ''
+) -> Response:
+    guard = _admin_require(request, admin_key)
+    if guard: return guard
+    _ensure_pricing_plans_table()
+    active = 1 if is_active else 0
+    conn = _db()
+    try:
+        cur = conn.cursor()
+        if plan_id and plan_id > 0:
+            cur.execute(_sql_placeholder(
+                'UPDATE pricing_plans SET code=?, name=?, price_monthly=?, price_yearly=?, max_stations=?, description=?, features=?, is_active=?, sort_order=? WHERE id=?'),
+                (code.strip(), name.strip(), price_monthly, price_yearly, max_stations, description.strip(), features.strip(), active, sort_order, plan_id))
+        else:
+            cur.execute(_sql_placeholder(
+                'INSERT INTO pricing_plans (code,name,price_monthly,price_yearly,max_stations,description,features,is_active,sort_order) VALUES (?,?,?,?,?,?,?,?,?)'),
+                (code.strip(), name.strip(), price_monthly, price_yearly, max_stations, description.strip(), features.strip(), active, sort_order))
+        conn.commit()
+    finally:
+        conn.close()
+    return RedirectResponse(url="/admin/pricing", status_code=302)
+
 
 def _get_tenant_counts(tenant_id: str) -> Dict[str, int]:
     try:
@@ -13684,7 +13921,13 @@ def admin_institution_edit(request: Request, tenant_id: str, admin_key: str = ''
       <input name="phone" value="{html.escape(str(d['phone'] or ''))}" />
       
       <label>מסלול (Plan)</label>
-      <input name="plan" value="{html.escape(str(d['plan'] or ''))}" />
+      <select name="plan" style="padding:8px; border:1px solid #ddd; border-radius:4px; width:100%; margin-bottom:10px;">
+        <option value="basic" {"selected" if str(d['plan'] or '')=="basic" else ""}>Basic — בסיסי</option>
+        <option value="extended" {"selected" if str(d['plan'] or '')=="extended" else ""}>Extended — מורחב</option>
+        <option value="unlimited" {"selected" if str(d['plan'] or '')=="unlimited" else ""}>Unlimited — ללא הגבלה</option>
+        <option value="trial" {"selected" if str(d['plan'] or '')=="trial" else ""}>Trial — ניסיון</option>
+        <option value="custom" {"selected" if str(d['plan'] or '')=="custom" else ""}>Custom — מותאם</option>
+      </select>
       
       <div style="margin-top:20px; display:flex; gap:10px;">
         <button type="submit" class="btn-green">שמירה</button>
