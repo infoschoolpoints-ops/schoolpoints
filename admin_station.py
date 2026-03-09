@@ -266,25 +266,11 @@ class AdminStation:
     def __init__(self, root, license_manager=None):
         self.root = root
         self.root.title("עמדת ניהול - מערכת ניקוד")
-        try:
-            # מניעת הבהוב חלונות "ריקים" בתחילת טעינה – נסתיר ויזואלית את ה-root
-            # (לא withdraw כדי שחלונות setup/transient יוצגו כראוי)
-            self.root.attributes('-alpha', 0.0)
-        except Exception:
-            pass
-        try:
-            self.root.update_idletasks()
-        except Exception:
-            pass
-        try:
-            self.root.state('zoomed')
-        except Exception:
-            try:
-                sw = int(self.root.winfo_screenwidth() or 1360)
-                sh = int(self.root.winfo_screenheight() or 760)
-                self.root.geometry(f"{sw}x{sh}+0+0")
-            except Exception:
-                self.root.geometry("1360x760")
+
+        self._update_admin_loading(5, 'טוען הגדרות...')
+
+        # אין state('zoomed') כאן — זה מוציא חלון מוסתר מהסתרה.
+        # ה-zoomed ייקבע ב-_wait_for_full_init_and_continue אחרי התחברות.
         self.root.configure(bg='#f0f0f0')
         
         # תיקיית בסיס של האפליקציה (תומך ב-UNC)
@@ -297,8 +283,10 @@ class AdminStation:
             self.base_dir = os.path.dirname(os.path.abspath(__file__))
         
         # טעינת הגדרות והשלמת הגדרות ראשוניות (כולל תיקיית רשת משותפת)
+        self._update_admin_loading(15, 'בודק תצורה...')
         self.app_config = self.load_app_config()
         if not self.ensure_initial_setup():
+            self._dismiss_admin_loading()
             try:
                 self.root.after(100, self.root.destroy)
             except Exception:
@@ -313,20 +301,23 @@ class AdminStation:
         self._deferred_init_tasks = []
         
         # אתחול DB מידי - הכרחי לפני מסך התחברות
+        self._update_admin_loading(40, 'פותח מסד נתונים...')
         self._init_database_immediate()
         
         # הוספת משימות לביצוע מאוחר
+        self._update_admin_loading(70, 'מכין מערכת...')
         self._deferred_init_tasks.append(lambda: self._init_sync_services())
         self._deferred_init_tasks.append(lambda: self._init_license_manager())
         self._deferred_init_tasks.append(lambda: self._init_background_services())
 
-        # הסתרה מיידית של חלון השורש כדי למנוע הבהוב/חלון רגעי לפני מסך ההתחברות
+        # root נשאר מוסתר — חלון הטעינה/התחברות הוא ה-Toplevel שנוצר ב-main()
         try:
             self.root.withdraw()
         except Exception:
             pass
 
-        # הצגת מסך התחברות
+        # הצגת מסך התחברות (ממיר את חלון הטעינה למסך התחברות)
+        self._update_admin_loading(100, 'מוכן!')
         self.show_login_screen()
         
         # הפעלת משימות מדוחות ברקע
@@ -339,6 +330,31 @@ class AdminStation:
                 self.root.after(i * 100, task)  # הפרשה של 100ms בין משימות
             except Exception as e:
                 print(f"Error scheduling deferred task {i}: {e}")
+
+    def _update_admin_loading(self, percent, status_text=''):
+        """עדכון חלון הטעינה — טבעת התקדמות + אחוזים + סטטוס"""
+        try:
+            ld = getattr(self.root, '_sp_admin_loading', None)
+            if not ld:
+                return
+            extent = -int(360 * min(percent, 100) / 100)
+            ld['canvas'].itemconfigure(ld['arc'], extent=extent)
+            ld['canvas'].itemconfigure(ld['pct'], text=f'{int(percent)}%')
+            if status_text:
+                ld['status'].config(text=status_text)
+            ld['window'].update()
+        except Exception:
+            pass
+
+    def _dismiss_admin_loading(self):
+        """הסרת תוכן חלון הטעינה (החלון עצמו נשאר — ישמש למסך התחברות)"""
+        try:
+            ld = getattr(self.root, '_sp_admin_loading', None)
+            if ld and ld.get('frame'):
+                ld['frame'].destroy()
+                ld['frame'] = None
+        except Exception:
+            pass
 
     def _init_database_immediate(self):
         """אתחול מסד נתונים מידי - הכרחי לפני התחברות"""
@@ -1385,6 +1401,12 @@ class AdminStation:
                         setattr(self, attr, None)
                     except Exception:
                         pass
+
+            # הסתרת root מיידית כדי למנוע הבזק חלון ריק
+            try:
+                self.root.withdraw()
+            except Exception:
+                pass
 
             # ניקוי ה-UI הראשי
             for child in self.root.winfo_children():
@@ -23121,34 +23143,52 @@ class AdminStation:
             pass
     
     def show_login_screen(self):
-        """מסך התחברות עם כרטיס"""
+        """מסך התחברות עם כרטיס — שימוש חוזר בחלון הטעינה (אם קיים)"""
         try:
             self._login_active = True
         except Exception:
             pass
-        try:
-            # בזמן התחברות נצמצם את הצגת החלון הראשי כדי למנוע הבהוב קצר בפינה.
-            # לא נשתמש ב-withdraw לפני יצירת ה-Toplevel, כי ב-Windows זה עלול למנוע ממנו להופיע.
-            self.root.attributes('-alpha', 0.0)
-        except Exception:
-            pass
-        # יצירת חלון התחברות — עיצוב כמו מסך הטעינה
-        login_window = tk.Toplevel(self.root)
+
+        # --- שימוש חוזר בחלון הטעינה שנוצר ב-main() (רק אם עדיין קיים) ---
+        ld = getattr(self.root, '_sp_admin_loading', None)
+        reuse = False
+        if ld and ld.get('window'):
+            try:
+                reuse = ld['window'].winfo_exists()
+            except Exception:
+                reuse = False
+        if reuse:
+            login_window = ld['window']
+            # הסרת תוכן הטעינה
+            self._dismiss_admin_loading()
+        else:
+            # fallback: יצירת חלון חדש (גם בהחלף משתמש)
+            login_window = tk.Toplevel(self.root)
+            try:
+                import sys as _sys
+                _bd = getattr(_sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+                for _ip in [os.path.join(_bd, 'icons', 'admin.ico'),
+                            os.path.join(os.path.dirname(_bd), 'icons', 'admin.ico')]:
+                    if _ip and os.path.exists(_ip):
+                        login_window.iconbitmap(_ip)
+                        break
+            except Exception:
+                pass
+
         login_window.title("התחברות - עמדת ניהול")
-        login_window.geometry("500x350")
         login_window.configure(bg='#2c3e50')
         login_window.resizable(False, False)
         login_window.overrideredirect(False)
-        keep_topmost = True
+        # *** אין topmost קבוע — חלונות אחרים יכולים לכסות ***
         try:
-            login_window.attributes('-topmost', True)
+            login_window.attributes('-topmost', False)
         except Exception:
             pass
         try:
             login_window.transient(None)
         except Exception:
             pass
-        # בשחזור מהמזעור, נחזיר focus + topmost כדי ללכוד קלט כרטיס
+        # בשחזור מהמזעור, נחזיר focus כדי ללכוד קלט כרטיס
         def _on_login_deiconify(event):
             try:
                 if login_window.state() != 'iconic':
@@ -23157,19 +23197,18 @@ class AdminStation:
             except Exception:
                 pass
         login_window.bind('<Map>', _on_login_deiconify)
-        
+
         # מרכוז החלון
+        _ww, _wh = 500, 380
         try:
             login_window.update_idletasks()
             sw = login_window.winfo_screenwidth()
             sh = login_window.winfo_screenheight()
-            x = (sw - 500) // 2
-            y = (sh - 350) // 2
-            login_window.geometry(f"500x350+{x}+{y}")
+            login_window.geometry(f"{_ww}x{_wh}+{(sw - _ww) // 2}+{(sh - _wh) // 2}")
         except Exception:
-            pass
-        
-        # כעת, אחרי שחלון ההתחברות קיים, אפשר להסתיר לגמרי את ה-root
+            login_window.geometry(f"{_ww}x{_wh}")
+
+        # root נשאר מוסתר
         try:
             self.root.withdraw()
         except Exception:
@@ -23237,10 +23276,6 @@ class AdminStation:
                     'name': 'מאסטר אוניברסלי',
                     'is_admin': 1,
                 }
-                try:
-                    keep_topmost = False
-                except Exception:
-                    pass
                 login_window.destroy()
                 self.continue_init()
                 return
@@ -23275,10 +23310,6 @@ class AdminStation:
             if teacher:
                 # מורה נמצא - התחבר
                 self.current_teacher = teacher
-                try:
-                    keep_topmost = False
-                except Exception:
-                    pass
                 login_window.destroy()
                 try:
                     self._login_active = False
@@ -23301,10 +23332,6 @@ class AdminStation:
         def on_login_close():
             """כשסוגרים את חלון ההתחברות - סוגרים את כל התוכנה"""
             try:
-                keep_topmost = False
-            except Exception:
-                pass
-            try:
                 login_window.destroy()
             except Exception:
                 pass
@@ -23324,97 +23351,27 @@ class AdminStation:
         login_window.bind('<Return>', on_enter)
         login_window.focus_force()
 
-        # ב-Windows לפעמים קליק ראשון לא נותן פוקוס לחלון. נבצע "גניבת פוקוס" חד-פעמית.
-        _one_click_focus_done = {'done': False}
+        # --- העלאה לפרונט חד-פעמית (בלי topmost קבוע) ---
+        _focus_done = {'done': False}
 
-        def _one_click_focus(_e=None):
-            if _one_click_focus_done.get('done'):
+        def _do_one_time_focus():
+            """פוקוס חד-פעמי עם קליק WinAPI — ללא topmost קבוע"""
+            if _focus_done.get('done'):
                 return
-            _one_click_focus_done['done'] = True
+            _focus_done['done'] = True
             try:
                 login_window.deiconify()
-            except Exception:
-                pass
-            try:
                 login_window.lift()
-            except Exception:
-                pass
-            try:
-                login_window.attributes('-topmost', True)
-            except Exception:
-                pass
-            try:
-                login_window.focus_force()
-            except Exception:
-                pass
-
-            def _restore_topmost():
-                if keep_topmost:
-                    return
-                try:
-                    login_window.attributes('-topmost', False)
-                except Exception:
-                    pass
-
-            try:
-                login_window.after(250, _restore_topmost)
-            except Exception:
-                pass
-
-        try:
-            login_window.bind('<Button-1>', _one_click_focus)
-        except Exception:
-            pass
-        try:
-            def _on_login_map(_e=None):
-                # בטעינת החלון (Map) נרצה רק להרים ולתת focus,
-                # בלי "לשרוף" את הדגל שמאפשר לבצע קליק WinAPI מתוזמן.
-                try:
-                    login_window.deiconify()
-                except Exception:
-                    pass
-                try:
-                    login_window.lift()
-                except Exception:
-                    pass
-                try:
-                    login_window.focus_force()
-                except Exception:
-                    pass
-                try:
-                    if keep_topmost:
-                        login_window.attributes('-topmost', True)
-                except Exception:
-                    pass
-
-            login_window.bind('<Map>', _on_login_map)
-        except Exception:
-            pass
-
-        def _initial_focus_once():
-            # העתקה של הגישה מעמדה ציבורית (ללא קליק אמיתי): topmost לזמן קצר + focus_force
-            if _one_click_focus_done.get('done'):
-                return
-            _one_click_focus_done['done'] = True
-            try:
-                login_window.deiconify()
-            except Exception:
-                pass
-            try:
-                login_window.lift()
-            except Exception:
-                pass
-            try:
-                login_window.attributes('-topmost', True)
-            except Exception:
-                pass
-            try:
                 login_window.focus_force()
                 login_window.update_idletasks()
             except Exception:
                 pass
-
-            # WinAPI fallback (Windows לעיתים חוסם focus_force): ננסה להביא ל-foreground בכוח
+            # topmost לרגע קצר בלבד כדי לתפוס פוקוס, ואז כיבוי
+            try:
+                login_window.attributes('-topmost', True)
+            except Exception:
+                pass
+            # WinAPI: SetForegroundWindow + קליק עכבר אמיתי
             try:
                 import ctypes
                 try:
@@ -23422,88 +23379,59 @@ class AdminStation:
                 except Exception:
                     hwnd = 0
                 if hwnd:
-                    try:
-                        user32 = ctypes.windll.user32
-                        try:
-                            user32.ShowWindow(hwnd, 5)  # SW_SHOW
-                        except Exception:
-                            pass
-                        try:
-                            user32.SetForegroundWindow(hwnd)
-                        except Exception:
-                            pass
-                        try:
-                            user32.SetFocus(hwnd)
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            # קליק עכבר אמיתי + הזזת הסמן (WinAPI) כדי ש-Windows יתייחס לחלון כחלון פעיל
-            try:
-                import ctypes
-                try:
-                    login_window.update_idletasks()
-                    try:
-                        x0 = int(login_window.winfo_rootx() or 0)
-                        y0 = int(login_window.winfo_rooty() or 0)
-                        ww = int(login_window.winfo_width() or login_window.winfo_reqwidth() or 500)
-                        wh = int(login_window.winfo_height() or login_window.winfo_reqheight() or 320)
-                    except Exception:
-                        x0, y0, ww, wh = 0, 0, 500, 320
-                    cx = int(x0) + (int(ww) // 2)
-                    cy = int(y0) + (int(wh) // 2)
-
                     user32 = ctypes.windll.user32
-                    user32.SetCursorPos(int(cx), int(cy))
-                    MOUSEEVENTF_LEFTDOWN = 0x0002
-                    MOUSEEVENTF_LEFTUP = 0x0004
                     try:
-                        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-                        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                        user32.ShowWindow(hwnd, 5)
                     except Exception:
                         pass
+                    try:
+                        user32.SetForegroundWindow(hwnd)
+                    except Exception:
+                        pass
+                login_window.update_idletasks()
+                try:
+                    x0 = int(login_window.winfo_rootx() or 0)
+                    y0 = int(login_window.winfo_rooty() or 0)
+                    ww = int(login_window.winfo_width() or 500)
+                    wh = int(login_window.winfo_height() or 380)
                 except Exception:
-                    pass
+                    x0, y0, ww, wh = 0, 0, 500, 380
+                cx, cy = x0 + ww // 2, y0 + wh // 2
+                user32 = ctypes.windll.user32
+                user32.SetCursorPos(int(cx), int(cy))
+                user32.mouse_event(0x0002, 0, 0, 0, 0)
+                user32.mouse_event(0x0004, 0, 0, 0, 0)
             except Exception:
                 pass
-
-            def _restore_topmost():
-                if keep_topmost:
-                    return
+            # כיבוי topmost אחרי 500ms — מכאן חלון רגיל
+            def _remove_topmost():
                 try:
                     login_window.attributes('-topmost', False)
                 except Exception:
                     pass
-
             try:
-                login_window.after(1000, _restore_topmost)
+                login_window.after(500, _remove_topmost)
             except Exception:
                 pass
 
-        # מרכז את חלון ההתחברות אחרי שה-UI נבנה (כדי שלא יזוז/ייצא מהמרכז)
+        try:
+            login_window.bind('<Button-1>', lambda _e: _do_one_time_focus())
+        except Exception:
+            pass
+
+        # מרכז את חלון ההתחברות אחרי שה-UI נבנה
         try:
             login_window.update_idletasks()
-            w = max(450, int(login_window.winfo_reqwidth() or 450))
-            h = max(300, int(login_window.winfo_reqheight() or 300))
             sw = int(login_window.winfo_screenwidth() or 1360)
             sh = int(login_window.winfo_screenheight() or 760)
-            x = max(0, (sw // 2) - (w // 2))
-            y = max(0, (sh // 2) - (h // 2))
-            login_window.geometry(f'{w}x{h}+{x}+{y}')
-            try:
-                login_window.lift()
-                login_window.focus_force()
-            except Exception:
-                pass
+            login_window.geometry(f'{_ww}x{_wh}+{(sw - _ww) // 2}+{(sh - _wh) // 2}')
+            login_window.lift()
+            login_window.focus_force()
         except Exception:
             pass
 
         try:
-            # פעם אחת בלבד אחרי שהכול כבר הוצג וממורכז
-            login_window.after(200, _initial_focus_once)
+            login_window.after(300, _do_one_time_focus)
         except Exception:
             pass
         
@@ -24736,7 +24664,7 @@ def _acquire_single_instance():
 
 
 def main():
-    """הפעלה עם splash screen"""
+    """הפעלה עם חלון טעינה רציף"""
     try:
         import sp_logger
         sp_logger.install()
@@ -24748,12 +24676,13 @@ def main():
     # מניעת פתיחות כפולות
     if not _acquire_single_instance():
         return
-    
-    # יצירת חלון ראשי עם תצורה מתאימה
+
+    # יצירת חלון ראשי (נשאר מוסתר - נשמש אותו רק אחרי התחברות)
     root = tk.Tk()
+    candidates = []
     try:
-        import sys
-        base_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        import sys as _sys
+        base_dir = getattr(_sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
         candidates = [
             os.path.join(base_dir, 'icons', 'admin.ico'),
             os.path.join(os.path.dirname(base_dir), 'icons', 'admin.ico'),
@@ -24764,26 +24693,96 @@ def main():
                 break
     except Exception:
         pass
-    
-    # הסתרת החלון הראשי לפני ה-splash screen
     root.withdraw()
     _apply_tk_scaling(root)
-    
-    # פונקציה להפעלת התוכנה הראשית
-    def run_main_app():
+
+    # --- חלון טעינה מיידי (אותו חלון ישמש גם למסך ההתחברות) ---
+    try:
+        _lw = tk.Toplevel(root)
+        _lw.title("עמדת ניהול - טוען...")
+        _lw.configure(bg='#16213e')
+        _lw.resizable(False, False)
+        _lw.overrideredirect(False)
         try:
-            app = AdminStation(root)
-            root.mainloop()
-        except Exception as e:
-            print(f"Error starting main app: {e}")
+            for p in candidates:
+                if p and os.path.exists(p):
+                    _lw.iconbitmap(p)
+                    break
+        except Exception:
+            pass
+
+        _lw.update_idletasks()
+        _sw = _lw.winfo_screenwidth()
+        _sh = _lw.winfo_screenheight()
+        _ww, _wh = 500, 420
+        _lw.geometry(f"{_ww}x{_wh}+{(_sw - _ww) // 2}+{(_sh - _wh) // 2}")
+
+        _lf = tk.Frame(_lw, bg='#16213e')
+        _lf.pack(expand=True, fill='both')
+
+        _lc = tk.Frame(_lf, bg='#16213e')
+        _lc.place(relx=0.5, rely=0.40, anchor='center')
+
+        _sz, _pd = 130, 12
+        _cv = tk.Canvas(_lc, width=_sz, height=_sz, bg='#16213e', highlightthickness=0)
+        _cv.pack(pady=(0, 15))
+        _cv.create_oval(_pd, _pd, _sz - _pd, _sz - _pd, outline='#2d3a5e', width=7)
+        _arc = _cv.create_arc(_pd, _pd, _sz - _pd, _sz - _pd,
+                              start=90, extent=0, outline='#3498db', width=7, style='arc')
+        _pct = _cv.create_text(_sz // 2, _sz // 2, text='0%',
+                               font=('Arial', 20, 'bold'), fill='white')
+
+        tk.Label(_lc, text='\U0001F393', font=('Arial', 44),
+                 bg='#16213e', fg='white').pack(pady=(0, 2))
+        tk.Label(_lc, text='מערכת ניהול נקודות', font=('Arial', 20, 'bold'),
+                 bg='#16213e', fg='white').pack(pady=(0, 10))
+        _st = tk.Label(_lc, text='מאתחל מערכת...', font=('Arial', 12),
+                       bg='#16213e', fg='#8899aa')
+        _st.pack(pady=5)
+
+        root._sp_admin_loading = {
+            'window': _lw, 'frame': _lf, 'canvas': _cv,
+            'arc': _arc, 'pct': _pct, 'status': _st,
+            'sz': _sz, 'pd': _pd,
+        }
+        _lw.update()
+
+        # — העלאה לפרונט חד-פעמית עם קליק WinAPI —
+        def _initial_focus():
             try:
-                root.destroy()
-            except:
+                _lw.deiconify()
+                _lw.lift()
+                _lw.focus_force()
+            except Exception:
                 pass
-    
-    # הפעלת splash screen ואז התוכנה הראשית
-    from splash_screen import show_splash_and_run
-    show_splash_and_run(run_main_app, title="מערכת ניהול נקודות", init_time=1)
+            try:
+                import ctypes
+                _lw.update_idletasks()
+                _x0 = int(_lw.winfo_rootx() or 0)
+                _y0 = int(_lw.winfo_rooty() or 0)
+                _cw = int(_lw.winfo_width() or _ww)
+                _ch = int(_lw.winfo_height() or _wh)
+                cx, cy = _x0 + _cw // 2, _y0 + _ch // 2
+                user32 = ctypes.windll.user32
+                user32.SetCursorPos(int(cx), int(cy))
+                user32.mouse_event(0x0002, 0, 0, 0, 0)
+                user32.mouse_event(0x0004, 0, 0, 0, 0)
+            except Exception:
+                pass
+
+        _lw.after(200, _initial_focus)
+    except Exception:
+        pass
+
+    try:
+        app = AdminStation(root)
+        root.mainloop()
+    except Exception as e:
+        print(f"Error starting main app: {e}")
+        try:
+            root.destroy()
+        except Exception:
+            pass
 
 
 def main_no_splash():

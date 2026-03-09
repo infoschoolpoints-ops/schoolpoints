@@ -128,17 +128,17 @@ def web_messages(request: Request):
                 }
                 
                 list.innerHTML = data.items.map(item => `
-                    <div style="background:rgba(255,255,255,0.05); padding:10px; margin-bottom:10px; border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
-                        <div>
-                            <div style="font-weight:bold;">${item.text || item.message || '(תמונה)'}</div>
-                            <div style="font-size:12px; opacity:0.7;">
+                    <div style="background:#f5f7fa; padding:12px; margin-bottom:8px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; border:1px solid #e8ecf0;">
+                        <div style="display:flex; gap:5px;">
+                            <button class="blue" style="padding:5px 10px; font-size:12px;" onclick="edit('${type}', ${item.id})">ערוך</button>
+                            <button style="padding:5px 10px; font-size:12px; background:#e74c3c; border:none; color:#fff; border-radius:6px; cursor:pointer;" onclick="del('${type}', ${item.id})">מחק</button>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-weight:bold; color:#2c3e50;">${item.text || item.message || '(תמונה)'}</div>
+                            <div style="font-size:12px; color:#7f8c8d;">
                                 ${item.is_active ? '<span style="color:#2ecc71">פעיל</span>' : '<span style="color:#e74c3c">לא פעיל</span>'}
                                 ${item.image_path ? ' | כולל תמונה' : ''}
                             </div>
-                        </div>
-                        <div style="display:flex; gap:5px;">
-                            <button class="blue" style="padding:5px 10px; font-size:12px;" onclick="edit('${type}', ${item.id})">ערוך</button>
-                            <button class="red" style="padding:5px 10px; font-size:12px; background:#e74c3c; border:none;" onclick="del('${type}', ${item.id})">מחק</button>
                         </div>
                     </div>
                 `).join('');

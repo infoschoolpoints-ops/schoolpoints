@@ -8,6 +8,8 @@ from ..ui import basic_web_shell
 from ..auth import web_require_admin_teacher, web_require_teacher, web_tenant_from_cookie
 from ..db import tenant_db_connection, sql_placeholder, integrity_errors
 from ..config import USE_POSTGRES
+from .upgrades_page import upgrades_html
+from .purchases_page import purchases_html
 from ..models import GenericSettingPayload
 from ..sync_logic import record_sync_event
 
@@ -354,14 +356,8 @@ def web_display_settings(request: Request):
 
     html_content = f"""
     <div style="max-width:800px; margin:0 auto;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:10px;">
+      <div style="margin-bottom:20px;">
         <h2 style="margin:0;">הגדרות תצוגה</h2>
-        <div class="actionbar" style="display:flex; gap:10px; flex-wrap:wrap;">
-          <a class="blue" href="/web/colors" style="padding:6px 12px; font-size:14px; text-decoration:none;">🎨 צבעים</a>
-          <a class="blue" href="/web/sounds" style="padding:6px 12px; font-size:14px; text-decoration:none;">🔊 צלילים</a>
-          <a class="blue" href="/web/coins" style="padding:6px 12px; font-size:14px; text-decoration:none;">🪙 מטבעות</a>
-          <a class="blue" href="/web/holidays" style="padding:6px 12px; font-size:14px; text-decoration:none;">📅 חגים</a>
-        </div>
       </div>
 
       <div class="card" style="padding:24px;">
@@ -1285,17 +1281,7 @@ def web_holidays(request: Request):
 def web_upgrades(request: Request):
     guard = web_require_admin_teacher(request)
     if guard: return guard
-    
-    tiles = [
-        ('/web/sounds', '🔊', 'צלילים'),
-        ('/web/colors', '🎨', 'צבעים'),
-        ('/web/coins', '🪙', 'מטבעות ויהלומים'),
-        ('/web/goals', '🎯', 'יעדים'),
-        ('/web/bonuses', '🎁', 'בונוסים'),
-    ]
-    grid = ''.join(f'<a href="{u}" style="display:block;padding:24px;background:#fff;border-radius:12px;border:1px solid #eee;text-align:center;text-decoration:none;"><div style="font-size:36px;margin-bottom:10px;">{ic}</div><div style="font-weight:700;color:#2c3e50;font-size:16px;">{lb}</div></a>' for u,ic,lb in tiles)
-    html_content = f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px;">{grid}</div>'
-    return basic_web_shell("שדרוגים", html_content, request=request)
+    return basic_web_shell("צלילים, צבעים ומטבעות", upgrades_html(), request=request)
 
 @router.get("/web/special-bonus", response_class=HTMLResponse)
 def web_special_bonus(request: Request):
@@ -2052,26 +2038,7 @@ def web_settings_hub(request: Request):
 def web_purchases(request: Request):
     guard = web_require_admin_teacher(request)
     if guard: return guard
-    html_content = """
-    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
-      <div class="form-group" style="margin-bottom:15px;">
-        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
-          <input type="checkbox" id="purch-enabled" style="width:18px; height:18px;"> חנות פעילה
-        </label>
-      </div>
-      <div class="form-group" style="margin-bottom:15px;">
-        <label style="display:block; margin-bottom:5px; font-weight:600;">מינימום נקודות</label>
-        <input type="number" id="purch-min" min="0" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
-      </div>
-      <button class="green" onclick="savePurch()">שמירה</button>
-    </div>
-    <script>
-      async function loadPurch(){try{const r=await fetch('/api/settings/purchases');const d=await r.json();document.getElementById('purch-enabled').checked=!!d.enabled;document.getElementById('purch-min').value=d.min_points||0;}catch(e){}}
-      async function savePurch(){await fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'purchases',value:{enabled:document.getElementById('purch-enabled').checked,min_points:parseInt(document.getElementById('purch-min').value)||0}})});alert('נשמר');}
-      loadPurch();
-    </script>
-    """
-    return basic_web_shell("קניות", html_content, request=request)
+    return basic_web_shell("ניהול קופה", purchases_html(), request=request)
 
 
 @router.get("/web/personal", response_class=HTMLResponse)

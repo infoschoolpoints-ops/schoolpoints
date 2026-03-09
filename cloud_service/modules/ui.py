@@ -56,14 +56,24 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
         .blue { background: #3498db; }
         .gray { background: #95a5a6; }
 
-        .card { color: #1f2d3a; }
+        .card {
+          color: #1f2d3a;
+          background: #ffffff;
+          border-radius: 12px;
+          border: 1px solid #e0e4e8;
+          padding: 16px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+        }
         .card input, .card select, .card textarea {
           color: #1f2d3a;
           background: #ffffff;
+          border: 1px solid #ccd0d5;
         }
         .card label, .card .form-group label { color: #2c3e50 !important; }
-        .card h2, .card h3, .card p, .card span { color: #1f2d3a; }
+        .card h2, .card h3, .card p, .card span, .card div { color: #1f2d3a; }
         .card select option { color: #1f2d3a; background: #fff; }
+        .card a { color: #2980b9; }
+        .card .ck, .card label.ck { color: #2c3e50 !important; }
 
         /* Modal dark text on white background */
         .modal { color: #1f2d3a; }
