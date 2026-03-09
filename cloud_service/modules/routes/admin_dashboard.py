@@ -38,22 +38,6 @@ def web_admin(request: Request):
           <div class="icon">👥</div>
           <div class="label">מורים</div>
         </a>
-        <a href="/web/classes" class="tile orange">
-          <div class="icon">🏫</div>
-          <div class="label">כיתות</div>
-        </a>
-        <a href="/web/import" class="tile dark">
-          <div class="icon">📥</div>
-          <div class="label">ייבוא</div>
-        </a>
-        <a href="/web/reports" class="tile cyan">
-          <div class="icon">📤</div>
-          <div class="label">ייצוא</div>
-        </a>
-        <a href="/web/upgrades" class="tile orange">
-          <div class="icon">🎁</div>
-          <div class="label">שדרוגים</div>
-        </a>
         <a href="/web/messages" class="tile purple">
           <div class="icon">💬</div>
           <div class="label">הודעות כלליות</div>
@@ -66,13 +50,9 @@ def web_admin(request: Request):
           <div class="icon">⏱️</div>
           <div class="label">בונוס זמנים</div>
         </a>
-        <a href="/web/system-settings" class="tile gray">
-          <div class="icon">⚙️</div>
-          <div class="label">הגדרות מערכת</div>
-        </a>
-        <a href="/web/display-settings" class="tile gray">
-          <div class="icon">🖥️</div>
-          <div class="label">הגדרות תצוגה</div>
+        <a href="/web/upgrades" class="tile orange">
+          <div class="icon">🎨</div>
+          <div class="label">שדרוגים</div>
         </a>
         <a href="/web/purchases" class="tile indigo">
           <div class="icon">🛒</div>
@@ -94,17 +74,29 @@ def web_admin(request: Request):
           <div class="icon">🌙</div>
           <div class="label">מצב שקט</div>
         </a>
-        <a href="/web/settings" class="tile dark">
-          <div class="icon">🏢</div>
-          <div class="label">הגדרות עמדת ניהול</div>
+        <a href="/web/settings" class="tile gray">
+          <div class="icon">⚙️</div>
+          <div class="label">הגדרות</div>
+        </a>
+        <a href="/web/import" class="tile dark">
+          <div class="icon">📥</div>
+          <div class="label">ייבוא</div>
+        </a>
+        <a href="/web/reports" class="tile cyan">
+          <div class="icon">📤</div>
+          <div class="label">ייצוא / דוחות</div>
         </a>
         """
     
-    # Personal Area (Everyone)
+    # Personal Area & Guide (Everyone)
     tiles_html += """
     <a href="/web/personal" class="tile dark">
       <div class="icon">👤</div>
       <div class="label">אזור אישי</div>
+    </a>
+    <a href="/web/guide" class="tile blue">
+      <div class="icon">📘</div>
+      <div class="label">מדריך</div>
     </a>
     """
 
