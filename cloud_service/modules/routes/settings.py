@@ -96,7 +96,7 @@ def api_time_bonus_list(request: Request) -> Dict[str, Any]:
         cur = conn.cursor()
         cur.execute(
             'SELECT id, name, group_name, start_time, end_time, bonus_points, is_active, '
-            'is_general, classes, days_of_week '
+            'is_general, classes, days_of_week, sound_key, is_shown_public '
             'FROM time_bonus_schedules ORDER BY group_name, start_time'
         )
         rows = cur.fetchall() or []
@@ -114,6 +114,8 @@ def api_time_bonus_list(request: Request) -> Dict[str, Any]:
                 'is_general': int(rr.get('is_general') or 1),
                 'classes': rr.get('classes') or '',
                 'days_of_week': rr.get('days_of_week') or '',
+                'sound_key': rr.get('sound_key') or '',
+                'is_shown_public': int(rr.get('is_shown_public') or 1),
             })
         return {'rules': rules}
     finally:
@@ -199,37 +201,50 @@ def api_time_bonus_save(request: Request, payload: Dict[str, Any] = Body(...)) -
 
             if not name:
                 continue
+            group_name = str(rule.get('group_name') or (existing.get('group_name') if existing else '') or '').strip()
+            classes = str(rule.get('classes') or (existing.get('classes') if existing else '') or '').strip()
+            days_of_week = str(rule.get('days_of_week') or (existing.get('days_of_week') if existing else '') or '').strip()
+            sound_key = str(rule.get('sound_key') or (existing.get('sound_key') if existing else '') or '').strip()
+            is_general_val = rule.get('is_general')
+            if is_general_val is None and existing is not None:
+                is_general_val = existing.get('is_general')
+            is_general = int(is_general_val if is_general_val is not None else 1)
+            is_shown_public_val = rule.get('is_shown_public')
+            if is_shown_public_val is None and existing is not None:
+                is_shown_public_val = existing.get('is_shown_public')
+            is_shown_public = int(is_shown_public_val if is_shown_public_val is not None else 1)
+
             if rid > 0 and existing is not None:
                 cur.execute(
                     sql_placeholder(
                         'UPDATE time_bonus_schedules '
-                        'SET name = ?, start_time = ?, end_time = ?, bonus_points = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP '
-                        'WHERE id = ?'
+                        'SET name=?, group_name=?, start_time=?, end_time=?, bonus_points=?, is_active=?, '
+                        'is_general=?, classes=?, days_of_week=?, sound_key=?, is_shown_public=?, updated_at=CURRENT_TIMESTAMP '
+                        'WHERE id=?'
                     ),
-                    (name, start_time, end_time, points, is_active, rid)
+                    (name, group_name, start_time, end_time, points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public, rid)
                 )
                 keep_ids.add(rid)
-                saved_rules.append({'id': rid, 'name': name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active})
+                saved_rules.append({'id': rid, 'name': name, 'group_name': group_name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'sound_key': sound_key, 'is_shown_public': is_shown_public})
                 continue
 
-            group_name = (existing.get('group_name') if existing else None)
             if USE_POSTGRES:
                 cur.execute(
-                    'INSERT INTO time_bonus_schedules (name, group_name, start_time, end_time, bonus_points, is_active) '
-                    'VALUES (%s, %s, %s, %s, %s, %s) RETURNING id',
-                    (name, group_name, start_time, end_time, points, is_active)
+                    'INSERT INTO time_bonus_schedules (name, group_name, start_time, end_time, bonus_points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public) '
+                    'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
+                    (name, group_name, start_time, end_time, points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public)
                 )
                 row = cur.fetchone()
                 new_id = row['id'] if isinstance(row, dict) else row[0]
             else:
                 cur.execute(
-                    'INSERT INTO time_bonus_schedules (name, group_name, start_time, end_time, bonus_points, is_active) '
-                    'VALUES (?, ?, ?, ?, ?, ?)',
-                    (name, group_name, start_time, end_time, points, is_active)
+                    'INSERT INTO time_bonus_schedules (name, group_name, start_time, end_time, bonus_points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public) '
+                    'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                    (name, group_name, start_time, end_time, points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public)
                 )
                 new_id = cur.lastrowid
             keep_ids.add(int(new_id or 0))
-            saved_rules.append({'id': int(new_id or 0), 'name': name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active})
+            saved_rules.append({'id': int(new_id or 0), 'name': name, 'group_name': group_name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'sound_key': sound_key, 'is_shown_public': is_shown_public})
 
         delete_ids = [rid for rid in existing_map.keys() if rid not in keep_ids]
         if delete_ids:
@@ -483,11 +498,16 @@ def web_colors(request: Request):
     <script>
       let ranges = [];
 
+      let fullColorSettings = {};
       async function loadRanges() {
         try {
           const res = await fetch('/api/settings/color_settings');
           const data = await res.json();
-          ranges = Array.isArray(data.ranges) ? data.ranges : [];
+          let v = data.value;
+          if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
+          if (!v || typeof v !== 'object') v = data;
+          fullColorSettings = v;
+          ranges = Array.isArray(v.color_ranges) ? v.color_ranges : (Array.isArray(v.ranges) ? v.ranges : []);
           ranges.sort((a, b) => (a.min || 0) - (b.min || 0));
           renderRanges();
         } catch(e) {}
@@ -560,10 +580,12 @@ def web_colors(request: Request):
       }
 
       async function saveToServer() {
+        fullColorSettings.color_ranges = ranges;
+        delete fullColorSettings.ranges;
         await fetch('/api/settings/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ key: 'color_settings', value: { ranges: ranges } })
+            body: JSON.stringify({ key: 'color_settings', value: fullColorSettings })
         });
       }
 
@@ -626,12 +648,18 @@ def web_sounds(request: Request):
 
     <script>
       let sounds = [];
+      let fullCS = {};
 
       async function loadSounds() {
         try {
-          const res = await fetch('/api/settings/sound_settings');
+          const res = await fetch('/api/settings/color_settings');
           const data = await res.json();
-          sounds = Array.isArray(data.sounds) ? data.sounds : [];
+          let v = data.value;
+          if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
+          if (!v || typeof v !== 'object') v = data;
+          fullCS = v;
+          const es = v.event_sounds || {};
+          sounds = Object.entries(es).map(([k,f]) => ({event:k, file:String(f)}));
           renderSounds();
         } catch(e) {}
       }
@@ -716,10 +744,13 @@ def web_sounds(request: Request):
       }
 
       async function saveToServer() {
+        const es = {};
+        sounds.forEach(s => { if (s.event && s.file) es[s.event] = s.file; });
+        fullCS.event_sounds = es;
         await fetch('/api/settings/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ key: 'sound_settings', value: { sounds: sounds } })
+            body: JSON.stringify({ key: 'color_settings', value: fullCS })
         });
       }
 
@@ -917,12 +948,17 @@ def web_coins(request: Request):
 
     <script>
       let coins = [];
+      let fullCS2 = {};
 
       async function loadCoins() {
         try {
-          const res = await fetch('/api/settings/coins_settings');
+          const res = await fetch('/api/settings/color_settings');
           const data = await res.json();
-          coins = Array.isArray(data.coins) ? data.coins : [];
+          let v = data.value;
+          if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
+          if (!v || typeof v !== 'object') v = data;
+          fullCS2 = v;
+          coins = Array.isArray(v.coins) ? v.coins : [];
           renderCoins();
         } catch(e) {}
       }
@@ -994,10 +1030,11 @@ def web_coins(request: Request):
       }
 
       async function saveToServer() {
+        fullCS2.coins = coins;
         await fetch('/api/settings/save', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ key: 'coins_settings', value: { coins: coins } })
+            body: JSON.stringify({ key: 'color_settings', value: fullCS2 })
         });
       }
 
@@ -1166,6 +1203,15 @@ def web_holidays(request: Request):
           <label style="display:block; margin-bottom:5px; font-weight:600;">תאריך סיום</label>
           <input type="date" id="holiday-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
         </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">הודעה (אופציונלי)</label>
+          <input id="holiday-message" placeholder="הודעה שתוצג בימי החג" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div class="form-group" style="margin-bottom:15px;">
+          <label style="display:block; margin-bottom:5px; font-weight:600;">כתובת תמונה (אופציונלי)</label>
+          <input id="holiday-image" placeholder="URL של תמונת חג" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-bottom:15px;"><input type="checkbox" id="holiday-block" style="width:16px;height:16px;"> חסום סריקות בימי החג</label>
         <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
           <button class="gray" onclick="closeHolidayModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
           <button class="green" onclick="saveHoliday()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
@@ -1214,6 +1260,9 @@ def web_holidays(request: Request):
         document.getElementById('holiday-name').value = '';
         document.getElementById('holiday-start').value = '';
         document.getElementById('holiday-end').value = '';
+        document.getElementById('holiday-message').value = '';
+        document.getElementById('holiday-image').value = '';
+        document.getElementById('holiday-block').checked = false;
         document.getElementById('modal-title').textContent = 'הוספת חג';
         document.getElementById('modal-holiday').style.display = 'flex';
       }
@@ -1228,6 +1277,9 @@ def web_holidays(request: Request):
         document.getElementById('holiday-name').value = h.name || '';
         document.getElementById('holiday-start').value = h.start_date || '';
         document.getElementById('holiday-end').value = h.end_date || '';
+        document.getElementById('holiday-message').value = h.message || '';
+        document.getElementById('holiday-image').value = h.image_url || '';
+        document.getElementById('holiday-block').checked = !!h.block_scans;
         document.getElementById('modal-title').textContent = 'עריכת חג';
         document.getElementById('modal-holiday').style.display = 'flex';
       }
@@ -1240,7 +1292,12 @@ def web_holidays(request: Request):
         
         if (!name) return alert('נא להזין שם');
 
-        const newHoliday = { name, start_date: start, end_date: end };
+        const newHoliday = {
+          name, start_date: start, end_date: end,
+          message: document.getElementById('holiday-message').value,
+          image_url: document.getElementById('holiday-image').value,
+          block_scans: document.getElementById('holiday-block').checked
+        };
         
         if (idx >= 0) {
             holidays[idx] = newHoliday;
@@ -1446,29 +1503,50 @@ def web_time_bonus(request: Request):
     </div>
 
     <!-- Modal -->
-    <div id="modal-rule" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:1000;">
-      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:450px; box-shadow:0 4px 20px rgba(0,0,0,0.2); direction:rtl;">
+    <div id="modal-rule" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.5); align-items:flex-start; justify-content:center; z-index:1000; padding-top:40px;">
+      <div class="modal" style="background:#fff; padding:24px; border-radius:12px; width:90%; max-width:520px; max-height:85vh; overflow-y:auto; box-shadow:0 4px 20px rgba(0,0,0,0.2); direction:rtl;">
         <h3 id="modal-title" style="margin-top:0;">כלל בונוס זמן</h3>
         <input type="hidden" id="rule-index">
-        <div class="form-group" style="margin-bottom:15px;">
-          <label style="display:block; margin-bottom:5px; font-weight:600;">שם הכלל (לדוגמה: שחרית)</label>
+        <div style="margin-bottom:12px;">
+          <label style="display:block; margin-bottom:4px; font-weight:600;">שם הכלל</label>
           <input id="rule-name" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
         </div>
-        <div style="display:flex; gap:10px; margin-bottom:15px;">
+        <div style="margin-bottom:12px;">
+          <label style="display:block; margin-bottom:4px; font-weight:600;">שם קבוצה</label>
+          <input id="rule-group" placeholder="(אופציונלי – לקיבוץ כללים יחד)" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; gap:10px; margin-bottom:12px;">
             <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:600;">התחלה</label>
+                <label style="display:block; margin-bottom:4px; font-weight:600;">התחלה</label>
                 <input type="time" id="rule-start" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
             </div>
             <div style="flex:1;">
-                <label style="display:block; margin-bottom:5px; font-weight:600;">סיום</label>
+                <label style="display:block; margin-bottom:4px; font-weight:600;">סיום</label>
                 <input type="time" id="rule-end" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
             </div>
         </div>
-        <div class="form-group" style="margin-bottom:15px;">
-          <label style="display:block; margin-bottom:5px; font-weight:600;">תוספת נקודות</label>
+        <div style="margin-bottom:12px;">
+          <label style="display:block; margin-bottom:4px; font-weight:600;">תוספת נקודות</label>
           <input type="number" id="rule-points" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
         </div>
-        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:20px;">
+        <div style="margin-bottom:12px;">
+          <label style="display:block; margin-bottom:4px; font-weight:600;">ימים בשבוע (הפרד בפסיק, לדוגמה: 1,2,3,4,5)</label>
+          <input id="rule-days" placeholder="ריק = כל הימים" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; direction:ltr;">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="display:block; margin-bottom:4px; font-weight:600;">כיתות (הפרד בפסיק, לדוגמה: א,ב,ג)</label>
+          <input id="rule-classes" placeholder="ריק = כל הכיתות" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="display:block; margin-bottom:4px; font-weight:600;">צליל</label>
+          <input id="rule-sound" placeholder="מפתח צליל (אופציונלי)" style="width:100%; padding:8px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
+        </div>
+        <div style="display:flex; gap:16px; margin-bottom:12px; flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;"><input type="checkbox" id="rule-general" checked style="width:16px;height:16px;"> כללי (לכולם)</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;"><input type="checkbox" id="rule-public" checked style="width:16px;height:16px;"> הצג בעמדה ציבורית</label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;"><input type="checkbox" id="rule-active" checked style="width:16px;height:16px;"> פעיל</label>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
           <button class="gray" onclick="closeRuleModal()" style="padding:8px 16px; border:none; border-radius:6px; cursor:pointer;">ביטול</button>
           <button class="green" onclick="saveRule()" style="padding:8px 16px; background:#2ecc71; color:white; border:none; border-radius:6px; font-weight:600; cursor:pointer;">שמירה</button>
         </div>
@@ -1523,9 +1601,16 @@ def web_time_bonus(request: Request):
       function openRuleModal() {
         document.getElementById('rule-index').value = '-1';
         document.getElementById('rule-name').value = '';
+        document.getElementById('rule-group').value = '';
         document.getElementById('rule-start').value = '';
         document.getElementById('rule-end').value = '';
         document.getElementById('rule-points').value = '';
+        document.getElementById('rule-days').value = '';
+        document.getElementById('rule-classes').value = '';
+        document.getElementById('rule-sound').value = '';
+        document.getElementById('rule-general').checked = true;
+        document.getElementById('rule-public').checked = true;
+        document.getElementById('rule-active').checked = true;
         document.getElementById('modal-title').textContent = 'הוספת כלל';
         document.getElementById('modal-rule').style.display = 'flex';
       }
@@ -1538,9 +1623,16 @@ def web_time_bonus(request: Request):
         const r = rules[idx];
         document.getElementById('rule-index').value = idx;
         document.getElementById('rule-name').value = r.name || '';
+        document.getElementById('rule-group').value = r.group_name || '';
         document.getElementById('rule-start').value = r.start_time || '';
         document.getElementById('rule-end').value = r.end_time || '';
         document.getElementById('rule-points').value = r.points || 0;
+        document.getElementById('rule-days').value = r.days_of_week || '';
+        document.getElementById('rule-classes').value = r.classes || '';
+        document.getElementById('rule-sound').value = r.sound_key || '';
+        document.getElementById('rule-general').checked = r.is_general !== 0;
+        document.getElementById('rule-public').checked = r.is_shown_public !== 0;
+        document.getElementById('rule-active').checked = r.is_active !== 0;
         document.getElementById('modal-title').textContent = 'עריכת כלל';
         document.getElementById('modal-rule').style.display = 'flex';
       }
@@ -1555,7 +1647,16 @@ def web_time_bonus(request: Request):
         if (!name) return alert('נא להזין שם');
 
         const existingId = (idx >= 0 && rules[idx]) ? rules[idx].id : null;
-        const newRule = { id: existingId, name, start_time: start, end_time: end, points };
+        const newRule = {
+          id: existingId, name, start_time: start, end_time: end, points,
+          group_name: document.getElementById('rule-group').value.trim(),
+          days_of_week: document.getElementById('rule-days').value.trim(),
+          classes: document.getElementById('rule-classes').value.trim(),
+          sound_key: document.getElementById('rule-sound').value.trim(),
+          is_general: document.getElementById('rule-general').checked ? 1 : 0,
+          is_shown_public: document.getElementById('rule-public').checked ? 1 : 0,
+          is_active: document.getElementById('rule-active').checked ? 1 : 0
+        };
         
         if (idx >= 0) {
             rules[idx] = newRule;
@@ -1814,8 +1915,17 @@ def web_anti_spam(request: Request):
     if guard: return guard
     
     html_content = """
+    <h2 style="margin-bottom:16px;">🛡️ הגדרות אנטי-ספאם</h2>
+    <div class="card" style="padding:20px; margin-bottom:16px;">
+      <label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;margin-bottom:12px;">
+        <input type="checkbox" id="as-enabled" style="width:18px;height:18px;"> הפעל אנטי-ספאם</label>
+      <div id="as-rules"></div>
+      <button class="blue" onclick="addRule()" style="margin-top:8px;">+ הוסף כלל</button>
+      <button class="green" onclick="saveAS()" style="margin-top:8px;margin-right:8px;">שמירה</button>
+    </div>
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:20px 0;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
-      <h2>מצב שקט (חסימת סריקות)</h2>
+      <h2>חסימות סריקה (closures)</h2>
       <button class="green" onclick="openClosureModal()">+ חסימה חדשה</button>
     </div>
     
@@ -1935,10 +2045,52 @@ def web_anti_spam(request: Request):
         return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
       }
 
+      let asRules = [];
+      async function loadAS() {
+        try {
+          const r = await fetch('/api/settings/anti_spam_config');
+          const d = await r.json();
+          let v = d.value;
+          if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
+          if (!v || typeof v !== 'object') v = {};
+          document.getElementById('as-enabled').checked = !!(v.anti_spam_enabled);
+          asRules = Array.isArray(v.anti_spam_rules) ? v.anti_spam_rules : [];
+          renderAS();
+        } catch(e) {}
+      }
+      function renderAS() {
+        const c = document.getElementById('as-rules');
+        if (!asRules.length) { c.innerHTML = '<div style="color:#888;font-size:13px;">אין כללים</div>'; return; }
+        c.innerHTML = asRules.map((r,i) => `
+          <div style="background:#f5f7fa;padding:10px;border-radius:8px;margin-bottom:8px;border:1px solid #e8ecf0;">
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
+              <select onchange="asRules[${i}].type=this.value" style="padding:6px;border:1px solid #ddd;border-radius:4px;">
+                <option value="warning" ${r.type==='warning'?'selected':''}>⚠️ אזהרה</option>
+                <option value="block" ${r.type==='block'?'selected':''}>🚫 חסימה</option>
+              </select>
+              <label style="font-size:12px;">אחרי <input type="number" value="${r.count||10}" min="1" onchange="asRules[${i}].count=parseInt(this.value)||1" style="width:60px;padding:4px;border:1px solid #ddd;border-radius:4px;"> תיקופים</label>
+              <label style="font-size:12px;">בתוך <input type="number" value="${r.minutes||1}" min="1" onchange="asRules[${i}].minutes=parseInt(this.value)||1" style="width:60px;padding:4px;border:1px solid #ddd;border-radius:4px;"> דקות</label>
+              ${r.type==='block' ? '<label style="font-size:12px;">חסימה ל-<input type="number" value="'+(r.duration||60)+'" min="1" onchange="asRules['+i+'].duration=parseInt(this.value)||60" style="width:70px;padding:4px;border:1px solid #ddd;border-radius:4px;"> דקות</label>' : ''}
+              <button onclick="asRules.splice(${i},1);renderAS();" style="background:#e74c3c;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">X</button>
+            </div>
+            <input value="${esc(r.message||'')}" onchange="asRules[${i}].message=this.value" placeholder="הודעה לתלמיד" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;font-size:12px;">
+          </div>
+        `).join('');
+      }
+      function addRule() {
+        asRules.push({type:'warning',count:10,minutes:1,duration:0,message:'שים לב! אתה מתקף יותר מדי פעמים.'});
+        renderAS();
+      }
+      async function saveAS() {
+        const val = { anti_spam_enabled: document.getElementById('as-enabled').checked, anti_spam_rules: asRules };
+        await fetch('/api/settings/save', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'anti_spam_config',value:JSON.stringify(val)})});
+        alert('הגדרות אנטי-ספאם נשמרו');
+      }
+      loadAS();
       loadClosures();
     </script>
     """
-    return basic_web_shell("מצב שקט", html_content, request=request)
+    return basic_web_shell("אנטי-ספאם", html_content, request=request)
 
 @router.get('/api/settings/max-points')
 def api_max_points_get(request: Request) -> Dict[str, Any]:
@@ -2057,7 +2209,63 @@ def web_max_points(request: Request):
 
 @router.get("/web/quiet-mode", response_class=HTMLResponse)
 def web_quiet_mode(request: Request):
-    return web_anti_spam(request)
+    guard = web_require_admin_teacher(request)
+    if guard: return guard
+    html_content = """
+    <h2 style="margin-bottom:16px;">🌙 מצב שקט</h2>
+    <div class="card" style="padding:20px;">
+      <div id="qm-ranges"></div>
+      <button class="blue" onclick="addQR()" style="margin-top:8px;">+ הוסף טווח</button>
+      <button class="green" onclick="saveQM()" style="margin-top:8px;margin-right:8px;">שמירה</button>
+    </div>
+    <script>
+      let qmRanges = [];
+      async function loadQM() {
+        try {
+          const r = await fetch('/api/settings/quiet_mode_config');
+          const d = await r.json();
+          let v = d.value;
+          if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
+          if (!v || typeof v !== 'object') v = {};
+          let raw = v.quiet_mode_ranges;
+          if (typeof raw === 'string') try { raw = JSON.parse(raw); } catch(e) { raw = []; }
+          qmRanges = Array.isArray(raw) ? raw : [];
+          if (!qmRanges.length && v.quiet_mode_enabled) {
+            qmRanges = [{start: v.quiet_mode_start||'', end: v.quiet_mode_end||'', mode:'low', volume: v.quiet_mode_volume||20}];
+          }
+          renderQM();
+        } catch(e) {}
+      }
+      function renderQM() {
+        const c = document.getElementById('qm-ranges');
+        if (!qmRanges.length) { c.innerHTML = '<div style="color:#888;font-size:13px;">אין טווחי שקט מוגדרים</div>'; return; }
+        c.innerHTML = qmRanges.map((r,i) => `
+          <div style="background:#f5f7fa;padding:10px;border-radius:8px;margin-bottom:8px;border:1px solid #e8ecf0;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <label style="font-size:12px;">התחלה <input type="time" value="${r.start||''}" onchange="qmRanges[${i}].start=this.value" style="padding:4px;border:1px solid #ddd;border-radius:4px;direction:ltr;"></label>
+            <label style="font-size:12px;">סיום <input type="time" value="${r.end||''}" onchange="qmRanges[${i}].end=this.value" style="padding:4px;border:1px solid #ddd;border-radius:4px;direction:ltr;"></label>
+            <select onchange="qmRanges[${i}].mode=this.value" style="padding:4px;border:1px solid #ddd;border-radius:4px;">
+              <option value="mute" ${r.mode==='mute'?'selected':''}>השתקה מלאה</option>
+              <option value="low" ${r.mode==='low'?'selected':''}>ווליום נמוך</option>
+            </select>
+            <label style="font-size:12px;">ווליום <input type="number" value="${r.volume||20}" min="0" max="100" onchange="qmRanges[${i}].volume=parseInt(this.value)||0" style="width:60px;padding:4px;border:1px solid #ddd;border-radius:4px;"></label>
+            <button onclick="qmRanges.splice(${i},1);renderQM();" style="background:#e74c3c;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">X</button>
+          </div>
+        `).join('');
+      }
+      function addQR() {
+        qmRanges.push({start:'22:00',end:'07:00',mode:'low',volume:20});
+        renderQM();
+      }
+      async function saveQM() {
+        const val = {quiet_mode_enabled: qmRanges.length > 0, quiet_mode_ranges: JSON.stringify(qmRanges)};
+        if (qmRanges.length > 0) { val.quiet_mode_start = qmRanges[0].start; val.quiet_mode_end = qmRanges[0].end; val.quiet_mode_volume = qmRanges[0].volume; }
+        await fetch('/api/settings/save', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'quiet_mode_config',value:JSON.stringify(val)})});
+        alert('הגדרות מצב שקט נשמרו');
+      }
+      loadQM();
+    </script>
+    """
+    return basic_web_shell("מצב שקט", html_content, request=request)
 
 
 @router.get("/web/settings", response_class=HTMLResponse)
@@ -2067,10 +2275,6 @@ def web_settings_hub(request: Request):
     tiles = [
         ('/web/system-settings', '⚙', 'הגדרות מערכת'),
         ('/web/display-settings', '🖥', 'הגדרות תצוגה'),
-        ('/web/max-points', '📉', 'מגבלת ניקוד'),
-        ('/web/anti-spam', '🛡️', 'אנטי-ספאם'),
-        ('/web/quiet-mode', '🌙', 'מצב שקט'),
-        ('/web/holidays', '📅', 'חגים וחופשות'),
     ]
     grid = ''.join(f'<a href="{u}" style="display:block;padding:20px;background:#fff;border-radius:12px;border:1px solid #eee;text-align:center;text-decoration:none;"><div style="font-size:32px;margin-bottom:8px;">{ic}</div><div style="font-weight:700;color:#2c3e50;">{lb}</div></a>' for u,ic,lb in tiles)
     html_content = f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;">{grid}</div>'

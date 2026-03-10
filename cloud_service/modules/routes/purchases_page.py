@@ -47,7 +47,7 @@ CSS = '<style>' \
 '.ptbl{width:100%;border-collapse:collapse}' \
 '.ptbl th{padding:8px 10px;text-align:right;background:#f8f9fa;border-bottom:1px solid #e0e4e8;font-size:13px;color:#2c3e50;white-space:nowrap}' \
 '.ptbl td{padding:8px 10px;border-bottom:1px solid #f0f2f4;color:#2c3e50}.ptbl tr:hover{background:#f5f7fa}' \
-'.mo{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center}' \
+'.mo{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:999;align-items:flex-start;justify-content:center;padding-top:40px}' \
 '.mo.show{display:flex}' \
 '.mb{background:#fff;border-radius:12px;padding:24px;min-width:380px;max-width:520px;width:90%;max-height:80vh;overflow-y:auto;direction:rtl}' \
 '.mb h3{margin:0 0 16px;color:#2c3e50}' \
