@@ -55,6 +55,10 @@ class StudentSavePayload(BaseModel):
     points: Optional[int] = None
     private_message: Optional[str] = None
     is_free_fix_blocked: Optional[int] = None
+    hebrew_birth_day: Optional[int] = None
+    hebrew_birth_month: Optional[int] = None
+    hebrew_birth_year: Optional[int] = None
+    gender: Optional[str] = None
 
 class StudentDeletePayload(BaseModel):
     student_id: int

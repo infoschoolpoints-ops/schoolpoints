@@ -28,8 +28,9 @@ def web_students(request: Request):
         <div style="max-width:1200px; margin:0 auto;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:10px;">
                 <h2 style="margin:0;">ניהול תלמידים</h2>
-                <div style="display:flex; gap:10px;">
+                <div style="display:flex; gap:10px; flex-wrap:wrap;">
                     <button class="blue" onclick="openAdd()" id="btn-add">➕ תלמיד חדש</button>
+                    <button style="background:#e67e22;color:#fff;border:none;padding:10px 14px;border-radius:10px;font-weight:900;cursor:pointer;" onclick="openBulk()">⚡ עדכון מהיר</button>
                     <button class="gray" onclick="load()">🔄 רענן</button>
                 </div>
             </div>
@@ -104,59 +105,63 @@ def web_students(request: Request):
 
         <!-- Modal -->
         <div id="s_modal" class="modal-overlay">
-            <div class="modal-content">
+            <div class="modal-content" style="max-width:600px;">
                 <button class="modal-close" onclick="closeModal()">×</button>
                 <h3 id="s_modal_title" style="margin-top:0;">עריכת תלמיד</h3>
                 <input type="hidden" id="m_student_id">
-                
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:15px;">
-                    <div class="form-group">
-                        <label>שם פרטי</label>
-                        <input id="m_first_name" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>שם משפחה</label>
-                        <input id="m_last_name" class="form-input">
-                    </div>
+                <div style="max-height:65vh;overflow-y:auto;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="form-group"><label>שם פרטי</label><input id="m_first_name" class="form-input"></div>
+                  <div class="form-group"><label>שם משפחה</label><input id="m_last_name" class="form-input"></div>
                 </div>
-                
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:15px;">
-                    <div class="form-group">
-                        <label>כיתה</label>
-                        <input id="m_class_name" class="form-input">
-                    </div>
-                    <div class="form-group">
-                        <label>תעודת זהות</label>
-                        <input id="m_id_number" class="form-input">
-                    </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="form-group"><label>כיתה</label><input id="m_class_name" class="form-input"></div>
+                  <div class="form-group"><label>ת"ז</label><input id="m_id_number" class="form-input"></div>
                 </div>
-
-                <div class="form-group">
-                    <label>מספר כרטיס</label>
-                    <input id="m_card_number" class="form-input">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="form-group"><label>מס' כרטיס</label><input id="m_card_number" class="form-input"></div>
+                  <div class="form-group"><label>מס' סידורי</label><input type="number" id="m_serial_number" class="form-input"></div>
                 </div>
-
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:15px;">
-                    <div class="form-group">
-                        <label>נקודות</label>
-                        <input type="number" id="m_points" class="form-input">
-                    </div>
-                    <div class="form-group" style="padding-top:30px;">
-                        <label style="display:flex; align-items:center; gap:8px;">
-                            <input type="checkbox" id="m_is_free_fix_blocked" style="width:18px; height:18px;">
-                            חסום לתיקון חופשי
-                        </label>
-                    </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                  <div class="form-group"><label>נקודות</label><input type="number" id="m_points" class="form-input"></div>
+                  <div class="form-group"><label>מס'/נתיב תמונה</label><input id="m_photo_number" class="form-input"></div>
                 </div>
-
-                <div class="form-group">
-                    <label>הודעה פרטית (מוצגת לתלמיד)</label>
-                    <input id="m_private_message" class="form-input">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                  <div class="form-group"><label>מגדר</label><select id="m_gender" class="form-input"><option value="">—</option><option value="M">בן</option><option value="F">בת</option></select></div>
+                  <div class="form-group"><label>יום (עברי)</label><select id="m_hb_day" class="form-input"><option value="">—</option></select></div>
+                  <div class="form-group"><label>חודש (עברי)</label><select id="m_hb_month" class="form-input"><option value="">—</option><option value="7">תשרי</option><option value="8">חשון</option><option value="9">כסלו</option><option value="10">טבת</option><option value="11">שבט</option><option value="12">אדר</option><option value="13">אדר ב'</option><option value="1">ניסן</option><option value="2">אייר</option><option value="3">סיון</option><option value="4">תמוז</option><option value="5">אב</option><option value="6">אלול</option></select></div>
                 </div>
-
-                <div style="margin-top:20px; display:flex; justify-content:flex-end; gap:10px;">
+                <div class="form-group"><label>הודעה פרטית</label><input id="m_private_message" class="form-input"></div>
+                <label style="display:flex;align-items:center;gap:8px;margin-top:8px;"><input type="checkbox" id="m_is_free_fix_blocked" style="width:18px;height:18px;"> חסום לתיקון חופשי</label>
+                </div>
+                <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:10px;">
                     <button class="btn-gray" onclick="closeModal()">ביטול</button>
                     <button class="btn-primary" onclick="save()">שמירה</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bulk Quick Update Modal -->
+        <div id="bulk_modal" class="modal-overlay">
+            <div class="modal-content" style="max-width:480px;">
+                <button class="modal-close" onclick="closeBulk()">×</button>
+                <h3 style="margin-top:0;">⚡ עדכון מהיר (מרובה)</h3>
+                <div class="form-group" style="margin-bottom:10px;"><label>מצב</label>
+                  <select id="bk_mode" class="form-input" onchange="bkModeChanged()"><option value="class">לפי כיתה</option><option value="all_school">כל בית הספר</option><option value="serial_range">לפי טווח סידורי</option></select></div>
+                <div id="bk_class_row" class="form-group" style="margin-bottom:10px;"><label>כיתה</label><select id="bk_class" class="form-input"></select></div>
+                <div id="bk_serial_row" style="display:none;margin-bottom:10px;"><div style="display:flex;gap:10px;">
+                  <div class="form-group" style="flex:1;"><label>מסידורי</label><input type="number" id="bk_from" class="form-input"></div>
+                  <div class="form-group" style="flex:1;"><label>עד סידורי</label><input type="number" id="bk_to" class="form-input"></div>
+                </div></div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+                  <div class="form-group"><label>פעולה</label><select id="bk_op" class="form-input"><option value="add">הוסף (+)</option><option value="subtract">הורד (−)</option><option value="set">קבע (=)</option></select></div>
+                  <div class="form-group"><label>נקודות</label><input type="number" id="bk_pts" class="form-input" min="0" value="0"></div>
+                </div>
+                <div class="form-group" style="margin-bottom:10px;"><label>סיבה</label><input id="bk_reason" class="form-input" placeholder="למשל: בונוס שבועי"></div>
+                <div id="bk_status" style="margin-bottom:10px;font-size:13px;color:#e67e22;"></div>
+                <div style="display:flex;justify-content:flex-end;gap:10px;">
+                  <button class="btn-gray" onclick="closeBulk()">ביטול</button>
+                  <button class="btn-primary" style="background:#e67e22;" onclick="submitBulk()">⚡ עדכן</button>
                 </div>
             </div>
         </div>
@@ -183,6 +188,14 @@ def web_students(request: Request):
             const mPoints = document.getElementById('m_points');
             const mMsg = document.getElementById('m_private_message');
             const mBlock = document.getElementById('m_is_free_fix_blocked');
+            const mSerial = document.getElementById('m_serial_number');
+            const mPhoto = document.getElementById('m_photo_number');
+            const mGender = document.getElementById('m_gender');
+            const mHbDay = document.getElementById('m_hb_day');
+            const mHbMonth = document.getElementById('m_hb_month');
+            const bulkModal = document.getElementById('bulk_modal');
+            // Populate hebrew days 1-30
+            for(let i=1;i<=30;i++){const o=document.createElement('option');o.value=i;o.textContent=i;mHbDay.appendChild(o);}
 
             function esc(s) {
                 return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -272,6 +285,11 @@ def web_students(request: Request):
                 mPoints.value = '0';
                 mMsg.value = '';
                 mBlock.checked = false;
+                mSerial.value = '';
+                mPhoto.value = '';
+                mGender.value = '';
+                mHbDay.value = '';
+                mHbMonth.value = '';
                 openModal();
             }
 
@@ -292,6 +310,11 @@ def web_students(request: Request):
                     mPoints.value = s.points || 0;
                     mMsg.value = s.private_message || '';
                     mBlock.checked = !!s.is_free_fix_blocked;
+                    mSerial.value = s.serial_number || '';
+                    mPhoto.value = s.photo_number || '';
+                    mGender.value = s.gender || '';
+                    mHbDay.value = s.hebrew_birth_day || '';
+                    mHbMonth.value = s.hebrew_birth_month || '';
                     
                     openModal();
                 } catch(e) {
@@ -309,7 +332,12 @@ def web_students(request: Request):
                     card_number: mCard.value,
                     points: parseInt(mPoints.value || 0),
                     private_message: mMsg.value,
-                    is_free_fix_blocked: mBlock.checked ? 1 : 0
+                    is_free_fix_blocked: mBlock.checked ? 1 : 0,
+                    serial_number: mSerial.value || null,
+                    photo_number: mPhoto.value || null,
+                    gender: mGender.value || null,
+                    hebrew_birth_day: mHbDay.value ? parseInt(mHbDay.value) : null,
+                    hebrew_birth_month: mHbMonth.value ? parseInt(mHbMonth.value) : null
                 };
                 
                 try {
@@ -388,6 +416,40 @@ def web_students(request: Request):
                 } catch(e) { alert('שגיאה: ' + e); }
             }
 
+            // Bulk Quick Update
+            function openBulk() {
+                bulkModal.style.display='flex';
+                document.getElementById('bk_status').textContent='';
+                // populate class dropdown from loaded students
+                const classes = [...new Set(_allStudents.map(s=>s.class_name).filter(Boolean))].sort();
+                const sel = document.getElementById('bk_class');
+                sel.innerHTML = classes.map(c=>'<option value="'+esc(c)+'">'+esc(c)+'</option>').join('');
+                bkModeChanged();
+            }
+            function closeBulk() { bulkModal.style.display='none'; }
+            function bkModeChanged() {
+                const m = document.getElementById('bk_mode').value;
+                document.getElementById('bk_class_row').style.display = m==='class'?'block':'none';
+                document.getElementById('bk_serial_row').style.display = m==='serial_range'?'block':'none';
+            }
+            async function submitBulk() {
+                const mode = document.getElementById('bk_mode').value;
+                const op = document.getElementById('bk_op').value;
+                const pts = parseInt(document.getElementById('bk_pts').value)||0;
+                const reason = document.getElementById('bk_reason').value.trim();
+                if(pts===0){alert('נא להזין מספר נקודות');return;}
+                const body = {operation:op, points:pts, mode:mode, reason:reason||'עדכון מהיר מהאתר'};
+                if(mode==='class') body.class_names=[document.getElementById('bk_class').value];
+                if(mode==='serial_range'){body.serial_from=parseInt(document.getElementById('bk_from').value)||0;body.serial_to=parseInt(document.getElementById('bk_to').value)||0;}
+                document.getElementById('bk_status').textContent='מעדכן...';
+                try {
+                    const r = await fetch('/api/students/bulk-quick-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+                    const d = await r.json();
+                    if(d.ok){document.getElementById('bk_status').textContent='עודכנו '+d.updated+' תלמידים';setTimeout(()=>{closeBulk();load();},1200);}
+                    else{document.getElementById('bk_status').textContent='שגיאה: '+(d.detail||'');}
+                } catch(e){document.getElementById('bk_status').textContent='שגיאה: '+e;}
+            }
+
             // Initial load
             load();
         </script>
@@ -408,7 +470,7 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
     try:
         cur = conn.cursor()
         q_str = str(q or '').strip()
-        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month FROM students"
+        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number FROM students"
         params = []
         if q_str:
             sql += " WHERE (first_name LIKE ? OR last_name LIKE ? OR card_number LIKE ? OR class_name LIKE ? OR id_number LIKE ?)"
@@ -477,7 +539,13 @@ def api_student_save(request: Request, payload: StudentSavePayload):
             'id_number': payload.id_number,
             'points': payload.points if payload.points is not None else 0,
             'private_message': payload.private_message,
-            'is_free_fix_blocked': payload.is_free_fix_blocked if payload.is_free_fix_blocked is not None else 0
+            'is_free_fix_blocked': payload.is_free_fix_blocked if payload.is_free_fix_blocked is not None else 0,
+            'serial_number': payload.serial_number,
+            'photo_number': payload.photo_number,
+            'hebrew_birth_day': payload.hebrew_birth_day,
+            'hebrew_birth_month': payload.hebrew_birth_month,
+            'hebrew_birth_year': payload.hebrew_birth_year,
+            'gender': payload.gender,
         }
         
         if is_new:

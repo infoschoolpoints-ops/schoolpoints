@@ -1723,22 +1723,26 @@ def web_time_bonus(request: Request):
         
         await saveToServer();
         closeRuleModal();
-        renderRules();
+        await loadRules();
       }
 
       async function deleteRule(idx) {
         if (!confirm('למחוק?')) return;
         rules.splice(idx, 1);
         await saveToServer();
-        renderRules();
+        await loadRules();
       }
 
       async function saveToServer() {
-        await fetch('/api/time-bonus/save', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ rules: rules })
-        });
+        try {
+          const r = await fetch('/api/time-bonus/save', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({ rules: rules })
+          });
+          const d = await r.json();
+          if (d.rules) rules = d.rules;
+        } catch(e) { console.error(e); }
       }
 
       function esc(s) {
@@ -2131,8 +2135,8 @@ def web_anti_spam(request: Request):
         try {
           const r = await fetch('/api/settings/anti_spam_config');
           const d = await r.json();
-          let v = d.value;
-          if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
+          let v = d;
+          if (d.value !== undefined) { v = typeof d.value === 'string' ? JSON.parse(d.value) : d.value; }
           if (!v || typeof v !== 'object') v = {};
           document.getElementById('as-enabled').checked = !!(v.anti_spam_enabled);
           asRules = Array.isArray(v.anti_spam_rules) ? v.anti_spam_rules : [];
@@ -2164,7 +2168,7 @@ def web_anti_spam(request: Request):
       }
       async function saveAS() {
         const val = { anti_spam_enabled: document.getElementById('as-enabled').checked, anti_spam_rules: asRules };
-        await fetch('/api/settings/save', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'anti_spam_config',value:JSON.stringify(val)})});
+        await fetch('/api/settings/save', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'anti_spam_config',value:val})});
         alert('הגדרות אנטי-ספאם נשמרו');
       }
       loadAS();
@@ -2317,8 +2321,8 @@ def web_quiet_mode(request: Request):
         try {
           const r = await fetch('/api/settings/quiet_mode_config');
           const d = await r.json();
-          let v = d.value;
-          if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
+          let v = d;
+          if (d.value !== undefined) { v = typeof d.value === 'string' ? JSON.parse(d.value) : d.value; }
           if (!v || typeof v !== 'object') v = {};
           let raw = v.quiet_mode_ranges;
           if (typeof raw === 'string') try { raw = JSON.parse(raw); } catch(e) { raw = []; }
@@ -2350,9 +2354,9 @@ def web_quiet_mode(request: Request):
         renderQM();
       }
       async function saveQM() {
-        const val = {quiet_mode_enabled: qmRanges.length > 0, quiet_mode_ranges: JSON.stringify(qmRanges)};
+        const val = {quiet_mode_enabled: qmRanges.length > 0, quiet_mode_ranges: qmRanges};
         if (qmRanges.length > 0) { val.quiet_mode_start = qmRanges[0].start; val.quiet_mode_end = qmRanges[0].end; val.quiet_mode_volume = qmRanges[0].volume; }
-        await fetch('/api/settings/save', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'quiet_mode_config',value:JSON.stringify(val)})});
+        await fetch('/api/settings/save', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'quiet_mode_config',value:val})});
         alert('הגדרות מצב שקט נשמרו');
       }
       loadQM();

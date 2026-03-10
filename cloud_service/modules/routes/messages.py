@@ -190,6 +190,7 @@ def web_messages(request: Request):
                             <div style="font-weight:bold; color:#2c3e50;">${item.text || item.message || '(תמונה)'}</div>
                             <div style="font-size:12px; color:#7f8c8d;">
                                 ${item.is_active ? '<span style="color:#2ecc71">פעיל</span>' : '<span style="color:#e74c3c">לא פעיל</span>'}
+                                ${type==='threshold' && (item.min_points!=null||item.max_points!=null) ? ' | <span style="color:#8e44ad;font-weight:600;">טווח: '+(item.min_points||0)+' – '+(item.max_points||'∞')+' נקודות</span>' : ''}
                                 ${item.show_always ? ' | תמיד' : (type==='static' ? ' | עם כרטיס' : '')}
                                 ${item.image_path ? ' | כולל תמונה' : ''}
                                 ${item.start_date ? ' | מ-'+item.start_date : ''}${item.end_date ? ' עד '+item.end_date : ''}

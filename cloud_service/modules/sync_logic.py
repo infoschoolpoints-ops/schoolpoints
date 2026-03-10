@@ -198,6 +198,52 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
                     )
             except Exception:
                 return
+
+        # Mirror time_bonus settings into time_bonus_schedules table
+        if key.startswith('time_bonus_') and value:
+            try:
+                import json as _json
+                tb = _json.loads(value)
+                if isinstance(tb, dict) and not tb.get('deleted'):
+                    tb_id = tb.get('id')
+                    name = str(tb.get('name') or '').strip()
+                    if name:
+                        group_name = str(tb.get('group_name') or '').strip()
+                        start_time = str(tb.get('start_time') or '').strip()
+                        end_time = str(tb.get('end_time') or '').strip()
+                        bonus_points = int(tb.get('bonus_points') or tb.get('points') or 0)
+                        is_active = int(tb.get('is_active') if tb.get('is_active') is not None else 1)
+                        is_general = int(tb.get('is_general') if tb.get('is_general') is not None else 1)
+                        classes = str(tb.get('classes') or '').strip()
+                        days_of_week = str(tb.get('days_of_week') or '').strip()
+                        sound_key = str(tb.get('sound_key') or '').strip()
+                        is_shown_public = int(tb.get('is_shown_public') if tb.get('is_shown_public') is not None else 1)
+                        if tb_id:
+                            try:
+                                cur.execute(sql_placeholder('SELECT id FROM time_bonus_schedules WHERE id=?'), (int(tb_id),))
+                                if cur.fetchone():
+                                    cur.execute(sql_placeholder(
+                                        'UPDATE time_bonus_schedules SET name=?,group_name=?,start_time=?,end_time=?,bonus_points=?,is_active=?,is_general=?,classes=?,days_of_week=?,sound_key=?,is_shown_public=?,updated_at=CURRENT_TIMESTAMP WHERE id=?'),
+                                        (name, group_name, start_time, end_time, bonus_points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public, int(tb_id)))
+                                else:
+                                    if USE_POSTGRES:
+                                        cur.execute(
+                                            'INSERT INTO time_bonus_schedules (id,name,group_name,start_time,end_time,bonus_points,is_active,is_general,classes,days_of_week,sound_key,is_shown_public) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+                                            (int(tb_id), name, group_name, start_time, end_time, bonus_points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public))
+                                    else:
+                                        cur.execute(
+                                            'INSERT INTO time_bonus_schedules (id,name,group_name,start_time,end_time,bonus_points,is_active,is_general,classes,days_of_week,sound_key,is_shown_public) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                                            (int(tb_id), name, group_name, start_time, end_time, bonus_points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public))
+                            except Exception:
+                                pass
+                elif tb.get('deleted') and tb.get('id'):
+                    try:
+                        cur.execute(sql_placeholder('DELETE FROM time_bonus_schedules WHERE id=?'), (int(tb['id']),))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         tconn.commit()
         return
 
