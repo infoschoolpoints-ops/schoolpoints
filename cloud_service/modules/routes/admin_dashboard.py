@@ -30,6 +30,10 @@ def web_admin(request: Request):
       <div class="icon">🎓</div>
       <div class="label">תלמידים</div>
     </a>
+    <a href="/web/quick-update" class="tile orange">
+      <div class="icon">⚡</div>
+      <div class="label">עדכון מהיר</div>
+    </a>
     """
     
     if is_admin:

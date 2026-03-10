@@ -184,16 +184,18 @@ def _reports_html() -> str:
     return """
 <style>
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;margin-bottom:30px}
-.stat-box{background:#fff;padding:24px;border-radius:12px;border:1px solid #e1e8ee;text-align:center}
+.stat-box{background:#fff;padding:24px;border-radius:12px;border:1px solid #e1e8ee;text-align:center;color:#2c3e50}
 .stat-num{font-size:36px;font-weight:900;color:#2c3e50;margin:10px 0}
 .stat-label{color:#7f8c8d;font-size:14px;font-weight:600}
 .lists-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:24px}
-.list-card{background:#fff;border-radius:12px;border:1px solid #e1e8ee;overflow:hidden}
-.list-header{background:#f8f9fa;padding:15px 20px;border-bottom:1px solid #eee;font-weight:700;font-size:16px}
-.list-item{display:flex;justify-content:space-between;padding:12px 20px;border-bottom:1px solid #f4f6f8;font-size:14px}
+.list-card{background:#fff;border-radius:12px;border:1px solid #e1e8ee;overflow:hidden;color:#2c3e50}
+.list-header{background:#f8f9fa;padding:15px 20px;border-bottom:1px solid #eee;font-weight:700;font-size:16px;color:#2c3e50}
+.list-item{display:flex;justify-content:space-between;padding:12px 20px;border-bottom:1px solid #f4f6f8;font-size:14px;color:#34495e}
 .list-val{font-weight:700;color:#3498db}
-.exp-sec{margin-top:30px;display:flex;flex-direction:column;gap:16px}
-.exp-card{background:#f8f9fa;padding:16px;border-radius:10px;border:1px solid #eee}
+.exp-sec{margin-top:30px;display:flex;flex-direction:column;gap:16px;color:#e0e0e0}
+.exp-card{background:#f8f9fa;padding:16px;border-radius:10px;border:1px solid #eee;color:#2c3e50}
+.exp-card h4{color:#2c3e50}
+.exp-card label{color:#2c3e50}
 </style>
 <div class="stats-grid">
   <div class="stat-box"><div class="stat-label">יתרת נקודות</div><div class="stat-num" id="s-bal">...</div></div>
