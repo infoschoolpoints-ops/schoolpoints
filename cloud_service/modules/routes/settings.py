@@ -47,6 +47,15 @@ def api_settings_get(request: Request, key: str) -> Dict[str, Any]:
     tenant_id = web_tenant_from_cookie(request)
     conn = tenant_db_connection(tenant_id)
     try:
+        cur = conn.cursor()
+        try:
+            cur.execute(sql_placeholder("SELECT value FROM settings WHERE key = ? LIMIT 1"), (key,))
+            row = cur.fetchone()
+            if row:
+                raw = (row['value'] if isinstance(row, dict) else row[0]) or '{}'
+                return json.loads(raw)
+        except Exception:
+            pass
         val = get_web_setting_json(conn, key)
         return json.loads(val)
     except Exception:
@@ -64,10 +73,26 @@ def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[
     conn = tenant_db_connection(tenant_id)
     try:
         val_str = json.dumps(payload.value, ensure_ascii=False)
+        # Write to canonical 'settings' table (synced with local app via config-bridge)
+        cur = conn.cursor()
+        try:
+            if USE_POSTGRES:
+                cur.execute(
+                    "INSERT INTO settings (key, value, updated_at) VALUES (%s, %s, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP",
+                    (payload.key, val_str)
+                )
+            else:
+                cur.execute(
+                    "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                    (payload.key, val_str)
+                )
+            conn.commit()
+        except Exception:
+            pass
+        # Also write to web_settings for backward compatibility
         set_web_setting_json(conn, payload.key, val_str)
         
-        # Record sync event for specific settings if needed
-        # (Usually settings sync is done via snapshot or specific logic, but let's record generic update)
         record_sync_event(
             tenant_id=tenant_id,
             station_id='web',
@@ -225,6 +250,8 @@ def api_time_bonus_save(request: Request, payload: Dict[str, Any] = Body(...)) -
                     (name, group_name, start_time, end_time, points, is_active, is_general, classes, days_of_week, sound_key, is_shown_public, rid)
                 )
                 keep_ids.add(rid)
+                _rule_payload = {'name': name, 'group_name': group_name, 'start_time': start_time, 'end_time': end_time, 'bonus_points': points, 'is_active': is_active, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'sound_key': sound_key, 'is_shown_public': is_shown_public}
+                record_sync_event(tenant_id=tenant_id, station_id='web', entity_type='time_bonus', entity_id=str(rid), action_type='update', payload=_rule_payload)
                 saved_rules.append({'id': rid, 'name': name, 'group_name': group_name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'sound_key': sound_key, 'is_shown_public': is_shown_public})
                 continue
 
@@ -244,6 +271,8 @@ def api_time_bonus_save(request: Request, payload: Dict[str, Any] = Body(...)) -
                 )
                 new_id = cur.lastrowid
             keep_ids.add(int(new_id or 0))
+            _rule_payload = {'name': name, 'group_name': group_name, 'start_time': start_time, 'end_time': end_time, 'bonus_points': points, 'is_active': is_active, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'sound_key': sound_key, 'is_shown_public': is_shown_public}
+            record_sync_event(tenant_id=tenant_id, station_id='web', entity_type='time_bonus', entity_id=str(new_id), action_type='create', payload=_rule_payload)
             saved_rules.append({'id': int(new_id or 0), 'name': name, 'group_name': group_name, 'start_time': start_time, 'end_time': end_time, 'points': points, 'is_active': is_active, 'is_general': is_general, 'classes': classes, 'days_of_week': days_of_week, 'sound_key': sound_key, 'is_shown_public': is_shown_public})
 
         delete_ids = [rid for rid in existing_map.keys() if rid not in keep_ids]
@@ -255,6 +284,8 @@ def api_time_bonus_save(request: Request, payload: Dict[str, Any] = Body(...)) -
                 f'DELETE FROM time_bonus_schedules WHERE id IN ({placeholders})',
                 tuple(delete_ids)
             )
+            for did in delete_ids:
+                record_sync_event(tenant_id=tenant_id, station_id='web', entity_type='time_bonus', entity_id=str(did), action_type='delete', payload={})
 
         conn.commit()
         return {'ok': True, 'rules': saved_rules}
@@ -1484,8 +1515,9 @@ def web_time_bonus(request: Request):
     if guard: return guard
     
     html_content = """
-    <div style="display:flex; justify-content:flex-start; align-items:center; margin-bottom:20px;">
-      <button class="green" onclick="openRuleModal()">+ כלל חדש</button>
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:20px;">
+      <button class="green" onclick="openNewGroup()">+ קבוצה חדשה</button>
+      <button class="blue" onclick="openRuleModal()">+ כלל חדש</button>
     </div>
     
     <div class="card" style="padding:0; overflow:hidden;">
@@ -1494,7 +1526,10 @@ def web_time_bonus(request: Request):
           <tr style="background: rgba(15, 32, 39, 0.98); border-bottom:1px solid rgba(255,255,255,0.12);">
             <th style="padding:12px; text-align:right; color:#fff;">שם הכלל</th>
             <th style="padding:12px; text-align:right; color:#fff;">שעות</th>
-            <th style="padding:12px; text-align:right; color:#fff;">בונוס (נקודות)</th>
+            <th style="padding:12px; text-align:right; color:#fff;">נקודות</th>
+            <th style="padding:12px; text-align:right; color:#fff;">ימים</th>
+            <th style="padding:12px; text-align:right; color:#fff;">כיתות</th>
+            <th style="padding:12px; text-align:right; color:#fff;">סטטוס</th>
             <th style="padding:12px; text-align:right; color:#fff;">פעולות</th>
           </tr>
         </thead>
@@ -1565,13 +1600,18 @@ def web_time_bonus(request: Request):
         } catch(e) {}
       }
 
+      const dayNames = {1:'א',2:'ב',3:'ג',4:'ד',5:'ה',6:'ו',7:'ש'};
+      function fmtDays(d) {
+        if (!d) return 'כל הימים';
+        return d.split(',').map(x => dayNames[x.trim()] || x.trim()).join(', ');
+      }
+
       function renderRules() {
         const tbody = document.getElementById('rules-list');
         if (rules.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" style="padding:20px; text-align:center; color:#888;">אין כללים מוגדרים</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="7" style="padding:20px; text-align:center; color:#888;">אין כללים מוגדרים</td></tr>';
             return;
         }
-        // Group by group_name
         const groups = {};
         rules.forEach((r, idx) => {
             const g = r.group_name || r.name || 'ללא קבוצה';
@@ -1581,13 +1621,20 @@ def web_time_bonus(request: Request):
         let html = '';
         let gIdx = 0;
         for (const [gName, items] of Object.entries(groups)) {
-            if (gIdx > 0) html += '<tr><td colspan="4" style="padding:4px; background:#dfe6e9;"></td></tr>';
-            html += '<tr style="background:rgba(52,152,219,0.15);"><td colspan="4" style="padding:10px 12px; font-weight:bold; color:#2c3e50;">📋 ' + esc(gName) + ' (' + items.length + ' כללים)</td></tr>';
+            if (gIdx > 0) html += '<tr><td colspan="7" style="padding:4px; background:#dfe6e9;"></td></tr>';
+            html += '<tr style="background:rgba(52,152,219,0.15);">' +
+              '<td colspan="6" style="padding:10px 12px; font-weight:bold; color:#2c3e50;">📋 ' + esc(gName) + ' (' + items.length + ' כללים)</td>' +
+              '<td style="padding:10px 6px; text-align:center;"><button onclick="addRuleToGroup(\'' + esc(gName).replace(/'/g,"\\'") + '\')" style="background:#3498db;color:#fff;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:12px;">+ כלל</button></td></tr>';
             items.forEach(r => {
+                const statusColor = r.is_active ? '#27ae60' : '#e74c3c';
+                const statusText = r.is_active ? 'פעיל' : 'מושבת';
                 html += '<tr style="border-bottom:1px solid #eee;">' +
-                  '<td style="padding:10px 12px 10px 12px;">' + esc(r.name) + '</td>' +
-                  '<td style="padding:10px 12px; direction:ltr; text-align:right;">' + r.start_time + ' - ' + r.end_time + '</td>' +
-                  '<td style="padding:10px 12px;">' + r.points + '</td>' +
+                  '<td style="padding:10px 12px;">' + esc(r.name) + '</td>' +
+                  '<td style="padding:10px 12px; direction:ltr; text-align:right;">' + (r.start_time||'') + ' - ' + (r.end_time||'') + '</td>' +
+                  '<td style="padding:10px 12px; font-weight:bold;">' + r.points + '</td>' +
+                  '<td style="padding:10px 12px; font-size:12px;">' + fmtDays(r.days_of_week) + '</td>' +
+                  '<td style="padding:10px 12px; font-size:12px;">' + (r.classes || 'הכל') + '</td>' +
+                  '<td style="padding:10px 12px;"><span style="color:' + statusColor + ';font-weight:bold;font-size:12px;">' + statusText + '</span></td>' +
                   '<td style="padding:10px 12px;">' +
                     '<button onclick="editRule(' + r._idx + ')" style="background:none;border:none;cursor:pointer;font-size:16px;">✏️</button>' +
                     '<button onclick="deleteRule(' + r._idx + ')" style="background:none;border:none;cursor:pointer;font-size:16px;">🗑️</button>' +
@@ -1598,10 +1645,20 @@ def web_time_bonus(request: Request):
         tbody.innerHTML = html;
       }
 
-      function openRuleModal() {
+      function openNewGroup() {
+        const gName = prompt('שם הקבוצה החדשה:');
+        if (!gName || !gName.trim()) return;
+        openRuleModal(gName.trim());
+      }
+
+      function addRuleToGroup(gName) {
+        openRuleModal(gName);
+      }
+
+      function openRuleModal(prefillGroup) {
         document.getElementById('rule-index').value = '-1';
         document.getElementById('rule-name').value = '';
-        document.getElementById('rule-group').value = '';
+        document.getElementById('rule-group').value = prefillGroup || '';
         document.getElementById('rule-start').value = '';
         document.getElementById('rule-end').value = '';
         document.getElementById('rule-points').value = '';
@@ -1611,7 +1668,7 @@ def web_time_bonus(request: Request):
         document.getElementById('rule-general').checked = true;
         document.getElementById('rule-public').checked = true;
         document.getElementById('rule-active').checked = true;
-        document.getElementById('modal-title').textContent = 'הוספת כלל';
+        document.getElementById('modal-title').textContent = prefillGroup ? 'הוספת כלל לקבוצה: ' + prefillGroup : 'הוספת כלל';
         document.getElementById('modal-rule').style.display = 'flex';
       }
 
@@ -1883,7 +1940,19 @@ def api_public_closures_save(request: Request, payload: Dict[str, Any]):
         items.append(new_item)
         
         # Save
-        set_web_setting_json(conn, 'public_closures', json.dumps({'items': items}))
+        val_str = json.dumps({'items': items})
+        set_web_setting_json(conn, 'public_closures', val_str)
+        # Also write to settings table for sync
+        cur = conn.cursor()
+        try:
+            cur.execute(sql_placeholder("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP"), ('public_closures', val_str))
+        except Exception:
+            try:
+                cur.execute(sql_placeholder("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?"), (val_str, 'public_closures'))
+            except Exception:
+                pass
+        conn.commit()
+        record_sync_event(tenant_id=tenant_id, station_id='web', entity_type='setting', entity_id='public_closures', action_type='update', payload={'key': 'public_closures', 'value': val_str})
         return {'ok': True}
     finally:
         try: conn.close()
@@ -1903,7 +1972,19 @@ def api_public_closures_delete(request: Request, payload: Dict[str, Any]):
         
         items = [i for i in items if int(i.get('id', 0)) != int(payload.get('id', 0))]
         
-        set_web_setting_json(conn, 'public_closures', json.dumps({'items': items}))
+        val_str = json.dumps({'items': items})
+        set_web_setting_json(conn, 'public_closures', val_str)
+        # Also write to settings table for sync
+        cur = conn.cursor()
+        try:
+            cur.execute(sql_placeholder("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP"), ('public_closures', val_str))
+        except Exception:
+            try:
+                cur.execute(sql_placeholder("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?"), (val_str, 'public_closures'))
+            except Exception:
+                pass
+        conn.commit()
+        record_sync_event(tenant_id=tenant_id, station_id='web', entity_type='setting', entity_id='public_closures', action_type='update', payload={'key': 'public_closures', 'value': val_str})
         return {'ok': True}
     finally:
         try: conn.close()
@@ -2114,7 +2195,19 @@ def api_max_points_save(request: Request, payload: Dict[str, Any]) -> Dict[str, 
     tenant_id = web_tenant_from_cookie(request)
     conn = tenant_db_connection(tenant_id)
     try:
-        set_web_setting_json(conn, 'max_points_config', json.dumps(payload))
+        val_str = json.dumps(payload)
+        set_web_setting_json(conn, 'max_points_config', val_str)
+        # Also write to settings table for sync
+        cur = conn.cursor()
+        try:
+            cur.execute(sql_placeholder("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP"), ('max_points_config', val_str))
+        except Exception:
+            try:
+                cur.execute(sql_placeholder("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?"), (val_str, 'max_points_config'))
+            except Exception:
+                pass
+        conn.commit()
+        record_sync_event(tenant_id=tenant_id, station_id='web', entity_type='setting', entity_id='max_points_config', action_type='update', payload={'key': 'max_points_config', 'value': val_str})
         return {'ok': True}
     finally:
         try: conn.close()

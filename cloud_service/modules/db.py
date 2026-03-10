@@ -121,6 +121,11 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
                     id_number TEXT,
                     photo_number TEXT,
                     is_free_fix_blocked INTEGER DEFAULT 0,
+                    last_swiped_at TIMESTAMP,
+                    hebrew_birth_day INTEGER,
+                    hebrew_birth_month INTEGER,
+                    hebrew_birth_year INTEGER,
+                    gender TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -554,6 +559,7 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
                 'ALTER TABLE students ADD COLUMN IF NOT EXISTS hebrew_birth_month INTEGER',
                 'ALTER TABLE students ADD COLUMN IF NOT EXISTS hebrew_birth_year INTEGER',
                 'ALTER TABLE students ADD COLUMN IF NOT EXISTS gender TEXT',
+                'ALTER TABLE students ADD COLUMN IF NOT EXISTS last_swiped_at TIMESTAMP',
 
                 # Time bonus columns
                 'ALTER TABLE time_bonus_schedules ADD COLUMN IF NOT EXISTS group_name TEXT',
@@ -628,6 +634,11 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
                     id_number TEXT,
                     photo_number TEXT,
                     is_free_fix_blocked INTEGER DEFAULT 0,
+                    last_swiped_at TIMESTAMP,
+                    hebrew_birth_day INTEGER,
+                    hebrew_birth_month INTEGER,
+                    hebrew_birth_year INTEGER,
+                    gender TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );

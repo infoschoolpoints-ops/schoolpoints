@@ -46,6 +46,7 @@ def web_students(request: Request):
                     <div id="s_status" style="font-size:13px; font-weight:bold; opacity:0.7;">טוען...</div>
                     <div style="display:flex; gap:8px;">
                         <span id="s_selected" style="font-size:13px; padding-top:6px;">לא נבחר תלמיד</span>
+                        <button id="s_qpoints" class="green" style="font-size:12px; padding:4px 10px; background:#27ae60; color:white; border:none; border-radius:4px; opacity:0.5; pointer-events:none;" onclick="openQuickPoints()">⚡ עדכון נקודות</button>
                         <button id="s_edit" class="blue" style="font-size:12px; padding:4px 10px; opacity:0.5; pointer-events:none;" onclick="openEdit()">✏️ ערוך</button>
                         <button id="s_delete" class="red" style="font-size:12px; padding:4px 10px; background:#e74c3c; border:none; opacity:0.5; pointer-events:none;" onclick="delSelected()">🗑 מחק</button>
                     </div>
@@ -68,6 +69,35 @@ def web_students(request: Request):
                         </thead>
                         <tbody id="s_rows"></tbody>
                     </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Points Modal -->
+        <div id="qp_modal" class="modal-overlay">
+            <div class="modal-content" style="max-width:380px;">
+                <button class="modal-close" onclick="closeQP()">×</button>
+                <h3 style="margin-top:0;">⚡ עדכון נקודות מהיר</h3>
+                <div id="qp_info" style="margin-bottom:12px; font-size:14px; color:#666;"></div>
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label>שינוי נקודות (מספר חיובי להוסיף, שלילי להוריד)</label>
+                    <input type="number" id="qp_delta" class="form-input" value="0" style="font-size:18px; text-align:center;">
+                </div>
+                <div class="form-group" style="margin-bottom:12px;">
+                    <label>סיבה (אופציונלי)</label>
+                    <input id="qp_reason" class="form-input" placeholder="למשל: בונוס, תיקון...">
+                </div>
+                <div style="display:flex; gap:8px; justify-content:center; margin-bottom:10px;">
+                    <button onclick="qpSet(-10)" style="padding:6px 14px; border:1px solid #e74c3c; background:#fff; color:#e74c3c; border-radius:6px; cursor:pointer; font-weight:bold;">-10</button>
+                    <button onclick="qpSet(-5)" style="padding:6px 14px; border:1px solid #e74c3c; background:#fff; color:#e74c3c; border-radius:6px; cursor:pointer; font-weight:bold;">-5</button>
+                    <button onclick="qpSet(-1)" style="padding:6px 14px; border:1px solid #e74c3c; background:#fff; color:#e74c3c; border-radius:6px; cursor:pointer; font-weight:bold;">-1</button>
+                    <button onclick="qpSet(1)" style="padding:6px 14px; border:1px solid #27ae60; background:#fff; color:#27ae60; border-radius:6px; cursor:pointer; font-weight:bold;">+1</button>
+                    <button onclick="qpSet(5)" style="padding:6px 14px; border:1px solid #27ae60; background:#fff; color:#27ae60; border-radius:6px; cursor:pointer; font-weight:bold;">+5</button>
+                    <button onclick="qpSet(10)" style="padding:6px 14px; border:1px solid #27ae60; background:#fff; color:#27ae60; border-radius:6px; cursor:pointer; font-weight:bold;">+10</button>
+                </div>
+                <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:16px;">
+                    <button class="btn-gray" onclick="closeQP()">ביטול</button>
+                    <button class="btn-primary" style="background:#27ae60;" onclick="submitQP()">עדכן</button>
                 </div>
             </div>
         </div>
@@ -139,7 +169,9 @@ def web_students(request: Request):
             const selectedEl = document.getElementById('s_selected');
             const btnEdit = document.getElementById('s_edit');
             const btnDelete = document.getElementById('s_delete');
+            const btnQP = document.getElementById('s_qpoints');
             const modal = document.getElementById('s_modal');
+            const qpModal = document.getElementById('qp_modal');
             
             // Fields
             const mId = document.getElementById('m_student_id');
@@ -174,6 +206,8 @@ def web_students(request: Request):
                 btnEdit.style.pointerEvents = on ? 'auto' : 'none';
                 btnDelete.style.opacity = on ? '1' : '0.5';
                 btnDelete.style.pointerEvents = on ? 'auto' : 'none';
+                btnQP.style.opacity = on ? '1' : '0.5';
+                btnQP.style.pointerEvents = on ? 'auto' : 'none';
                 selectedEl.textContent = on ? 'נבחר תלמיד ID ' + id : 'לא נבחר תלמיד';
                 
                 document.querySelectorAll('#s_rows tr').forEach(tr => {
@@ -195,6 +229,7 @@ def web_students(request: Request):
                         return;
                     }
                     
+                    _allStudents = data.items;
                     statusEl.textContent = data.items.length + ' תלמידים (מציג 100 ראשונים)';
                     
                     rowsEl.innerHTML = data.items.map(s => `
@@ -320,6 +355,39 @@ def web_students(request: Request):
                 }
             }
 
+            // Quick Points
+            let _allStudents = [];
+            function openQuickPoints() {
+                if (!selectedId) return;
+                const s = _allStudents.find(x => x.id == selectedId);
+                if (!s) return;
+                document.getElementById('qp_info').textContent = s.first_name + ' ' + s.last_name + ' — נקודות נוכחיות: ' + (s.points || 0);
+                document.getElementById('qp_delta').value = 0;
+                document.getElementById('qp_reason').value = '';
+                qpModal.style.display = 'flex';
+                document.getElementById('qp_delta').focus();
+            }
+            function closeQP() { qpModal.style.display = 'none'; }
+            function qpSet(v) {
+                const el = document.getElementById('qp_delta');
+                el.value = parseInt(el.value || 0) + v;
+            }
+            async function submitQP() {
+                const delta = parseInt(document.getElementById('qp_delta').value || 0);
+                if (delta === 0) { alert('נא להזין מספר שונה מאפס'); return; }
+                const reason = document.getElementById('qp_reason').value.trim();
+                try {
+                    const resp = await fetch('/api/students/quick-points', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({student_id: selectedId, delta: delta, reason: reason})
+                    });
+                    if (!resp.ok) { alert('שגיאה בעדכון'); return; }
+                    closeQP();
+                    load();
+                } catch(e) { alert('שגיאה: ' + e); }
+            }
+
             // Initial load
             load();
         </script>
@@ -430,7 +498,7 @@ def api_student_save(request: Request, payload: StudentSavePayload):
             record_sync_event(
                 tenant_id=tenant_id,
                 station_id='web',
-                entity_type='students',
+                entity_type='student',
                 entity_id=str(new_id),
                 action_type='create',
                 payload=cols
@@ -450,7 +518,7 @@ def api_student_save(request: Request, payload: StudentSavePayload):
             record_sync_event(
                 tenant_id=tenant_id,
                 station_id='web',
-                entity_type='students',
+                entity_type='student',
                 entity_id=str(sid),
                 action_type='update',
                 payload=cols
@@ -489,13 +557,74 @@ def api_student_delete(request: Request, payload: StudentDeletePayload):
         record_sync_event(
             tenant_id=tenant_id,
             station_id='web',
-            entity_type='students',
+            entity_type='student',
             entity_id=str(sid),
             action_type='delete',
             payload={}
         )
         
         return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@router.post("/api/students/quick-points")
+def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(...)):
+    guard = web_require_teacher(request)
+    if guard: raise HTTPException(status_code=401, detail="Unauthorized")
+
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id: raise HTTPException(status_code=400, detail="Missing tenant")
+
+    sid = int(payload.get('student_id') or 0)
+    delta = int(payload.get('delta') or 0)
+    reason = str(payload.get('reason') or '').strip()
+    if sid <= 0 or delta == 0:
+        raise HTTPException(status_code=400, detail="Invalid student_id or delta")
+
+    conn = tenant_db_connection(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder("SELECT id, points FROM students WHERE id = ? LIMIT 1"), (sid,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Student not found")
+        old_points = int((row['points'] if isinstance(row, dict) else row[1]) or 0)
+        new_points = old_points + delta
+
+        cur.execute(sql_placeholder("UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"), (new_points, sid))
+
+        # Log to points_log if table exists
+        try:
+            if USE_POSTGRES:
+                cur.execute(
+                    "INSERT INTO points_log (student_id, points_change, reason, source, created_at) VALUES (%s,%s,%s,%s,CURRENT_TIMESTAMP)",
+                    (sid, delta, reason or 'עדכון מהיר מהאתר', 'web')
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO points_log (student_id, points_change, reason, source, created_at) VALUES (?,?,?,?,datetime('now'))",
+                    (sid, delta, reason or 'עדכון מהיר מהאתר', 'web')
+                )
+        except Exception:
+            pass
+
+        conn.commit()
+
+        record_sync_event(
+            tenant_id=tenant_id,
+            station_id='web',
+            entity_type='student_points',
+            entity_id=str(sid),
+            action_type='update',
+            payload={'student_id': sid, 'old_points': old_points, 'new_points': new_points, 'delta': delta, 'reason': reason or 'עדכון מהיר מהאתר'}
+        )
+
+        return {'ok': True, 'new_points': new_points}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         try: conn.close()
         except: pass

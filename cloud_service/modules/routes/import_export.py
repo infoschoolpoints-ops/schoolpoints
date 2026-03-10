@@ -18,6 +18,9 @@ def web_import(request: Request):
     if guard: return guard
     
     html_content = """
+    <div style="margin-bottom:15px;">
+        <a href="/web/admin" style="text-decoration:none; color:#3498db; font-weight:bold;">← חזרה לתפריט</a>
+    </div>
     <div class="card" style="padding:24px; max-width:600px; margin:0 auto; background:#fff; border-radius:12px; box-shadow:0 2px 10px rgba(0,0,0,0.05);">
         <h2 style="margin-top:0;">ייבוא תלמידים מאקסל</h2>
         <p style="color:#666; line-height:1.5;">ניתן לייבא תלמידים, לעדכן פרטים ולטעון נקודות באמצעות קובץ Excel.<br>
@@ -255,6 +258,20 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                         params.append(sid)
                         cur.execute(sql_placeholder(sql), params)
                         imported_count += 1
+                        # Sync event for student update (fields other than points)
+                        update_payload = {'first_name': first_name, 'last_name': last_name}
+                        if class_name: update_payload['class_name'] = class_name
+                        if id_number: update_payload['id_number'] = id_number
+                        if card_number: update_payload['card_number'] = card_number
+                        if private_message: update_payload['private_message'] = private_message
+                        record_sync_event(
+                            tenant_id=tenant_id,
+                            station_id='web',
+                            entity_type='student',
+                            entity_id=str(sid),
+                            action_type='update',
+                            payload=update_payload
+                        )
 
                 else:
                     # Insert
@@ -279,6 +296,18 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                     cur.execute(sql_placeholder(sql), vals)
                     new_sid = cur.lastrowid
                     imported_count += 1
+                    
+                    # Sync event for new student
+                    if new_sid:
+                        student_payload = dict(zip(cols, vals))
+                        record_sync_event(
+                            tenant_id=tenant_id,
+                            station_id='web',
+                            entity_type='student',
+                            entity_id=str(new_sid),
+                            action_type='create',
+                            payload=student_payload
+                        )
                     
                     # Log initial points if > 0
                     if points > 0 and new_sid:

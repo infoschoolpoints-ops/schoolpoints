@@ -103,12 +103,12 @@
 
 ### Web UI/SaaS – רשימת תיקונים מהבדיקה האחרונה (פברואר 2026)
 
-- [ ] עריכה ישירה בטבלת תלמידים: נקודות + הודעה פרטית.
+- [x] עריכה ישירה בטבלת תלמידים: נקודות + הודעה פרטית (עדכון נקודות מהיר + עריכה מלאה במודל).
 - [ ] סנכרון תמונת תלמיד וקישור לצפייה בפרטי התלמיד.
-- [ ] חלון עריכת מורה: להוסיף כפתור סגירה בנוסף לשמירה.
-- [ ] עריכת פרטי מורים אחרים: שגיאה בטעינה (לתקן).
+- [x] חלון עריכת מורה: כפתור סגירה (×) + כפתור ביטול.
+- [x] עריכת פרטי מורים אחרים: תוקנה שגיאת RealDictCursor ב-Postgres (row[0] → row['class_name']).
 - [ ] חלון כיתות: להסיר (לא קיים במקומי).
-- [ ] חלון ייבוא: להוסיף כפתור סגירה ללא ייבוא.
+- [x] חלון ייבוא: כפתור חזרה לתפריט.
 - [x] חלון ייצוא: תוקן /web/reports 404 – נוצר reports.py עם דף מלא + APIs + exports.
 - [ ] עדכון מערכת: להבהיר/להסביר מה אופציות עדכון אוטומטי (יציב/בטא/פיתוח).
 - [x] ניהול הודעות: CRUD מלא + show_always, start_date, end_date, sort_order.
@@ -441,6 +441,32 @@ SchoolPoints/
 
 ---
 
-**עדכון אחרון:** 12/03/2026  
-**מטלה נוכחית:** Web Admin – הושלמו כל התיקונים והשלמות  
-**הבא בתור:** וריאנטים למוצר, ערכת צבעים מתקדמת, Local Sync single-writer
+**עדכון אחרון:** 10/03/2026 (ביקורת סנכרון מקיפה)  
+**מטלה נוכחית:** ביקורת סנכרון וווב הושלמה - תוקנו 8 באגים קריטיים  
+**הבא בתור:** וריאנטים למוצר בווב, תפריט מורה מוגבל, ערכת צבעים מתקדמת, Local Sync single-writer
+
+### ביקורת סנכרון מקיפה (מרץ 2026) – ממצאים ותיקונים:
+- [x] **BUG קריטי: entity_type מרובים** – הווב שלח `students`/`teachers`/`teacher_classes` (רבים) אבל sync_agent מצפה ליחיד (`student`/`teacher`/`teacher_class`). תוקן ב-students.py + teachers.py.
+- [x] **BUG קריטי: student_points payload** – הווב שלח `points`+`delta` אבל sync_logic מצפה ל-`old_points`+`new_points`. תוקן ב-students.py.
+- [x] **BUG: teacher_class/replace לא מטופל** – הווב שלח action_type='replace' שלא היה handler עבורו. הוספנו handler ב-sync_agent.py + sync_logic.py.
+- [x] **חוסר: ייבוא תלמידים ללא sync events** – ייבוא Excel לא שלח sync events ליצירת/עדכון תלמידים. תוקן ב-import_export.py.
+- [x] **חוסר: public_closures ללא sync** – שמירה/מחיקה ב-web_settings בלבד ללא settings table ו-sync event. תוקן ב-settings.py.
+- [x] **חוסר: max_points_config ללא sync** – שמירה ב-web_settings בלבד. תוקן ב-settings.py.
+- [x] **Postgres RealDictCursor** – תיקון row[0] → dict access ב-teachers.py, reports.py, teacher_auth.py.
+- [x] **UI: כפתור סגירה למודל עריכת מורה + כפתור חזרה בדף ייבוא**
+
+### מצב סנכרון אחרי הביקורת:
+| entity_type | Web→Cloud | Cloud→Local | Local→Cloud | הערות |
+|---|---|---|---|---|
+| student | ✅ | ✅ | ✅ | CRUD + import |
+| student_points | ✅ | ✅ | ✅ | quick-points + import |
+| teacher | ✅ | ✅ | ✅ | CRUD |
+| teacher_class | ✅ | ✅ | ✅ | replace action |
+| setting | ✅ | ✅ | ✅ | כל ההגדרות |
+| time_bonus | ✅ | ✅ | ✅ | CRUD + groups |
+| product | ✅ | ✅ | ✅ | CRUD |
+| product_category | ✅ | ✅ | ✅ | CRUD |
+| static_message | ✅ | ✅ | ✅ | |
+| threshold_message | ✅ | ✅ | ✅ | |
+| news_item | ✅ | ✅ | ✅ | |
+| ads_item | ✅ | ✅ | ✅ | |

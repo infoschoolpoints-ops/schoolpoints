@@ -292,6 +292,23 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
         'refund': ('refunds_log', 'id'),
     }
 
+    # Special handling for teacher_class replace (delete all + insert new)
+    if et == 'teacher_class' and at == 'replace':
+        try:
+            tid = int(entity_id_str or 0)
+            classes = payload.get('classes') or []
+            if tid > 0:
+                cur = tconn.cursor()
+                cur.execute(sql_placeholder("DELETE FROM teacher_classes WHERE teacher_id = ?"), (tid,))
+                for cls in classes:
+                    cls = str(cls).strip()
+                    if cls:
+                        cur.execute(sql_placeholder("INSERT INTO teacher_classes (teacher_id, class_name) VALUES (?, ?)"), (tid, cls))
+                tconn.commit()
+        except Exception:
+            pass
+        return
+
     if et in _GENERIC_TABLE_MAP:
         table, pk_col = _GENERIC_TABLE_MAP[et]
         try:

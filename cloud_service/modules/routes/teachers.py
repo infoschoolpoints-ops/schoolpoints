@@ -64,7 +64,8 @@ def web_teachers(request: Request):
     </div>
 
     <div id="t_modal" class="modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); align-items:center; justify-content:center; z-index:9999;">
-        <div class="modal-content" style="background:white; width:600px; max-width:90%; padding:20px; border-radius:8px; max-height:90vh; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.15); color:black;">
+        <div class="modal-content" style="background:white; width:600px; max-width:90%; padding:20px; border-radius:8px; max-height:90vh; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.15); color:black; position:relative;">
+            <button class="modal-close" onclick="closeModal()" style="position:absolute; top:10px; left:10px; background:none; border:none; font-size:22px; cursor:pointer; color:#666;">×</button>
             <h3 id="t_modal_title" style="margin-top:0;">עריכת מורה</h3>
             <input type="hidden" id="m_teacher_id">
             
@@ -369,7 +370,7 @@ def api_teachers_list(request: Request, q: str = "") -> Dict[str, Any]:
                 cur2 = conn.cursor()
                 cur2.execute(sql_placeholder("SELECT class_name FROM teacher_classes WHERE teacher_id=?"), (d['id'],))
                 res = cur2.fetchall()
-                classes = [row[0] for row in res]
+                classes = [(row['class_name'] if isinstance(row, dict) else row[0]) for row in res]
                 d['classes_str'] = ", ".join(classes)
             except:
                 d['classes_str'] = ""
@@ -399,7 +400,7 @@ def api_teacher_get(request: Request, teacher_id: int):
         
         # Classes
         cur.execute(sql_placeholder("SELECT class_name FROM teacher_classes WHERE teacher_id=?"), (teacher_id,))
-        d['classes'] = [r[0] for r in cur.fetchall()]
+        d['classes'] = [(r['class_name'] if isinstance(r, dict) else r[0]) for r in cur.fetchall()]
         
         return d
     finally:
@@ -440,7 +441,7 @@ def api_teacher_save(request: Request, payload: TeacherSavePayload):
             record_sync_event(
                 tenant_id=tenant_id,
                 station_id='web',
-                entity_type='teachers',
+                entity_type='teacher',
                 entity_id=str(tid),
                 action_type='create',
                 payload=cols
@@ -460,7 +461,7 @@ def api_teacher_save(request: Request, payload: TeacherSavePayload):
             record_sync_event(
                 tenant_id=tenant_id,
                 station_id='web',
-                entity_type='teachers',
+                entity_type='teacher',
                 entity_id=str(tid),
                 action_type='update',
                 payload=cols
@@ -501,7 +502,7 @@ def api_teacher_classes_set(request: Request, payload: TeacherClassesPayload):
         record_sync_event(
             tenant_id=tenant_id,
             station_id='web',
-            entity_type='teacher_classes',
+            entity_type='teacher_class',
             entity_id=str(payload.teacher_id),
             action_type='replace',
             payload={'classes': payload.classes}
@@ -528,7 +529,7 @@ def api_teacher_delete(request: Request, payload: TeacherDeletePayload):
         record_sync_event(
             tenant_id=tenant_id,
             station_id='web',
-            entity_type='teachers',
+            entity_type='teacher',
             entity_id=str(payload.teacher_id),
             action_type='delete',
             payload={}

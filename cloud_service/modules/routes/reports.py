@@ -25,11 +25,11 @@ def api_reports_stats(request: Request) -> Dict[str, Any]:
         cur = conn.cursor()
         cur.execute("SELECT SUM(points) FROM students")
         row = cur.fetchone()
-        total_balance = int(row[0] or 0) if row else 0
+        total_balance = int((list(row.values())[0] if isinstance(row, dict) else row[0]) or 0) if row else 0
         try:
             cur.execute("SELECT SUM(total_points) FROM purchases_log WHERE is_refunded=0")
             row = cur.fetchone()
-            total_redeemed = int(row[0] or 0) if row else 0
+            total_redeemed = int((list(row.values())[0] if isinstance(row, dict) else row[0]) or 0) if row else 0
         except Exception:
             total_redeemed = 0
         cur.execute("SELECT first_name, last_name, class_name, points FROM students ORDER BY points DESC LIMIT 5")

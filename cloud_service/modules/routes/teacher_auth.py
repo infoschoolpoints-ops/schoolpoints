@@ -332,7 +332,7 @@ def web_bootstrap_admin_submit(
             row = cur.fetchone()
             cnt = 0
             if row:
-                cnt = row['COUNT(*)'] if isinstance(row, dict) else row[0]
+                cnt = int(list(row.values())[0] or 0) if isinstance(row, dict) else int(row[0] or 0)
             if cnt > 0:
                 return RedirectResponse(url='/web/teacher-login', status_code=302)
         except Exception:

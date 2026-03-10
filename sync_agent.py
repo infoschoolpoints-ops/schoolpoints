@@ -719,7 +719,7 @@ def _save_config(base_dir: str, cfg: Dict[str, Any]) -> bool:
 
 
 _SETTINGS_TO_CONFIG = {
-    'system_settings': ['deployment_mode', 'logo_path', 'campaign_name', 'photos_folder', 'show_stats', 'show_student_photo'],
+    'system_settings': ['logo_path', 'campaign_name', 'photos_folder', 'show_stats', 'show_student_photo'],
     'display_settings': ['title_text', 'subtitle_text', 'logo_url', 'background_url', 'refresh_interval', 'font_size', 'dark_mode', 'show_clock', 'show_qr'],
     'upgrades_settings': ['auto_update', 'channel'],
 }
@@ -1985,6 +1985,20 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                             applied += 1
                 except Exception as e:
                     print(f"[SYNC] Class sync error: {e}")
+
+            if entity_type == 'teacher_class' and action_type == 'replace':
+                try:
+                    tid = int(entity_id or 0)
+                    classes = payload.get('classes') or []
+                    if tid > 0:
+                        cur.execute("DELETE FROM teacher_classes WHERE teacher_id = ?", (tid,))
+                        for cls in classes:
+                            cls = str(cls).strip()
+                            if cls:
+                                cur.execute("INSERT INTO teacher_classes (teacher_id, class_name) VALUES (?, ?)", (tid, cls))
+                        applied += 1
+                except Exception as e:
+                    print(f"[SYNC] Teacher class replace error: {e}")
 
             if entity_type == 'product' and action_type in ('create', 'update', 'delete'):
                 try:
