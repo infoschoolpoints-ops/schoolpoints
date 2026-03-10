@@ -102,8 +102,30 @@ def web_messages(request: Request):
         </div>
     </div>
 
-    <!-- Modals would go here, simplified for brevity -->
-    
+    <!-- Message Modal -->
+    <div id="msg-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center;">
+      <div style="background:#fff;border-radius:12px;padding:24px;min-width:380px;max-width:520px;width:90%;max-height:80vh;overflow-y:auto;direction:rtl;">
+        <h3 id="mm-title" style="margin:0 0 16px;color:#2c3e50;">הודעה חדשה</h3>
+        <input type="hidden" id="mm-id"><input type="hidden" id="mm-type">
+        <div style="margin-bottom:10px"><label style="display:block;font-weight:600;margin-bottom:3px;font-size:13px;color:#34495e;">טקסט *</label>
+          <textarea id="mm-text" rows="3" style="width:100%;padding:8px;border:1px solid #ccd0d5;border-radius:6px;box-sizing:border-box;resize:vertical;"></textarea></div>
+        <div id="mm-image-row" style="margin-bottom:10px;display:none"><label style="display:block;font-weight:600;margin-bottom:3px;font-size:13px;color:#34495e;">נתיב תמונה</label>
+          <input id="mm-image" style="width:100%;padding:8px;border:1px solid #ccd0d5;border-radius:6px;box-sizing:border-box;"></div>
+        <div id="mm-threshold-row" style="margin-bottom:10px;display:none">
+          <label style="display:block;font-weight:600;margin-bottom:3px;font-size:13px;color:#34495e;">מינימום נקודות</label>
+          <input type="number" id="mm-min" min="0" value="0" style="width:100%;padding:8px;border:1px solid #ccd0d5;border-radius:6px;box-sizing:border-box;">
+          <label style="display:block;font-weight:600;margin-bottom:3px;margin-top:6px;font-size:13px;color:#34495e;">מקסימום נקודות</label>
+          <input type="number" id="mm-max" min="0" value="999999" style="width:100%;padding:8px;border:1px solid #ccd0d5;border-radius:6px;box-sizing:border-box;">
+        </div>
+        <div style="margin-bottom:10px"><label style="display:flex;align-items:center;gap:6px;font-weight:600;font-size:13px;color:#34495e;">
+          <input type="checkbox" id="mm-active" checked style="width:18px;height:18px;"> פעיל</label></div>
+        <div style="display:flex;gap:8px;margin-top:16px;">
+          <button class="green" onclick="saveMsg()">שמירה</button>
+          <button onclick="closeMsg()" style="background:#95a5a6;color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;">ביטול</button>
+        </div>
+      </div>
+    </div>
+
     <script>
         function switchTab(name) {
             document.querySelectorAll('.tab-content').forEach(el => el.style.display = 'none');
@@ -147,11 +169,56 @@ def web_messages(request: Request):
             }
         }
         
-        function addStatic() { alert('פונקציונליות בבנייה (API קיים)'); }
-        function addThreshold() { alert('פונקציונליות בבנייה'); }
-        function addNews() { alert('פונקציונליות בבנייה (API קיים)'); }
-        function addAd() { alert('פונקציונליות בבנייה (API קיים)'); }
-        function edit(type, id) { alert('עריכה: ' + type + ' ' + id); }
+        function openMsg(type, item) {
+            const m = document.getElementById('msg-modal');
+            document.getElementById('mm-type').value = type;
+            document.getElementById('mm-id').value = item ? item.id : '';
+            document.getElementById('mm-text').value = item ? (item.text || item.message || '') : '';
+            document.getElementById('mm-active').checked = item ? !!item.is_active : true;
+            document.getElementById('mm-image-row').style.display = type === 'ads' ? 'block' : 'none';
+            document.getElementById('mm-image').value = item ? (item.image_path || '') : '';
+            document.getElementById('mm-threshold-row').style.display = type === 'threshold' ? 'block' : 'none';
+            document.getElementById('mm-min').value = item ? (item.min_points || 0) : 0;
+            document.getElementById('mm-max').value = item ? (item.max_points || 999999) : 999999;
+            const titles = {static:'הודעה כללית',threshold:'הודעה לפי ניקוד',news:'חדשה',ads:'פרסומת'};
+            document.getElementById('mm-title').textContent = (item ? 'עריכת ' : '') + (titles[type] || 'הודעה');
+            m.style.display = 'flex';
+        }
+        function closeMsg() { document.getElementById('msg-modal').style.display = 'none'; }
+        async function saveMsg() {
+            const type = document.getElementById('mm-type').value;
+            const body = {
+                text: document.getElementById('mm-text').value,
+                is_active: document.getElementById('mm-active').checked ? 1 : 0
+            };
+            const mid = document.getElementById('mm-id').value;
+            if (mid) body.id = parseInt(mid);
+            if (type === 'ads') body.image_path = document.getElementById('mm-image').value;
+            if (type === 'threshold') {
+                body.min_points = parseInt(document.getElementById('mm-min').value) || 0;
+                body.max_points = parseInt(document.getElementById('mm-max').value) || 999999;
+            }
+            try {
+                await fetch('/api/messages/' + type + '/save', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+                closeMsg();
+                load(type);
+            } catch(e) { alert('שגיאה: ' + e); }
+        }
+        function addStatic() { openMsg('static', null); }
+        function addThreshold() { openMsg('threshold', null); }
+        function addNews() { openMsg('news', null); }
+        function addAd() { openMsg('ads', null); }
+        async function edit(type, id) {
+            try {
+                const r = await fetch('/api/messages/' + type);
+                const d = await r.json();
+                const item = (d.items || []).find(x => x.id === id);
+                if (item) openMsg(type, item);
+            } catch(e) { alert('שגיאה בטעינה'); }
+        }
         async function del(type, id) {
             if(!confirm('למחוק?')) return;
             await fetch('/api/messages/' + type + '/delete', {

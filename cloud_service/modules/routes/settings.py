@@ -74,7 +74,7 @@ def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[
             entity_type='setting',
             entity_id=payload.key,
             action_type='update',
-            payload=payload.value
+            payload={'key': payload.key, 'value': val_str}
         )
         return {'ok': True}
     finally:
@@ -1969,47 +1969,90 @@ def api_max_points_save(request: Request, payload: Dict[str, Any]) -> Dict[str, 
         except: pass
 
 
+def _max_points_html():
+    return _MP_BODY + _MP_JS
+
+
+_MP_BODY = """
+<div style="max-width:800px;margin:0 auto;">
+<h2 style="color:#fff;">מגבלת ניקוד (תקרה דינמית)</h2>
+<div class="card" style="padding:20px;background:#fff;border-radius:10px;border:1px solid #eee;">
+  <div style="margin-bottom:15px;"><label style="display:block;margin-bottom:5px;font-weight:600;">מדיניות</label>
+    <select id="mp-policy" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;">
+      <option value="none">ללא מגבלה</option><option value="warn">אזהרה בלבד</option><option value="block">חסימה</option>
+    </select></div>
+  <div style="margin-bottom:15px;"><label style="display:block;margin-bottom:5px;font-weight:600;">תאריך התחלה</label>
+    <input type="date" id="mp-start" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;"></div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:15px;">
+    <div><label style="display:block;margin-bottom:5px;font-weight:600;">נקודות יומיות (ברירת מחדל)</label>
+      <input type="number" id="mp-daily" min="0" value="0" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;"></div>
+    <div><label style="display:block;margin-bottom:5px;font-weight:600;">נקודות שבועיות (0=ללא)</label>
+      <input type="number" id="mp-weekly" min="0" value="0" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;"></div>
+  </div>
+  <div style="margin-bottom:15px;"><label style="display:block;margin-bottom:5px;font-weight:600;">אזהרה כש-X נקודות עד התקרה</label>
+    <input type="number" id="mp-warn" min="0" value="0" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;box-sizing:border-box;"></div>
+  <h4 style="margin:18px 0 8px;color:#2c3e50;">נקודות לפי יום בשבוע (ריק = ברירת מחדל)</h4>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(100px,1fr));gap:8px;margin-bottom:15px;" id="mp-weekdays"></div>
+  <h4 style="margin:18px 0 8px;color:#2c3e50;">כללים מיוחדים לתקופות</h4>
+  <div id="mp-special"></div>
+  <button onclick="addSpecial()" style="background:#3498db;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;margin-bottom:15px;">+ כלל מיוחד</button>
+  <h4 style="margin:18px 0 8px;color:#2c3e50;">תוספות חופשיות (חד-פעמיות)</h4>
+  <div id="mp-free"></div>
+  <button onclick="addFree()" style="background:#3498db;color:#fff;border:none;padding:6px 14px;border-radius:6px;cursor:pointer;margin-bottom:15px;">+ תוספת</button>
+  <div style="margin-top:16px;"><button class="green" onclick="saveMP()" style="padding:10px 24px;">שמירה</button></div>
+</div></div>
+"""
+
+_MP_JS = """
+<script>
+const DAYS=['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
+let mpCfg={};
+async function loadMP(){
+  try{const r=await fetch('/api/settings/max_points_config');mpCfg=await r.json();if(!mpCfg||typeof mpCfg!=='object')mpCfg={};}catch(e){mpCfg={};}
+  document.getElementById('mp-policy').value=mpCfg.policy||'none';
+  document.getElementById('mp-start').value=mpCfg.start_date||new Date().toISOString().slice(0,10);
+  document.getElementById('mp-daily').value=mpCfg.daily_points||0;
+  document.getElementById('mp-weekly').value=mpCfg.weekly_points||0;
+  document.getElementById('mp-warn').value=mpCfg.warn_within_points||0;
+  renderWD();renderSP();renderFA();
+}
+function renderWD(){
+  const c=document.getElementById('mp-weekdays');
+  const dpw=mpCfg.daily_points_by_weekday||{};
+  c.innerHTML=DAYS.map((d,i)=>'<div><label style="font-size:12px;font-weight:600;display:block;margin-bottom:2px;">'+d+'</label><input type="number" id="wd-'+i+'" min="0" value="'+(dpw[i]!=null?dpw[i]:'')+'" placeholder="ברירת" style="width:100%;padding:6px;border:1px solid #ddd;border-radius:4px;box-sizing:border-box;"></div>').join('');
+}
+function renderSP(){
+  const c=document.getElementById('mp-special');const rules=mpCfg.daily_special_rules||[];
+  if(!rules.length){c.innerHTML='<div style="color:#888;font-size:13px;margin-bottom:8px;">אין כללים מיוחדים</div>';return;}
+  c.innerHTML=rules.map((r,i)=>'<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap;"><input type="date" value="'+(r.start||'')+'" onchange="mpCfg.daily_special_rules['+i+'].start=this.value" style="padding:6px;border:1px solid #ddd;border-radius:4px;"><span>עד</span><input type="date" value="'+(r.end||'')+'" onchange="mpCfg.daily_special_rules['+i+'].end=this.value" style="padding:6px;border:1px solid #ddd;border-radius:4px;"><input type="number" value="'+(r.daily_points||0)+'" onchange="mpCfg.daily_special_rules['+i+'].daily_points=parseInt(this.value)||0" style="width:80px;padding:6px;border:1px solid #ddd;border-radius:4px;" placeholder="נקודות"><input value="'+(r.note||'')+'" onchange="mpCfg.daily_special_rules['+i+'].note=this.value" style="flex:1;min-width:80px;padding:6px;border:1px solid #ddd;border-radius:4px;" placeholder="הערה"><button onclick="mpCfg.daily_special_rules.splice('+i+',1);renderSP();" style="background:#e74c3c;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">X</button></div>').join('');
+}
+function addSpecial(){if(!mpCfg.daily_special_rules)mpCfg.daily_special_rules=[];mpCfg.daily_special_rules.push({start:'',end:'',daily_points:0,note:''});renderSP();}
+function renderFA(){
+  const c=document.getElementById('mp-free');const fa=mpCfg.free_additions||[];
+  if(!fa.length){c.innerHTML='<div style="color:#888;font-size:13px;margin-bottom:8px;">אין תוספות</div>';return;}
+  c.innerHTML=fa.map((r,i)=>'<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;"><input type="date" value="'+(r.date||'')+'" onchange="mpCfg.free_additions['+i+'].date=this.value" style="padding:6px;border:1px solid #ddd;border-radius:4px;"><input type="number" value="'+(r.points||0)+'" onchange="mpCfg.free_additions['+i+'].points=parseInt(this.value)||0" style="width:80px;padding:6px;border:1px solid #ddd;border-radius:4px;" placeholder="נקודות"><input value="'+(r.note||'')+'" onchange="mpCfg.free_additions['+i+'].note=this.value" style="flex:1;min-width:80px;padding:6px;border:1px solid #ddd;border-radius:4px;" placeholder="הערה"><button onclick="mpCfg.free_additions.splice('+i+',1);renderFA();" style="background:#e74c3c;color:#fff;border:none;padding:4px 10px;border-radius:4px;cursor:pointer;">X</button></div>').join('');
+}
+function addFree(){if(!mpCfg.free_additions)mpCfg.free_additions=[];mpCfg.free_additions.push({date:'',points:0,note:''});renderFA();}
+async function saveMP(){
+  const dpw={};DAYS.forEach(function(d,i){var v=document.getElementById('wd-'+i).value;if(v!=='')dpw[i]=parseInt(v)||0;});
+  const payload={policy:document.getElementById('mp-policy').value,start_date:document.getElementById('mp-start').value,
+    daily_points:parseInt(document.getElementById('mp-daily').value)||0,weekly_points:parseInt(document.getElementById('mp-weekly').value)||0,
+    warn_within_points:parseInt(document.getElementById('mp-warn').value)||0,
+    daily_points_by_weekday:Object.keys(dpw).length?dpw:null,daily_special_rules:mpCfg.daily_special_rules||[],free_additions:mpCfg.free_additions||[]};
+  await fetch('/api/settings/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:'max_points_config',value:payload})});
+  alert('נשמר');
+}
+loadMP();
+</script>
+"""
+
+
 @router.get("/web/max-points", response_class=HTMLResponse)
 def web_max_points(request: Request):
     guard = web_require_admin_teacher(request)
     if guard: return guard
-    html_content = """
-    <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
-      <div class="form-group" style="margin-bottom:15px;">
-        <label style="display:block; margin-bottom:5px; font-weight:600;">מגבלת נקודות יומית (0 = ללא מגבלה)</label>
-        <input type="number" id="max-pts-daily" min="0" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">
-      </div>
-      <div class="form-group" style="margin-bottom:15px;">
-        <label class="ck" style="display:flex; align-items:center; gap:8px; font-weight:600;">
-          <input type="checkbox" id="max-pts-enabled" style="width:18px; height:18px;"> מגבלה פעילה
-        </label>
-      </div>
-      <button class="green" onclick="saveMaxPoints()">שמירה</button>
-    </div>
-    <script>
-      async function loadMaxPoints() {
-        try {
-          const res = await fetch('/api/settings/max-points');
-          const data = await res.json();
-          document.getElementById('max-pts-daily').value = data.daily_limit || 0;
-          document.getElementById('max-pts-enabled').checked = !!data.enabled;
-        } catch(e) {}
-      }
-      async function saveMaxPoints() {
-        const payload = {
-          daily_limit: parseInt(document.getElementById('max-pts-daily').value) || 0,
-          enabled: document.getElementById('max-pts-enabled').checked
-        };
-        await fetch('/api/settings/max-points', {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify(payload)
-        });
-        alert('נשמר בהצלחה');
-      }
-      loadMaxPoints();
-    </script>
-    """
-    return basic_web_shell("הגבלת ניקוד", html_content, request=request)
+    html_content = _max_points_html()
+    return basic_web_shell("מגבלת ניקוד", html_content, request=request)
 
 
 @router.get("/web/quiet-mode", response_class=HTMLResponse)
@@ -2033,6 +2076,122 @@ def web_settings_hub(request: Request):
     html_content = f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;">{grid}</div>'
     return basic_web_shell("הגדרות", html_content, request=request)
 
+
+@router.get('/api/products')
+def api_products_list(request: Request) -> Dict[str, Any]:
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tid = web_tenant_from_cookie(request)
+    conn = tenant_db_connection(tid)
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM products ORDER BY sort_order, id')
+        return {'ok': True, 'items': [dict(r) for r in (cur.fetchall() or [])]}
+    finally:
+        try: conn.close()
+        except: pass
+
+@router.post('/api/products/save')
+def api_products_save(request: Request, payload: Dict[str, Any] = Body(...)):
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tid = web_tenant_from_cookie(request)
+    conn = tenant_db_connection(tid)
+    try:
+        cur = conn.cursor()
+        pid = payload.pop('id', None)
+        cols = ['name','display_name','category_id','price_points','stock_qty','is_active',
+                'consolidated_voucher','sort_order','allowed_classes','deduct_points',
+                'min_points_required','max_per_student','max_per_class','image_path','voucher_per_unit']
+        vals = {c: payload.get(c) for c in cols if c in payload}
+        if pid:
+            sets = ', '.join(f"{k} = ?" for k in vals)
+            cur.execute(sql_placeholder(f"UPDATE products SET {sets}, updated_at=CURRENT_TIMESTAMP WHERE id=?"), list(vals.values())+[pid])
+            conn.commit()
+            record_sync_event(tenant_id=tid, station_id='web', entity_type='product', entity_id=str(pid), action_type='update', payload={**vals,'id':pid})
+        else:
+            ks = list(vals.keys())
+            cur.execute(sql_placeholder(f"INSERT INTO products ({','.join(ks)}) VALUES ({','.join('?' for _ in ks)})"), list(vals.values()))
+            conn.commit()
+            pid = cur.lastrowid
+            record_sync_event(tenant_id=tid, station_id='web', entity_type='product', entity_id=str(pid), action_type='create', payload={**vals,'id':pid})
+        return {'ok': True, 'id': pid}
+    finally:
+        try: conn.close()
+        except: pass
+
+@router.post('/api/products/delete')
+def api_products_delete(request: Request, payload: Dict[str, Any] = Body(...)):
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tid = web_tenant_from_cookie(request)
+    conn = tenant_db_connection(tid)
+    try:
+        pid = payload.get('id')
+        conn.cursor().execute(sql_placeholder('DELETE FROM products WHERE id=?'), (pid,))
+        conn.commit()
+        record_sync_event(tenant_id=tid, station_id='web', entity_type='product', entity_id=str(pid), action_type='delete', payload={})
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@router.get('/api/product-categories')
+def api_categories_list(request: Request) -> Dict[str, Any]:
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tid = web_tenant_from_cookie(request)
+    conn = tenant_db_connection(tid)
+    try:
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM product_categories ORDER BY sort_order, id')
+        return {'ok': True, 'items': [dict(r) for r in (cur.fetchall() or [])]}
+    finally:
+        try: conn.close()
+        except: pass
+
+@router.post('/api/product-categories/save')
+def api_categories_save(request: Request, payload: Dict[str, Any] = Body(...)):
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tid = web_tenant_from_cookie(request)
+    conn = tenant_db_connection(tid)
+    try:
+        cur = conn.cursor()
+        cid = payload.pop('id', None)
+        cols = ['name','sort_order','is_active','show_in_catalog','max_items_per_student','max_items_per_class','min_points_required']
+        vals = {c: payload.get(c) for c in cols if c in payload}
+        if cid:
+            sets = ', '.join(f"{k} = ?" for k in vals)
+            cur.execute(sql_placeholder(f"UPDATE product_categories SET {sets}, updated_at=CURRENT_TIMESTAMP WHERE id=?"), list(vals.values())+[cid])
+            conn.commit()
+            record_sync_event(tenant_id=tid, station_id='web', entity_type='product_category', entity_id=str(cid), action_type='update', payload={**vals,'id':cid})
+        else:
+            ks = list(vals.keys())
+            cur.execute(sql_placeholder(f"INSERT INTO product_categories ({','.join(ks)}) VALUES ({','.join('?' for _ in ks)})"), list(vals.values()))
+            conn.commit()
+            cid = cur.lastrowid
+            record_sync_event(tenant_id=tid, station_id='web', entity_type='product_category', entity_id=str(cid), action_type='create', payload={**vals,'id':cid})
+        return {'ok': True, 'id': cid}
+    finally:
+        try: conn.close()
+        except: pass
+
+@router.post('/api/product-categories/delete')
+def api_categories_delete(request: Request, payload: Dict[str, Any] = Body(...)):
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tid = web_tenant_from_cookie(request)
+    conn = tenant_db_connection(tid)
+    try:
+        cid = payload.get('id')
+        conn.cursor().execute(sql_placeholder('DELETE FROM product_categories WHERE id=?'), (cid,))
+        conn.commit()
+        record_sync_event(tenant_id=tid, station_id='web', entity_type='product_category', entity_id=str(cid), action_type='delete', payload={})
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
 
 @router.get("/web/purchases", response_class=HTMLResponse)
 def web_purchases(request: Request):

@@ -724,6 +724,12 @@ _SETTINGS_TO_CONFIG = {
     'upgrades_settings': ['auto_update', 'channel'],
 }
 
+# Settings stored as JSON blobs in the settings table that map directly to config.json keys
+_JSON_SETTINGS_TO_CONFIG = {
+    'quiet_mode_config': ['quiet_mode_enabled', 'quiet_mode_start', 'quiet_mode_end', 'quiet_mode_volume', 'quiet_mode_ranges'],
+    'anti_spam_config': ['anti_spam_enabled', 'anti_spam_rules'],
+}
+
 
 def _apply_cloud_settings_to_config(db_path: str, base_dir: str) -> int:
     """Read settings from DB and merge into config.json. Returns keys updated."""
@@ -745,6 +751,23 @@ def _apply_cloud_settings_to_config(db_path: str, base_dir: str) -> int:
             cfg = {}
         snap = json.dumps(cfg, ensure_ascii=False, sort_keys=True)
         for db_key, config_keys in _SETTINGS_TO_CONFIG.items():
+            try:
+                cur.execute('SELECT value FROM settings WHERE key = ? LIMIT 1', (db_key,))
+                row = cur.fetchone()
+                if not row:
+                    continue
+                raw = row['value'] if isinstance(row, dict) else row[0]
+                data = json.loads(str(raw or '{}'))
+                if not isinstance(data, dict):
+                    continue
+                for ck in config_keys:
+                    if ck in data:
+                        cfg[ck] = data[ck]
+                        updated += 1
+            except Exception:
+                continue
+        # JSON blob settings → config.json individual keys
+        for db_key, config_keys in _JSON_SETTINGS_TO_CONFIG.items():
             try:
                 cur.execute('SELECT value FROM settings WHERE key = ? LIMIT 1', (db_key,))
                 row = cur.fetchone()
@@ -790,6 +813,112 @@ def _apply_cloud_settings_to_config(db_path: str, base_dir: str) -> int:
         except Exception:
             pass
     return updated
+
+
+def _get_color_settings_path(base_dir: str) -> str:
+    """Find color_settings.json path (shared folder or local)."""
+    cfg = _load_config(base_dir)
+    shared = cfg.get('shared_folder') or cfg.get('network_root') if isinstance(cfg, dict) else None
+    if shared and os.path.isdir(str(shared)):
+        return os.path.join(shared, 'color_settings.json')
+    for env_name in ('PROGRAMDATA', 'LOCALAPPDATA', 'APPDATA'):
+        root = os.environ.get(env_name)
+        if root and os.path.isdir(root):
+            p = os.path.join(root, 'SchoolPoints', 'color_settings.json')
+            if os.path.exists(p):
+                return p
+    return os.path.join(base_dir, 'color_settings.json')
+
+
+def _apply_cloud_color_settings(db_path: str, base_dir: str) -> int:
+    """Pull color_settings from DB settings table and write to color_settings.json."""
+    try:
+        conn = _connect(db_path)
+    except Exception:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM settings WHERE key='color_settings' LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            return 0
+        raw = row['value'] if isinstance(row, dict) else row[0]
+        data = json.loads(str(raw or '{}'))
+        if not isinstance(data, dict) or not data:
+            return 0
+        cs_path = _get_color_settings_path(base_dir)
+        existing = {}
+        if os.path.exists(cs_path):
+            try:
+                with open(cs_path, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+        if json.dumps(data, sort_keys=True) == json.dumps(existing, sort_keys=True):
+            return 0
+        os.makedirs(os.path.dirname(cs_path) or '.', exist_ok=True)
+        with open(cs_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"[CONFIG-BRIDGE] Updated color_settings.json from cloud")
+        return 1
+    except Exception as e:
+        print(f"[CONFIG-BRIDGE] color_settings pull error: {e}")
+        return 0
+    finally:
+        try: conn.close()
+        except: pass
+
+
+def _push_color_settings_to_db(db_path: str, base_dir: str) -> int:
+    """Push color_settings.json to DB settings table for cloud sync."""
+    cs_path = _get_color_settings_path(base_dir)
+    if not os.path.exists(cs_path):
+        return 0
+    try:
+        with open(cs_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, dict) or not data:
+            return 0
+    except Exception:
+        return 0
+    try:
+        conn = _connect(db_path)
+    except Exception:
+        return 0
+    try:
+        cur = conn.cursor()
+        cur.execute('''CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY, value TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP)''')
+        jv = json.dumps(data, ensure_ascii=False)
+        cur.execute("SELECT value FROM settings WHERE key='color_settings' LIMIT 1")
+        row = cur.fetchone()
+        existing_raw = (row['value'] if isinstance(row, dict) else row[0]) if row else '{}'
+        if jv == existing_raw:
+            conn.close()
+            return 0
+        try:
+            cur.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES ('color_settings',?,datetime('now')) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=datetime('now')", (jv,))
+        except Exception:
+            cur.execute("UPDATE settings SET value=?, updated_at=datetime('now') WHERE key='color_settings'", (jv,))
+        try:
+            _ensure_change_log(conn)
+            cur.execute(
+                "INSERT INTO change_log (entity_type, entity_id, action_type, payload_json, created_at) "
+                "VALUES ('setting', 'color_settings', 'update', ?, datetime('now'))",
+                (json.dumps({'key': 'color_settings', 'value': jv}, ensure_ascii=False),))
+        except Exception:
+            pass
+        conn.commit()
+        print(f"[CONFIG-BRIDGE] Pushed color_settings to DB")
+        return 1
+    except Exception as e:
+        print(f"[CONFIG-BRIDGE] color_settings push error: {e}")
+        return 0
+    finally:
+        try: conn.close()
+        except: pass
 
 
 def _push_config_to_db_settings(db_path: str, base_dir: str) -> int:
@@ -842,6 +971,46 @@ def _push_config_to_db_settings(db_path: str, base_dir: str) -> int:
                 except Exception:
                     pass
             # Record in change_log
+            try:
+                _ensure_change_log(conn)
+                cur.execute(
+                    "INSERT INTO change_log (entity_type, entity_id, action_type, payload_json, created_at) "
+                    "VALUES ('setting', ?, 'update', ?, datetime('now'))",
+                    (db_key, json.dumps({'key': db_key, 'value': jv}, ensure_ascii=False)))
+            except Exception:
+                pass
+        # Push JSON blob settings (config.json keys → single DB key)
+        for db_key, config_keys in _JSON_SETTINGS_TO_CONFIG.items():
+            val = {}
+            for ck in config_keys:
+                if ck in cfg:
+                    val[ck] = cfg[ck]
+            if not val:
+                continue
+            try:
+                cur.execute('SELECT value FROM settings WHERE key=? LIMIT 1', (db_key,))
+                row = cur.fetchone()
+                if row:
+                    raw = row['value'] if isinstance(row, dict) else row[0]
+                    existing = json.loads(str(raw or '{}'))
+                    if isinstance(existing, dict):
+                        existing.update(val)
+                        val = existing
+            except Exception:
+                pass
+            jv = json.dumps(val, ensure_ascii=False)
+            try:
+                cur.execute(
+                    'INSERT INTO settings (key, value, updated_at) VALUES (?,?,CURRENT_TIMESTAMP) '
+                    'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+                    (db_key, jv))
+                updated += 1
+            except Exception:
+                try:
+                    cur.execute('UPDATE settings SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', (jv, db_key))
+                    updated += 1
+                except Exception:
+                    pass
             try:
                 _ensure_change_log(conn)
                 cur.execute(
@@ -2367,8 +2536,12 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 last_config_bridge = now_cb
                 # Direction 1: cloud DB settings → config.json
                 _apply_cloud_settings_to_config(str(db_path), base_dir)
+                # Direction 1b: cloud DB color_settings → color_settings.json
+                _apply_cloud_color_settings(str(db_path), base_dir)
                 # Direction 2: config.json → DB settings (for cloud push)
                 _push_config_to_db_settings(str(db_path), base_dir)
+                # Direction 2b: color_settings.json → DB settings
+                _push_color_settings_to_db(str(db_path), base_dir)
         except Exception as _cb_err:
             try:
                 print(f"[CONFIG-BRIDGE] {_cb_err}")
