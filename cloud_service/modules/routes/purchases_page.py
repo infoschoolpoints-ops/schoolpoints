@@ -117,7 +117,7 @@ async function loadCats(){
   renderCats();
 }
 async function loadSettings(){
-  try{const r=await fetch('/api/settings/purchases_data');const d=await r.json();const s=d.settings||d||{};
+  try{const r=await fetch('/api/settings/get/purchases_data');const d=await r.json();const s=d.settings||d||{};
     document.getElementById('ps-enabled').checked=!!s.enabled;
     document.getElementById('ps-min').value=s.min_points||0;
     document.getElementById('ps-maxday').value=s.max_per_day||0;

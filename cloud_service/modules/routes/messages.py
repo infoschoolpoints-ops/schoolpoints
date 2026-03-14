@@ -279,7 +279,7 @@ def web_messages(request: Request):
 
         async function loadTimeBonus() {
             try {
-                const r = await fetch('/api/settings/time_bonus_message');
+                const r = await fetch('/api/settings/get/time_bonus_message');
                 const d = await r.json();
                 document.getElementById('tb-enabled').checked = !!d.enabled;
                 document.getElementById('tb-n').value = d.n || 1;
@@ -302,7 +302,7 @@ def web_messages(request: Request):
             const keys = ['news_show_weekday','news_show_hebrew_date','news_show_parsha','news_show_holidays','news_show_birthdays','birthday_message_template','birthday_bar_mitzvah_template'];
             for (const k of keys) {
                 try {
-                    const r = await fetch('/api/settings/' + k);
+                    const r = await fetch('/api/settings/get/' + k);
                     const d = await r.json();
                     const v = d.value;
                     if (k === 'birthday_message_template') { document.getElementById('ns-bday-template').value = v || ''; continue; }

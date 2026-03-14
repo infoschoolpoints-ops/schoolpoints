@@ -106,4 +106,4 @@ class LicenseFetchPayload(BaseModel):
 
 class GenericSettingPayload(BaseModel):
     key: str
-    value: Dict[str, Any]
+    value: Any

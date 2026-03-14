@@ -105,7 +105,7 @@ function utab(id,btn){
 }
 async function loadAll(){
   try{
-    const r=await fetch('/api/settings/color_settings');
+    const r=await fetch('/api/settings/get/color_settings');
     const d=await r.json();
     D.color_ranges=Array.isArray(d.color_ranges)?d.color_ranges:(Array.isArray(d.ranges)?d.ranges:[]);
     D.coins=Array.isArray(d.coins)?d.coins:[];

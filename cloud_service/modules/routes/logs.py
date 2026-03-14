@@ -208,7 +208,7 @@ def web_logs(request: Request):
 
       async function loadLogsSettings() {
         try {
-          const res = await fetch('/api/settings/log_settings');
+          const res = await fetch('/api/settings/get/log_settings');
           const data = await res.json();
           document.getElementById('log-retention').value = data.retention_days || 30;
         } catch(e) {}

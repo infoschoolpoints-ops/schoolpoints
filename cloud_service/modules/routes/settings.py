@@ -39,8 +39,8 @@ def set_web_setting_json(conn, key: str, value_json: str):
         cur.execute("INSERT OR REPLACE INTO web_settings (key, value_json) VALUES (?, ?)", (key, value_json))
     conn.commit()
 
-@router.get('/api/settings/{key}')
-def api_settings_get(request: Request, key: str) -> Dict[str, Any]:
+@router.get('/api/settings/get/{key}')
+def api_settings_get(request: Request, key: str):
     guard = web_require_admin_teacher(request)
     if guard: raise HTTPException(status_code=401)
     
@@ -72,7 +72,9 @@ def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[
     tenant_id = web_tenant_from_cookie(request)
     conn = tenant_db_connection(tenant_id)
     try:
-        val_str = json.dumps(payload.value, ensure_ascii=False)
+        # If value is not a dict, wrap it so load-side d.value always works
+        store_val = payload.value if isinstance(payload.value, dict) else {'value': payload.value}
+        val_str = json.dumps(store_val, ensure_ascii=False)
         # Write to canonical 'settings' table (synced with local app via config-bridge)
         cur = conn.cursor()
         try:
@@ -346,7 +348,7 @@ def web_system_settings(request: Request):
     <script>
       async function loadSystem() {
         try {
-          const res = await fetch('/api/settings/system_settings');
+          const res = await fetch('/api/settings/get/system_settings');
           const data = await res.json();
           document.getElementById('sys-mode').value = data.deployment_mode || 'hybrid';
           document.getElementById('sys-work-mode').value = data.work_mode || 'points';
@@ -532,7 +534,7 @@ def web_colors(request: Request):
       let fullColorSettings = {};
       async function loadRanges() {
         try {
-          const res = await fetch('/api/settings/color_settings');
+          const res = await fetch('/api/settings/get/color_settings');
           const data = await res.json();
           let v = data.value;
           if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
@@ -683,7 +685,7 @@ def web_sounds(request: Request):
 
       async function loadSounds() {
         try {
-          const res = await fetch('/api/settings/color_settings');
+          const res = await fetch('/api/settings/get/color_settings');
           const data = await res.json();
           let v = data.value;
           if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
@@ -843,7 +845,7 @@ def web_bonuses(request: Request):
 
       async function loadBonuses() {
         try {
-          const res = await fetch('/api/settings/bonuses_settings');
+          const res = await fetch('/api/settings/get/bonuses_settings');
           const data = await res.json();
           bonuses = Array.isArray(data.items) ? data.items : [];
           renderBonuses();
@@ -983,7 +985,7 @@ def web_coins(request: Request):
 
       async function loadCoins() {
         try {
-          const res = await fetch('/api/settings/color_settings');
+          const res = await fetch('/api/settings/get/color_settings');
           const data = await res.json();
           let v = data.value;
           if (typeof v === 'string') try { v = JSON.parse(v); } catch(e) { v = {}; }
@@ -1147,7 +1149,7 @@ def web_goals(request: Request):
 
         async function loadGoals() {
             try {
-                const res = await fetch('/api/settings/goal_settings');
+                const res = await fetch('/api/settings/get/goal_settings');
                 const data = await res.json();
                 
                 document.getElementById('goal-enabled').checked = !!data.enabled;
@@ -1255,7 +1257,7 @@ def web_holidays(request: Request):
 
       async function loadHolidays() {
         try {
-          const res = await fetch('/api/settings/holidays');
+          const res = await fetch('/api/settings/get/holidays');
           const data = await res.json();
           holidays = Array.isArray(data.items) ? data.items : [];
           renderHolidays();
@@ -1419,7 +1421,7 @@ def web_special_bonus(request: Request):
 
       async function loadItems() {
         try {
-          const res = await fetch('/api/settings/special_bonus');
+          const res = await fetch('/api/settings/get/special_bonus');
           const data = await res.json();
           items = Array.isArray(data.items) ? data.items : [];
           renderItems();
@@ -1810,7 +1812,7 @@ def web_cashier(request: Request):
 
       async function loadItems() {
         try {
-          const res = await fetch('/api/settings/cashier_settings');
+          const res = await fetch('/api/settings/get/cashier_settings');
           const data = await res.json();
           items = Array.isArray(data.items) ? data.items : [];
           enabled = !!data.enabled;
@@ -2133,7 +2135,7 @@ def web_anti_spam(request: Request):
       let asRules = [];
       async function loadAS() {
         try {
-          const r = await fetch('/api/settings/anti_spam_config');
+          const r = await fetch('/api/settings/get/anti_spam_config');
           const d = await r.json();
           let v = d;
           if (d.value !== undefined) { v = typeof d.value === 'string' ? JSON.parse(d.value) : d.value; }
@@ -2257,7 +2259,7 @@ _MP_JS = """
 const DAYS=['ראשון','שני','שלישי','רביעי','חמישי','שישי','שבת'];
 let mpCfg={};
 async function loadMP(){
-  try{const r=await fetch('/api/settings/max_points_config');mpCfg=await r.json();if(!mpCfg||typeof mpCfg!=='object')mpCfg={};}catch(e){mpCfg={};}
+  try{const r=await fetch('/api/settings/get/max_points_config');mpCfg=await r.json();if(!mpCfg||typeof mpCfg!=='object')mpCfg={};}catch(e){mpCfg={};}
   document.getElementById('mp-policy').value=mpCfg.policy||'none';
   document.getElementById('mp-start').value=mpCfg.start_date||new Date().toISOString().slice(0,10);
   document.getElementById('mp-daily').value=mpCfg.daily_points||0;
@@ -2319,7 +2321,7 @@ def web_quiet_mode(request: Request):
       let qmRanges = [];
       async function loadQM() {
         try {
-          const r = await fetch('/api/settings/quiet_mode_config');
+          const r = await fetch('/api/settings/get/quiet_mode_config');
           const d = await r.json();
           let v = d;
           if (d.value !== undefined) { v = typeof d.value === 'string' ? JSON.parse(d.value) : d.value; }

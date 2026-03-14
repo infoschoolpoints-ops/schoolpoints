@@ -243,7 +243,7 @@ def web_students(request: Request):
                     }
                     
                     _allStudents = data.items;
-                    statusEl.textContent = data.items.length + ' תלמידים (מציג 100 ראשונים)';
+                    statusEl.textContent = data.items.length + ' תלמידים';
                     
                     rowsEl.innerHTML = data.items.map(s => `
                         <tr data-id="${s.id}" onclick="setSelected(${s.id})" style="border-bottom:1px solid rgba(255,255,255,0.05); cursor:pointer;">
@@ -477,7 +477,7 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
             p = f"%{q_str}%"
             params = [p, p, p, p, p]
         
-        sql += " ORDER BY class_name, last_name LIMIT 100"
+        sql += " ORDER BY class_name, last_name"
         
         cur.execute(sql_placeholder(sql), params)
         rows = cur.fetchall() or []
