@@ -202,24 +202,11 @@ def web_guide(request: Request) -> str:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
         return public_web_shell('מדריך', body, request=request)
 
-    # Extract the body content from the HTML
-    import re
-    body_match = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
-    if body_match:
-        body = body_match.group(1)
-        # Remove any existing header/footer from the embedded guide
-        body = re.sub(r'<header[^>]*>.*?</header>', '', body, flags=re.DOTALL | re.IGNORECASE)
-        body = re.sub(r'<footer[^>]*>.*?</footer>', '', body, flags=re.DOTALL | re.IGNORECASE)
-        body = re.sub(r'<div[^>]*class="top"[^>]*>.*?</div>', '', body, flags=re.DOTALL | re.IGNORECASE)
-        
-        # Fix relative paths for images
-        body = body.replace('src="guide_images/', 'src="/web/assets/guide_images/')
-        body = body.replace('src="images/', 'src="/web/assets/guide_images/')
-        
-        return public_web_shell('מדריך למשתמש', body, request=request)
-    
-    # Fallback: return as-is with wrapper
-    return public_web_shell('מדריך למשתמש', html_content, request=request)
+    # Serve as standalone HTML – preserve original styling
+    html_content = html_content.replace('src="guide_images/', 'src="/web/assets/guide_images/')
+    html_content = html_content.replace('src="images/', 'src="/web/assets/guide_images/')
+    html_content = html_content.replace('href="equipment_required.html"', 'href="/web/equipment-required"')
+    return html_content
 
 @router.get('/web/pricing', response_class=HTMLResponse)
 def web_pricing() -> str:
@@ -355,14 +342,7 @@ def web_equipment_required(request: Request) -> str:
         body = "<h2>רשימת ציוד נדרש</h2><p>העמוד עדיין לא זמין.</p>"
         return public_web_shell("רשימת ציוד נדרש", body)
     
-    # Extract body content
-    body_content = html_content
-    m = re.search(r'<body[^>]*>(.*?)</body>', html_content, re.DOTALL | re.IGNORECASE)
-    if m:
-        body_content = m.group(1)
-        
-    # Fix relative paths
-    body_content = body_content.replace('src="equipment_required_files/', 'src="/web/assets/equipment_required_files/')
-    body_content = body_content.replace("src='equipment_required_files/", "src='/web/assets/equipment_required_files/")
-    
-    return public_web_shell("רשימת ציוד נדרש", body_content, request=request)
+    # Serve as standalone HTML – preserve original styling
+    html_content = html_content.replace('src="equipment_required_files/', 'src="/web/assets/equipment_required_files/')
+    html_content = html_content.replace("src='equipment_required_files/", "src='/web/assets/equipment_required_files/")
+    return html_content

@@ -2194,6 +2194,18 @@ class AdminStation:
             cursor='hand2'
         ).pack(side=tk.RIGHT, padx=5)
 
+        tk.Button(
+            row2,
+            text="📋 תיקון מרוכז",
+            command=self.open_bulk_swipe_fix,
+            font=('Arial', 9, 'bold'),
+            bg='#6c3483',
+            fg='white',
+            padx=10,
+            pady=5,
+            cursor='hand2'
+        ).pack(side=tk.RIGHT, padx=5)
+
         tk.Label(row2, text="", bg='#ecf0f1', width=1).pack(side=tk.RIGHT)
 
         # הודעה פרטית (משמאל יותר)
@@ -4240,6 +4252,452 @@ class AdminStation:
         btns.pack(fill=tk.X, pady=(12, 0))
         tk.Button(btns, text='אישור', command=_apply, font=('Arial', 10, 'bold'), bg='#27ae60', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
         tk.Button(btns, text='ביטול', command=dlg.destroy, font=('Arial', 10), bg='#95a5a6', fg='white', padx=16, pady=6).pack(side=tk.LEFT, padx=6)
+
+    def open_bulk_swipe_fix(self):
+        """חלון תיקון תיקוף מרוכז — שני מצבים: לפי תאריך / לפי תלמיד"""
+        if not self.ensure_can_modify():
+            return
+        try:
+            if self.current_teacher and self.current_teacher.get('is_admin') == 0:
+                if not self.teacher_classes_cache:
+                    self.teacher_classes_cache = self.db.get_teacher_classes(self.current_teacher['id'])
+                conn = self.db.get_connection()
+                cur = conn.cursor()
+                cls_list = self.teacher_classes_cache or []
+                if cls_list:
+                    ph = ','.join('?' * len(cls_list))
+                    cur.execute(f'SELECT * FROM students WHERE class_name IN ({ph}) ORDER BY class_name, last_name, first_name', cls_list)
+                    all_students = [dict(r) for r in cur.fetchall()]
+                else:
+                    all_students = []
+                conn.close()
+            else:
+                all_students = self.db.get_all_students()
+        except Exception:
+            all_students = self.db.get_all_students()
+        if not all_students:
+            messagebox.showinfo('מידע', 'אין תלמידים במערכת', parent=self.root)
+            return
+        student_names = {}
+        for s in all_students:
+            ln = str(s.get('last_name') or '').strip()
+            fn = str(s.get('first_name') or '').strip()
+            cls = str(s.get('class_name') or '').strip()
+            display = f"{ln} {fn}"
+            if cls:
+                display += f"  ({cls})"
+            student_names[display] = s
+        sorted_names = sorted(student_names.keys(),
+                              key=lambda n: (student_names[n].get('serial_number') or 999999,
+                                             student_names[n].get('class_name') or '',
+                                             student_names[n].get('last_name') or ''))
+        all_classes = sorted(set(str(s.get('class_name') or '').strip() for s in all_students if str(s.get('class_name') or '').strip()))
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('תיקון תיקוף מרוכז')
+        dlg.configure(bg='#ecf0f1')
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(True, True)
+        dlg.geometry('780x620')
+        try:
+            dlg.minsize(700, 500)
+        except Exception:
+            pass
+
+        tk.Label(dlg, text=fix_rtl_text('תיקון תיקוף מרוכז'), font=('Arial', 14, 'bold'),
+                 bg='#ecf0f1', fg='#2c3e50').pack(pady=(10, 4))
+        mode_var = tk.StringVar(value='by_date')
+        mode_frame = tk.Frame(dlg, bg='#ecf0f1')
+        mode_frame.pack(fill=tk.X, padx=14, pady=(0, 6))
+        content_frame = tk.Frame(dlg, bg='#ecf0f1')
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=14, pady=0)
+        status_var = tk.StringVar(value='')
+        tk.Label(dlg, textvariable=status_var, font=('Arial', 10),
+                 bg='#ecf0f1', fg='#27ae60', anchor='e').pack(fill=tk.X, padx=14, pady=(4, 8))
+
+        self._bulk_fix_build_ui(dlg, content_frame, mode_frame, mode_var, status_var,
+                                student_names, sorted_names, all_classes)
+
+    def _bulk_fix_apply_single(self, student, date_str, time_str):
+        """מבצע תיקוף ידני לתלמיד + בונוס זמנים. מחזיר (success, msg)."""
+        try:
+            dt_obj = datetime.strptime(f"{date_str} {time_str}", '%Y-%m-%d %H:%M')
+        except Exception:
+            return False, 'תאריך/שעה לא תקינים'
+        student_id = int(student.get('id') or 0)
+        if not student_id:
+            return False, 'תלמיד לא תקין'
+        swiped_at = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+        card_number = str(student.get('card_number') or '').strip()
+        try:
+            from datetime import timezone
+            local_tz = datetime.now().astimezone().tzinfo
+            dt_local = dt_obj.replace(tzinfo=local_tz)
+            given_at_utc = dt_local.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        except Exception:
+            given_at_utc = swiped_at
+        try:
+            if not self.db.upsert_first_swipe_for_date(student_id, swiped_at=swiped_at,
+                                                       card_number=card_number, station_type='public'):
+                return False, 'לא ניתן לרשום תיקוף'
+        except Exception as e:
+            return False, str(e)
+        class_name = str(student.get('class_name') or '').strip()
+        try:
+            time_bonus = self.db.get_active_time_bonus_now(class_name=class_name, now_dt=dt_obj)
+        except Exception:
+            time_bonus = None
+        if time_bonus:
+            try:
+                bonus_schedule_id = int(time_bonus.get('id') or 0)
+            except Exception:
+                bonus_schedule_id = 0
+            bonus_group = ''
+            try:
+                bonus_group = str(time_bonus.get('group_name') or time_bonus.get('name') or '').strip()
+            except Exception:
+                pass
+            try:
+                bonus_points = int(time_bonus.get('bonus_points', 0) or 0)
+            except Exception:
+                bonus_points = 0
+            existing_bonus = None
+            try:
+                if bonus_group:
+                    existing_bonus = self.db.get_student_time_bonus_for_group_on_date(student_id, bonus_group, date_str)
+            except Exception:
+                existing_bonus = None
+            existing_points = 0
+            try:
+                if existing_bonus is not None:
+                    existing_points = int(existing_bonus.get('bonus_points') or 0)
+            except Exception:
+                existing_points = 0
+            if bonus_schedule_id:
+                if existing_bonus is None:
+                    if bonus_points > 0:
+                        try:
+                            bonus_name = str(time_bonus.get('name') or '').strip()
+                            self.db.add_points(student_id, bonus_points,
+                                               f"⏰ בונוס זמנים ({bonus_name}): +{bonus_points}", "תיקון ידני מרוכז")
+                        except Exception:
+                            pass
+                    try:
+                        self.db.record_time_bonus_given_on_date(student_id, bonus_schedule_id, date_str, given_at=given_at_utc)
+                    except Exception:
+                        pass
+                else:
+                    if int(bonus_points) > int(existing_points):
+                        delta = int(bonus_points) - int(existing_points)
+                        if delta > 0:
+                            try:
+                                bonus_name = str(time_bonus.get('name') or '').strip()
+                                self.db.add_points(student_id, delta,
+                                                   f"⏰ תיקון בונוס זמנים ({bonus_name}): +{delta}", "תיקון ידני מרוכז")
+                            except Exception:
+                                pass
+                        try:
+                            if bonus_group:
+                                self.db.replace_student_time_bonus_for_group_on_date(
+                                    student_id, bonus_group, date_str, bonus_schedule_id, given_at=given_at_utc)
+                        except Exception:
+                            pass
+                    else:
+                        try:
+                            if bonus_group:
+                                self.db.update_time_bonus_given_at_for_group_on_date(
+                                    student_id, bonus_group, date_str, given_at=given_at_utc)
+                        except Exception:
+                            pass
+        return True, 'OK'
+
+    def _bulk_fix_build_ui(self, dlg, content_frame, mode_frame, mode_var, status_var,
+                           student_names, sorted_names, all_classes):
+        """בונה את ממשק שני המצבים בחלון תיקון מרוכז."""
+        by_date_frame = tk.Frame(content_frame, bg='#ecf0f1')
+        by_student_frame = tk.Frame(content_frame, bg='#ecf0f1')
+
+        def _show_mode(*_a):
+            by_date_frame.pack_forget()
+            by_student_frame.pack_forget()
+            if mode_var.get() == 'by_date':
+                by_date_frame.pack(fill=tk.BOTH, expand=True)
+            else:
+                by_student_frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Radiobutton(mode_frame, text=fix_rtl_text('לפי תאריך'), variable=mode_var,
+                       value='by_date', command=_show_mode, font=('Arial', 10),
+                       bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
+        tk.Radiobutton(mode_frame, text=fix_rtl_text('לפי תלמיד'), variable=mode_var,
+                       value='by_student', command=_show_mode, font=('Arial', 10),
+                       bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
+
+        self._bulk_fix_build_by_date(dlg, by_date_frame, status_var,
+                                     student_names, sorted_names, all_classes)
+        self._bulk_fix_build_by_student(dlg, by_student_frame, status_var,
+                                        student_names, sorted_names)
+        _show_mode()
+
+    def _bulk_fix_build_by_date(self, dlg, parent, status_var,
+                                student_names, sorted_names, all_classes):
+        """מצב 'לפי תאריך': בוחרים תאריך+שעה, מסמנים תלמידים, שומרים."""
+        top = tk.Frame(parent, bg='#ecf0f1')
+        top.pack(fill=tk.X, pady=(0, 6))
+
+        date_var = tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'))
+        h_var = tk.StringVar(value='07')
+        m_var = tk.StringVar(value='30')
+
+        tk.Label(top, text=fix_rtl_text('תאריך:'), font=('Arial', 10, 'bold'), bg='#ecf0f1').pack(side=tk.RIGHT, padx=(0, 4))
+        date_ent = tk.Entry(top, textvariable=date_var, font=('Arial', 10), width=12, justify='center')
+        date_ent.pack(side=tk.RIGHT, padx=4)
+
+        def _pick_date():
+            pd = tk.Toplevel(dlg)
+            pd.title('בחר תאריך'); pd.transient(dlg); pd.grab_set(); pd.resizable(False, False)
+            pf = tk.Frame(pd, padx=12, pady=10); pf.pack()
+            try:
+                parts = str(date_var.get()).split('-')
+                yy0, mm0, dd0 = int(parts[0]), int(parts[1]), int(parts[2])
+            except Exception:
+                n = datetime.now(); yy0, mm0, dd0 = n.year, n.month, n.day
+            y_v = tk.StringVar(value=str(yy0)); m_v = tk.StringVar(value=f"{mm0:02d}"); d_v = tk.StringVar(value=f"{dd0:02d}")
+            row = tk.Frame(pf); row.pack()
+            ttk.Combobox(row, textvariable=d_v, values=[f"{d:02d}" for d in range(1, 32)], state='readonly', width=4).pack(side=tk.RIGHT, padx=4)
+            ttk.Combobox(row, textvariable=m_v, values=[f"{m:02d}" for m in range(1, 13)], state='readonly', width=4).pack(side=tk.RIGHT, padx=4)
+            ttk.Combobox(row, textvariable=y_v, values=[str(y) for y in range(yy0-2, yy0+3)], state='readonly', width=6).pack(side=tk.RIGHT, padx=4)
+            def _ok():
+                try:
+                    dt = datetime.strptime(f"{y_v.get()}-{m_v.get()}-{d_v.get()}", '%Y-%m-%d')
+                    date_var.set(dt.strftime('%Y-%m-%d'))
+                except Exception:
+                    pass
+                pd.destroy()
+            bf = tk.Frame(pf); bf.pack(pady=(10, 0))
+            tk.Button(bf, text='אישור', width=8, command=_ok).pack(side=tk.LEFT, padx=4)
+            tk.Button(bf, text='ביטול', width=8, command=pd.destroy).pack(side=tk.RIGHT, padx=4)
+
+        tk.Button(top, text='📅', command=_pick_date, font=('Arial', 9), padx=4, cursor='hand2').pack(side=tk.RIGHT, padx=2)
+        tk.Label(top, text='    ', bg='#ecf0f1').pack(side=tk.RIGHT)
+        tk.Label(top, text=fix_rtl_text('שעה:'), font=('Arial', 10, 'bold'), bg='#ecf0f1').pack(side=tk.RIGHT, padx=(0, 4))
+        ttk.Combobox(top, textvariable=m_var, values=[f"{m:02d}" for m in range(0, 60, 5)], state='readonly', width=4).pack(side=tk.RIGHT, padx=2)
+        tk.Label(top, text=':', bg='#ecf0f1', font=('Arial', 10, 'bold')).pack(side=tk.RIGHT)
+        ttk.Combobox(top, textvariable=h_var, values=[f"{h:02d}" for h in range(0, 24)], state='readonly', width=4).pack(side=tk.RIGHT, padx=2)
+
+        # סינון כיתה
+        filter_row = tk.Frame(parent, bg='#ecf0f1')
+        filter_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(filter_row, text=fix_rtl_text('סנן כיתה:'), font=('Arial', 10), bg='#ecf0f1').pack(side=tk.RIGHT, padx=(0, 4))
+        class_filter_var = tk.StringVar(value='הכל')
+        class_cb = ttk.Combobox(filter_row, textvariable=class_filter_var,
+                                values=['הכל'] + all_classes, state='readonly', width=14, justify='right')
+        class_cb.pack(side=tk.RIGHT, padx=4)
+
+        # כפתורי סימון
+        sel_row = tk.Frame(parent, bg='#ecf0f1')
+        sel_row.pack(fill=tk.X, pady=(0, 2))
+
+        # רשימת תלמידים
+        list_frame = tk.Frame(parent, bg='white', bd=1, relief='sunken')
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        canvas = tk.Canvas(list_frame, bg='white', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=canvas.yview)
+        inner = tk.Frame(canvas, bg='white')
+        inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        _cw = canvas.create_window((0, 0), window=inner, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        def _on_canvas_cfg(event, _cid=_cw):
+            canvas.itemconfig(_cid, width=event.width)
+        canvas.bind('<Configure>', _on_canvas_cfg)
+        def _mw(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), 'units')
+        canvas.bind_all('<MouseWheel>', _mw)
+
+        cb_vars = {}
+
+        def _populate(filter_class=None):
+            for w in inner.winfo_children():
+                w.destroy()
+            cb_vars.clear()
+            for idx, name in enumerate(sorted_names):
+                s = student_names[name]
+                cls = str(s.get('class_name') or '').strip()
+                if filter_class and filter_class != 'הכל' and cls != filter_class:
+                    continue
+                var = tk.BooleanVar(value=False)
+                cb_vars[name] = var
+                bg = '#ffffff' if idx % 2 == 0 else '#f8f9fa'
+                r = tk.Frame(inner, bg=bg); r.pack(fill=tk.X)
+                tk.Checkbutton(r, variable=var, bg=bg, activebackground=bg).pack(side=tk.RIGHT, padx=(0, 8), pady=1)
+                tk.Label(r, text=fix_rtl_text(name), font=('Arial', 10),
+                         bg=bg, anchor='e').pack(side=tk.RIGHT, padx=(6, 0), pady=1)
+        _populate()
+        class_cb.bind('<<ComboboxSelected>>', lambda *_: _populate(class_filter_var.get()))
+
+        def _sel_all():
+            for v in cb_vars.values(): v.set(True)
+        def _clr_all():
+            for v in cb_vars.values(): v.set(False)
+        tk.Button(sel_row, text='סמן הכל', command=_sel_all, font=('Arial', 9),
+                  bg='#3498db', fg='white', padx=8, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+        tk.Button(sel_row, text='נקה הכל', command=_clr_all, font=('Arial', 9),
+                  bg='#e74c3c', fg='white', padx=8, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+        count_lbl = tk.Label(sel_row, text='', font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d')
+        count_lbl.pack(side=tk.LEFT, padx=8)
+        def _poll():
+            try:
+                n = sum(1 for v in cb_vars.values() if v.get())
+                count_lbl.config(text=f'{n} תלמידים נבחרו' if n else '')
+                dlg.after(500, _poll)
+            except Exception:
+                pass
+        _poll()
+
+        # כפתור שמירה
+        btn_row = tk.Frame(parent, bg='#ecf0f1')
+        btn_row.pack(fill=tk.X, pady=(0, 4))
+
+        def _save():
+            d = str(date_var.get() or '').strip()
+            t = f"{h_var.get()}:{m_var.get()}"
+            if not d:
+                messagebox.showerror('שגיאה', 'יש להזין תאריך', parent=dlg); return
+            try:
+                datetime.strptime(f"{d} {t}", '%Y-%m-%d %H:%M')
+            except Exception:
+                messagebox.showerror('שגיאה', 'תאריך/שעה לא תקינים', parent=dlg); return
+            selected = [name for name, var in cb_vars.items() if var.get()]
+            if not selected:
+                messagebox.showwarning('אזהרה', 'יש לסמן לפחות תלמיד אחד', parent=dlg); return
+            ok_count = fail_count = 0
+            for name in selected:
+                s = student_names.get(name)
+                if not s:
+                    fail_count += 1; continue
+                success, _ = self._bulk_fix_apply_single(s, d, t)
+                if success:
+                    ok_count += 1
+                else:
+                    fail_count += 1
+            msg = f'✓ {ok_count} תיקופים נרשמו בהצלחה'
+            if fail_count:
+                msg += f'  ({fail_count} נכשלו)'
+            status_var.set(msg)
+            try:
+                self.load_students(keep_selection=True)
+                self.export_to_excel_now()
+            except Exception:
+                pass
+            self.show_status_message(msg, '#27ae60' if not fail_count else '#e67e22')
+
+        tk.Button(btn_row, text='💾 שמור תיקופים', command=_save,
+                  font=('Arial', 11, 'bold'), bg='#27ae60', fg='white',
+                  padx=20, pady=6, cursor='hand2').pack(side=tk.RIGHT, padx=6)
+        tk.Button(btn_row, text='ביטול', command=dlg.destroy,
+                  font=('Arial', 10), bg='#95a5a6', fg='white',
+                  padx=14, pady=6, cursor='hand2').pack(side=tk.LEFT, padx=6)
+
+    def _bulk_fix_build_by_student(self, dlg, parent, status_var,
+                                    student_names, sorted_names):
+        """מצב 'לפי תלמיד': טבלה חופשית עם שורות תלמיד/תאריך/שעה."""
+        tk.Label(parent, text=fix_rtl_text('הוסף שורות עם תלמיד, תאריך ושעה לכל תיקוף:'),
+                 font=('Arial', 10), bg='#ecf0f1', fg='#2c3e50', anchor='e').pack(fill=tk.X, pady=(0, 6))
+        table_outer = tk.Frame(parent, bg='white', bd=1, relief='sunken')
+        table_outer.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+        canvas = tk.Canvas(table_outer, bg='white', highlightthickness=0)
+        scrollbar = ttk.Scrollbar(table_outer, orient=tk.VERTICAL, command=canvas.yview)
+        table_inner = tk.Frame(canvas, bg='white')
+        table_inner.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        _cw2 = canvas.create_window((0, 0), window=table_inner, anchor='nw')
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        def _on_canvas_cfg2(event, _cid=_cw2):
+            canvas.itemconfig(_cid, width=event.width)
+        canvas.bind('<Configure>', _on_canvas_cfg2)
+        def _mw(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), 'units')
+        canvas.bind_all('<MouseWheel>', _mw)
+
+        hdr = tk.Frame(table_inner, bg='#2c3e50'); hdr.pack(fill=tk.X)
+        for txt, w in [('מחק', 4), ('שעה', 6), ('תאריך', 12), ('תלמיד', 30)]:
+            tk.Label(hdr, text=fix_rtl_text(txt), font=('Arial', 9, 'bold'),
+                     bg='#2c3e50', fg='white', width=w, anchor='center').pack(side=tk.RIGHT, padx=1)
+
+        rows_data = []
+
+        def _add_row(prefill_name='', prefill_date='', prefill_time='07:30'):
+            idx = len(rows_data)
+            bg = '#ffffff' if idx % 2 == 0 else '#f8f9fa'
+            row = tk.Frame(table_inner, bg=bg); row.pack(fill=tk.X)
+            s_var = tk.StringVar(value=prefill_name)
+            d_var = tk.StringVar(value=prefill_date or datetime.now().strftime('%Y-%m-%d'))
+            t_var = tk.StringVar(value=prefill_time)
+            ttk.Combobox(row, textvariable=s_var, values=sorted_names, width=28, justify='right').pack(side=tk.RIGHT, padx=2, pady=2)
+            tk.Entry(row, textvariable=d_var, width=12, justify='center', font=('Arial', 9)).pack(side=tk.RIGHT, padx=2, pady=2)
+            tk.Entry(row, textvariable=t_var, width=6, justify='center', font=('Arial', 9)).pack(side=tk.RIGHT, padx=2, pady=2)
+            rd = {'frame': row, 'student_var': s_var, 'date_var': d_var, 'time_var': t_var}
+            rows_data.append(rd)
+            def _del():
+                row.destroy()
+                try: rows_data.remove(rd)
+                except Exception: pass
+            tk.Button(row, text='✕', command=_del, font=('Arial', 8),
+                      bg='#e74c3c', fg='white', width=3, cursor='hand2').pack(side=tk.RIGHT, padx=2, pady=2)
+
+        _add_row()
+
+        btn_row = tk.Frame(parent, bg='#ecf0f1'); btn_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Button(btn_row, text='➕ הוסף שורה', command=_add_row, font=('Arial', 9),
+                  bg='#3498db', fg='white', padx=10, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+        tk.Button(btn_row, text='➕ הוסף 5', command=lambda: [_add_row() for _ in range(5)],
+                  font=('Arial', 9), bg='#2980b9', fg='white', padx=10, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+
+        def _save():
+            if not rows_data:
+                messagebox.showwarning('אזהרה', 'אין שורות לשמירה', parent=dlg); return
+            ok_count = fail_count = 0
+            fail_msgs = []
+            for rd in rows_data:
+                name = str(rd['student_var'].get() or '').strip()
+                d = str(rd['date_var'].get() or '').strip()
+                t = str(rd['time_var'].get() or '').strip()
+                if not name:
+                    continue
+                s = student_names.get(name)
+                if not s:
+                    fail_count += 1; fail_msgs.append(f'{name}: תלמיד לא נמצא'); continue
+                if not d or not t:
+                    fail_count += 1; fail_msgs.append(f'{name}: תאריך/שעה חסרים'); continue
+                success, msg = self._bulk_fix_apply_single(s, d, t)
+                if success:
+                    ok_count += 1
+                else:
+                    fail_count += 1; fail_msgs.append(f'{name}: {msg}')
+            if ok_count == 0 and fail_count == 0:
+                messagebox.showwarning('אזהרה', 'אין שורות למילוי', parent=dlg); return
+            result = f'✓ {ok_count} תיקופים נרשמו'
+            if fail_count:
+                result += f'\n✗ {fail_count} נכשלו:\n' + '\n'.join(fail_msgs[:10])
+            status_var.set(f'{ok_count} הצליחו, {fail_count} נכשלו')
+            try:
+                self.load_students(keep_selection=True)
+                self.export_to_excel_now()
+            except Exception:
+                pass
+            self.show_status_message(f'✓ {ok_count} תיקופים נרשמו', '#27ae60' if not fail_count else '#e67e22')
+            if fail_count:
+                messagebox.showinfo('תוצאות', result, parent=dlg)
+
+        tk.Button(btn_row, text='💾 שמור תיקופים', command=_save,
+                  font=('Arial', 11, 'bold'), bg='#27ae60', fg='white',
+                  padx=20, pady=6, cursor='hand2').pack(side=tk.RIGHT, padx=6)
+        tk.Button(btn_row, text='ביטול', command=dlg.destroy,
+                  font=('Arial', 10), bg='#95a5a6', fg='white',
+                  padx=14, pady=6, cursor='hand2').pack(side=tk.LEFT, padx=6)
 
     def _select_relative_student(self, step: int):
         selection = self.tree.selection()
