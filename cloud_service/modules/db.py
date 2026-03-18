@@ -1436,3 +1436,35 @@ def ensure_pending_registrations_table() -> None:
     finally:
         try: conn.close()
         except: pass
+
+def ensure_password_reset_tokens_table() -> None:
+    """Ensure the password_reset_tokens table exists."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id BIGSERIAL PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    used INTEGER DEFAULT 0
+                )
+            ''')
+        else:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL,
+                    token TEXT NOT NULL UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    used INTEGER DEFAULT 0
+                )
+            ''')
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except: pass

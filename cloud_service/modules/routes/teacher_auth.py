@@ -41,6 +41,11 @@ def web_signin(request: Request) -> Response:
         <button class="green" type="submit">כניסה</button>
         <a class="gray" href="/web/download">הורדה</a>
       </div>
+      <div style="margin-top:16px;font-size:14px;">
+        <a href="/web/forgot-password" style="color:#667eea;text-decoration:none;font-weight:600;">שכחתי סיסמה</a>
+        &nbsp;|&nbsp;
+        <a href="/web/register" style="color:#667eea;text-decoration:none;font-weight:600;">פתיחת חשבון חדש</a>
+      </div>
     </form>
     """
     return HTMLResponse(public_web_shell('כניסת מוסד', body, request=request))
