@@ -128,33 +128,45 @@ def admin_institutions(request: Request) -> str:
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute('SELECT tenant_id, name, api_key, created_at FROM institutions ORDER BY created_at DESC')
+        cur.execute('SELECT tenant_id, name, api_key, created_at, contact_name, email, phone, plan, last_login, login_count FROM institutions ORDER BY created_at DESC')
         rows = cur.fetchall() or []
         
         list_html = ""
         for r in rows:
-            d = dict(r) if isinstance(r, dict) else {k: r[k] for k in r.keys()} if hasattr(r, 'keys') else {'tenant_id':r[0], 'name':r[1], 'api_key':r[2]}
+            if isinstance(r, dict):
+                d = r
+            elif hasattr(r, 'keys'):
+                d = {k: r[k] for k in r.keys()}
+            else:
+                cols = ['tenant_id','name','api_key','created_at','contact_name','email','phone','plan','last_login','login_count']
+                d = dict(zip(cols, r))
             
-            # Master login link
-            master_link = ""
-            if MASTER_LOGIN_SECRET:
-                # generate signature? or just pass secret?
-                # Actually app.py had a master login endpoint. We should replicate that.
-                pass
+            plan_val = d.get('plan') or 'trial'
+            plan_colors = {'basic':'#3498db','extended':'#2ecc71','unlimited':'#9b59b6','trial':'#95a5a6'}
+            pc = plan_colors.get(plan_val, '#95a5a6')
+            created = str(d.get('created_at') or '-')[:16]
+            last_log = str(d.get('last_login') or '-')[:16]
+            logins = d.get('login_count') or 0
                 
             list_html += f"""
             <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:10px;">{d.get('name')}</td>
-                <td style="padding:10px;">{d.get('tenant_id')}</td>
-                <td style="padding:10px; font-family:monospace;">{d.get('api_key')}</td>
-                <td style="padding:10px;">
+                <td style="padding:8px;">{d.get('name') or ''}</td>
+                <td style="padding:8px;font-family:monospace;">{d.get('tenant_id') or ''}</td>
+                <td style="padding:8px;">{d.get('contact_name') or ''}</td>
+                <td style="padding:8px;">{d.get('email') or ''}</td>
+                <td style="padding:8px;">{d.get('phone') or ''}</td>
+                <td style="padding:8px;"><span style="background:{pc};color:#fff;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:700;">{plan_val}</span></td>
+                <td style="padding:8px;font-size:12px;">{created}</td>
+                <td style="padding:8px;font-size:12px;">{last_log}</td>
+                <td style="padding:8px;text-align:center;">{logins}</td>
+                <td style="padding:8px;white-space:nowrap;">
                     <form method="post" action="/admin/institutions/master-login" target="_blank" style="display:inline;">
                         <input type="hidden" name="tenant_id" value="{d.get('tenant_id')}">
-                        <button class="blue" style="font-size:12px; padding:4px 8px;">Master Login</button>
+                        <button class="blue" style="font-size:11px;padding:3px 6px;">Login</button>
                     </form>
-                    <form method="post" action="/admin/institutions/delete" style="display:inline;" onsubmit="return confirm('בטוח שברצונך למחוק? המידע יאבד!');">
+                    <form method="post" action="/admin/institutions/delete" style="display:inline;" onsubmit="return confirm('\u05d1\u05d8\u05d5\u05d7 \u05dc\u05de\u05d7\u05d5\u05e7?');">
                         <input type="hidden" name="tenant_id" value="{d.get('tenant_id')}">
-                        <button class="red" style="background:#e74c3c; border:none; color:white; font-size:12px; padding:4px 8px; border-radius:10px; cursor:pointer;">מחק</button>
+                        <button class="red" style="background:#e74c3c;border:none;color:white;font-size:11px;padding:3px 6px;border-radius:8px;cursor:pointer;">\u05de\u05d7\u05e7</button>
                     </form>
                 </td>
             </tr>
@@ -186,10 +198,16 @@ def admin_institutions(request: Request) -> str:
         <table style="width:100%; border-collapse:collapse;">
             <thead style="background:rgba(0,0,0,0.05);">
                 <tr>
-                    <th style="padding:10px; text-align:right;">שם</th>
-                    <th style="padding:10px; text-align:right;">ID</th>
-                    <th style="padding:10px; text-align:right;">API Key</th>
-                    <th style="padding:10px; text-align:right;">פעולות</th>
+                    <th style="padding:8px;text-align:right;">שם</th>
+                    <th style="padding:8px;text-align:right;">קוד</th>
+                    <th style="padding:8px;text-align:right;">איש קשר</th>
+                    <th style="padding:8px;text-align:right;">אימייל</th>
+                    <th style="padding:8px;text-align:right;">טלפון</th>
+                    <th style="padding:8px;text-align:right;">מסלול</th>
+                    <th style="padding:8px;text-align:right;">הרשמה</th>
+                    <th style="padding:8px;text-align:right;">כניסה אחרונה</th>
+                    <th style="padding:8px;text-align:center;">כניסות</th>
+                    <th style="padding:8px;text-align:right;">פעולות</th>
                 </tr>
             </thead>
             <tbody>

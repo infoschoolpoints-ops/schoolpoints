@@ -45,6 +45,8 @@ def web_signin(request: Request) -> Response:
         <a href="/web/forgot-password" style="color:#667eea;text-decoration:none;font-weight:600;">שכחתי סיסמה</a>
         &nbsp;|&nbsp;
         <a href="/web/register" style="color:#667eea;text-decoration:none;font-weight:600;">פתיחת חשבון חדש</a>
+        &nbsp;|&nbsp;
+        <a href="/web/my-account" style="color:#667eea;text-decoration:none;font-weight:600;">אזור אישי</a>
       </div>
     </form>
     """
@@ -121,6 +123,21 @@ def web_signin_submit(
                 except: pass
         except Exception:
             pass
+
+    # Track login timestamp and count
+    try:
+        conn2 = get_db_connection()
+        try:
+            cur2 = conn2.cursor()
+            cur2.execute(sql_placeholder(
+                'UPDATE institutions SET last_login = CURRENT_TIMESTAMP, login_count = COALESCE(login_count, 0) + 1 WHERE tenant_id = ?'),
+                (tenant_id,))
+            conn2.commit()
+        finally:
+            try: conn2.close()
+            except: pass
+    except Exception:
+        pass
 
     nxt = web_next_from_request(request, '/web/teacher-login')
     if nxt in ('/web/login', '/web/signin'):

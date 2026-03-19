@@ -1896,19 +1896,19 @@ class Database:
             archive_tables = [
                 ('swipe_log',
                  'id, student_id, card_number, station_type, swiped_at',
-                 'swiped_at', 7),
+                 'swiped_at', 14),
                 ('points_log',
                  'id, student_id, old_points, new_points, delta, reason, actor_name, action_type, created_at',
-                 'created_at', 7),
+                 'created_at', 14),
                 ('points_history',
                  'id, student_id, points_added, reason, added_by, added_at',
-                 'added_at', 7),
+                 'added_at', 14),
                 ('time_bonus_given',
                  'id, student_id, bonus_schedule_id, given_date, given_at',
-                 'given_at', 7),
+                 'given_at', 14),
                 ('card_validations',
                  'id, student_id, card_number, validated_at',
-                 'validated_at', 7),
+                 'validated_at', 14),
             ]
 
             # השהיית sync triggers בזמן מחיקה — המחיקות הן פעולות ניקיון,
@@ -1928,13 +1928,13 @@ class Database:
                     cur.execute(f"""
                         INSERT OR IGNORE INTO archive.{table} ({columns})
                         SELECT {columns} FROM main.{table}
-                        WHERE {date_col} < datetime('now', '-{keep_days} days')
+                        WHERE {date_col} < datetime('now', 'localtime', '-{keep_days} days')
                     """)
                     moved = cur.rowcount or 0
                     # מחיקה מה-DB הראשי
                     cur.execute(f"""
                         DELETE FROM main.{table}
-                        WHERE {date_col} < datetime('now', '-{keep_days} days')
+                        WHERE {date_col} < datetime('now', 'localtime', '-{keep_days} days')
                     """)
                     deleted = cur.rowcount or 0
                     if moved or deleted:
@@ -2090,7 +2090,7 @@ class Database:
 
             # --- change_log: תמיד מוחקים (לוג סנכרון בלבד, לא לדיווח) ---
             try:
-                cur.execute("DELETE FROM change_log WHERE created_at < datetime('now', '-7 days')")
+                cur.execute("DELETE FROM change_log WHERE created_at < datetime('now', 'localtime', '-7 days')")
                 d = cur.rowcount
                 if d:
                     conn.commit()
@@ -2114,7 +2114,7 @@ class Database:
 
             # --- anti_spam_events: תפעולי, תמיד מוחקים ---
             try:
-                cur.execute("DELETE FROM anti_spam_events WHERE event_time < datetime('now', '-7 days')")
+                cur.execute("DELETE FROM anti_spam_events WHERE event_time < datetime('now', 'localtime', '-7 days')")
                 d = cur.rowcount
                 if d:
                     conn.commit()
@@ -2125,7 +2125,7 @@ class Database:
 
             # --- applied_events: תפעולי, תמיד מוחקים ---
             try:
-                cur.execute("DELETE FROM applied_events WHERE applied_at < datetime('now', '-14 days')")
+                cur.execute("DELETE FROM applied_events WHERE applied_at < datetime('now', 'localtime', '-14 days')")
                 d = cur.rowcount
                 if d:
                     conn.commit()
@@ -2134,7 +2134,7 @@ class Database:
                 try: conn.rollback()
                 except Exception: pass
 
-            # --- טבלאות דיווח: master מעביר לארכיון, secondary מוחק ---
+            # --- טבלאות דיווח: master מעביר לארכיון, secondary מוחק רק מ-DB מקומי ---
             if is_master:
                 try:
                     moved = self._archive_old_rows(conn, cur)
@@ -2143,39 +2143,54 @@ class Database:
                     try: print(f"[DB] Archive error: {e}")
                     except Exception: pass
             else:
-                # עמדה משנית — מחיקה אגרסיבית (7 ימים), הנתונים כבר ב-master
-                # השהיית sync triggers — time_bonus_given יש trigger שיוצר change_log מיותרים
-                _sec_paused = False
+                # עמדה משנית — מחיקה רק אם עובדת על DB מקומי (לא shared).
+                # בסביבת shared folder: כל העמדות כותבות לאותו DB פיזי.
+                # אם secondary תמחק לפני שה-master ארכב — הנתונים יאבדו לצמיתות!
+                # לכן: מחיקת טבלאות דיווח רק כש-db_path הוא נתיב מקומי (= עותק sync client).
+                _is_shared_db = False
                 try:
-                    cur.execute("UPDATE _sync_paused SET flag = 1 WHERE rowid = 1")
-                    conn.commit()
-                    _sec_paused = True
+                    _is_shared_db = self._is_unc_path_value(str(self.db_path or ''))
                 except Exception:
                     pass
-                try:
-                    for table, date_col, days in [
-                        ('swipe_log',        'swiped_at',    7),
-                        ('points_log',       'created_at',   7),
-                        ('points_history',   'added_at',     7),
-                        ('time_bonus_given', 'given_at',     7),
-                        ('card_validations', 'validated_at', 7),
-                    ]:
-                        try:
-                            cur.execute(f"DELETE FROM {table} WHERE {date_col} < datetime('now', '-{days} days')")
-                            d = cur.rowcount
-                            if d:
+                if _is_shared_db:
+                    try:
+                        print(f"[DB] Secondary on shared DB — skipping report table cleanup (master will archive)")
+                    except Exception:
+                        pass
+                else:
+                    # עמדה משנית עם DB מקומי — מחיקה בטוחה (14 ימים)
+                    # השהיית sync triggers — time_bonus_given יש trigger שיוצר change_log מיותרים
+                    _sec_paused = False
+                    try:
+                        cur.execute("UPDATE _sync_paused SET flag = 1 WHERE rowid = 1")
+                        conn.commit()
+                        _sec_paused = True
+                    except Exception:
+                        pass
+                    try:
+                        for table, date_col, days in [
+                            ('swipe_log',        'swiped_at',    14),
+                            ('points_log',       'created_at',   14),
+                            ('points_history',   'added_at',     14),
+                            ('time_bonus_given', 'given_at',     14),
+                            ('card_validations', 'validated_at', 14),
+                        ]:
+                            try:
+                                cur.execute(f"DELETE FROM {table} WHERE {date_col} < datetime('now', 'localtime', '-{days} days')")
+                                d = cur.rowcount
+                                if d:
+                                    conn.commit()
+                                    total_deleted += d
+                            except Exception:
+                                try: conn.rollback()
+                                except Exception: pass
+                    finally:
+                        if _sec_paused:
+                            try:
+                                cur.execute("UPDATE _sync_paused SET flag = 0 WHERE rowid = 1")
                                 conn.commit()
-                                total_deleted += d
-                        except Exception:
-                            try: conn.rollback()
-                            except Exception: pass
-                finally:
-                    if _sec_paused:
-                        try:
-                            cur.execute("UPDATE _sync_paused SET flag = 0 WHERE rowid = 1")
-                            conn.commit()
-                        except Exception:
-                            pass
+                            except Exception:
+                                pass
 
             # --- VACUUM רק אם נמחקו שורות ו-DB גדול ---
             try:

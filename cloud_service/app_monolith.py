@@ -2991,6 +2991,11 @@ def _init_db():
                     cur.execute(f'ALTER TABLE institutions ADD COLUMN IF NOT EXISTS {col} TEXT')
                 except Exception:
                     pass
+            for col_def in ['last_login TIMESTAMPTZ', 'login_count INTEGER DEFAULT 0']:
+                try:
+                    cur.execute(f'ALTER TABLE institutions ADD COLUMN IF NOT EXISTS {col_def}')
+                except Exception:
+                    pass
 
             cur.execute(
                 '''
@@ -3071,6 +3076,11 @@ def _init_db():
             for col in ['contact_name', 'email', 'phone', 'plan']:
                 try:
                     cur.execute(f'ALTER TABLE institutions ADD COLUMN {col} TEXT')
+                except Exception:
+                    pass
+            for col_def in ['last_login TEXT', 'login_count INTEGER DEFAULT 0']:
+                try:
+                    cur.execute(f'ALTER TABLE institutions ADD COLUMN {col_def}')
                 except Exception:
                     pass
 

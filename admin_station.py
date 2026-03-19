@@ -9865,6 +9865,29 @@ class AdminStation:
         except Exception:
             return
 
+    @staticmethod
+    def _isdir_safe(path, timeout_sec=5):
+        """Check os.path.isdir with a timeout to avoid SMB hangs on unreachable UNC."""
+        if not path:
+            return False
+        # Local paths — check directly (fast)
+        if not path.startswith('\\\\'):
+            return os.path.isdir(path)
+        import threading
+        result = [False]
+        def _check():
+            try:
+                result[0] = os.path.isdir(path)
+            except Exception:
+                result[0] = False
+        t = threading.Thread(target=_check, daemon=True)
+        t.start()
+        t.join(timeout=timeout_sec)
+        if t.is_alive():
+            print(f"[SETUP] _isdir_safe timeout ({timeout_sec}s) for: {path}")
+            return False
+        return result[0]
+
     def ensure_initial_setup(self):
         try:
             cfg = self.load_app_config() or {}
@@ -9884,7 +9907,7 @@ class AdminStation:
             shared = cfg.get('shared_folder') or cfg.get('network_root')
 
         previously_configured = bool(shared)
-        if shared and not os.path.isdir(shared):
+        if shared and not self._isdir_safe(shared):
             try:
                 messagebox.showwarning(
                     "תיקייה משותפת לא זמינה",
@@ -9896,7 +9919,7 @@ class AdminStation:
             except Exception:
                 pass
 
-        if not (shared and os.path.isdir(shared)):
+        if not (shared and self._isdir_safe(shared)):
             if not self._open_admin_shared_folder_dialog(
                 cfg,
                 first_run=not previously_configured,
@@ -9913,7 +9936,7 @@ class AdminStation:
             shared = None
             if isinstance(cfg, dict):
                 shared = cfg.get('shared_folder') or cfg.get('network_root')
-            if shared and os.path.isdir(shared):
+            if shared and self._isdir_safe(shared):
                 self._seed_shared_sounds_folder(shared)
         except Exception:
             pass
