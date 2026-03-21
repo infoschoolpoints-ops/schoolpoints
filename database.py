@@ -1987,6 +1987,10 @@ class Database:
         if not is_unc:
             try:
                 if not os.path.exists(path):
+                    try:
+                        print(f"[ARCHIVE] Archive DB not found at: {path}")
+                    except Exception:
+                        pass
                     return None
             except Exception:
                 return None
@@ -2008,10 +2012,18 @@ class Database:
             try:
                 conn.execute('SELECT 1 FROM swipe_log LIMIT 0')
             except Exception:
+                try:
+                    print(f"[ARCHIVE] Archive DB exists but missing swipe_log table: {path}")
+                except Exception:
+                    pass
                 conn.close()
                 return None
             return conn
-        except Exception:
+        except Exception as e:
+            try:
+                print(f"[ARCHIVE] Failed to open archive DB ({path}): {e}")
+            except Exception:
+                pass
             return None
 
     def query_with_archive(self, table: str, where: str = '', params: tuple = (),
@@ -9367,7 +9379,7 @@ class Database:
         return candidates[0]
 
     def has_student_received_time_bonus_on_date(self, student_id: int, bonus_schedule_id: int, given_date: str) -> bool:
-        """בדיקה אם תלמיד כבר קיבל בונוס זמנים בתאריך נתון (YYYY-MM-DD)."""
+        """בדיקה אם תלמיד כבר קיבל בונוס זמנים בתאריך נתון (YYYY-MM-DD). בודק גם ארכיון."""
         if not given_date:
             return False
         conn = self.get_connection()
@@ -9379,9 +9391,25 @@ class Database:
         row = cursor.fetchone()
         conn.close()
         try:
-            return int(row['count'] if row else 0) > 0
+            if int(row['count'] if row else 0) > 0:
+                return True
         except Exception:
-            return False
+            pass
+        # --- fallback: ארכיון ---
+        arc_conn = self._get_archive_connection()
+        if arc_conn:
+            try:
+                ar = arc_conn.execute(
+                    'SELECT COUNT(*) as count FROM time_bonus_given WHERE student_id = ? AND bonus_schedule_id = ? AND given_date = ?',
+                    (int(student_id or 0), int(bonus_schedule_id or 0), str(given_date))).fetchone()
+                if ar and int(ar[0] or 0) > 0:
+                    return True
+            except Exception:
+                pass
+            finally:
+                try: arc_conn.close()
+                except Exception: pass
+        return False
 
     def record_time_bonus_given_on_date(self, student_id: int, bonus_schedule_id: int, given_date: str, *, given_at: str = None) -> bool:
         """רישום שתלמיד קיבל בונוס זמנים בתאריך נתון (YYYY-MM-DD).
@@ -9414,7 +9442,7 @@ class Database:
             return False
 
     def has_student_received_time_bonus_group_on_date(self, student_id: int, group_name: str, given_date: str) -> bool:
-        """בדיקה אם תלמיד כבר קיבל בתאריך נתון בונוס כלשהו מקבוצת בונוס זמנים."""
+        """בדיקה אם תלמיד כבר קיבל בתאריך נתון בונוס כלשהו מקבוצת בונוס זמנים. בודק גם ארכיון."""
         if not group_name or not given_date:
             return False
         conn = self.get_connection()
@@ -9430,14 +9458,40 @@ class Database:
         row = cursor.fetchone()
         conn.close()
         try:
-            return int(row['count'] if row else 0) > 0
+            if int(row['count'] if row else 0) > 0:
+                return True
         except Exception:
-            return False
+            pass
+        # --- fallback: ארכיון ---
+        arc_conn = self._get_archive_connection()
+        if arc_conn:
+            try:
+                # ארכיון לא מכיל את time_bonus_schedules — נשתמש ב-main DB ל-JOIN
+                conn2 = self.get_connection()
+                try:
+                    schedule_ids = [r[0] for r in conn2.execute(
+                        "SELECT id FROM time_bonus_schedules WHERE COALESCE(group_name, name) = ?",
+                        (str(group_name),)).fetchall()]
+                finally:
+                    conn2.close()
+                if schedule_ids:
+                    ph = ','.join('?' * len(schedule_ids))
+                    ar = arc_conn.execute(
+                        f'SELECT COUNT(*) FROM time_bonus_given WHERE student_id = ? AND given_date = ? AND bonus_schedule_id IN ({ph})',
+                        [int(student_id or 0), str(given_date)] + schedule_ids).fetchone()
+                    if ar and int(ar[0] or 0) > 0:
+                        return True
+            except Exception:
+                pass
+            finally:
+                try: arc_conn.close()
+                except Exception: pass
+        return False
 
     def get_student_time_bonus_for_group_on_date(self, student_id: int, group_name: str, given_date: str) -> Optional[Dict[str, Any]]:
         """קבלת בונוס הזמנים שנרשם בפועל לתלמיד בקבוצה/תאריך, כולל נקודות ושעת given_at.
 
-        מחזיר None אם אין רשומה.
+        מחזיר None אם אין רשומה. בודק גם ארכיון.
         """
         if not student_id or not group_name or not given_date:
             return None
@@ -9457,13 +9511,47 @@ class Database:
                 LIMIT 1
             ''', (int(student_id or 0), str(given_date), str(group_name)))
             row = cursor.fetchone()
-            if not row:
-                return None
-            return dict(row)
+            if row:
+                return dict(row)
         except Exception:
-            return None
+            pass
         finally:
             conn.close()
+        # --- fallback: ארכיון ---
+        arc_conn = self._get_archive_connection()
+        if arc_conn:
+            try:
+                conn2 = self.get_connection()
+                try:
+                    schedules = {r['id']: dict(r) for r in conn2.execute(
+                        "SELECT id, name, COALESCE(group_name, name) AS group_name, start_time, end_time, bonus_points FROM time_bonus_schedules WHERE COALESCE(group_name, name) = ?",
+                        (str(group_name),)).fetchall()}
+                finally:
+                    conn2.close()
+                if schedules:
+                    ph = ','.join('?' * len(schedules))
+                    arc_rows = arc_conn.execute(
+                        f'SELECT bonus_schedule_id, given_at FROM time_bonus_given WHERE student_id = ? AND given_date = ? AND bonus_schedule_id IN ({ph}) ORDER BY given_at ASC LIMIT 1',
+                        [int(student_id or 0), str(given_date)] + list(schedules.keys())).fetchall()
+                    if arc_rows:
+                        ar = arc_rows[0]
+                        bid = int(ar[0] or 0)
+                        sched = schedules.get(bid, {})
+                        return {
+                            'bonus_schedule_id': bid,
+                            'given_at': ar[1],
+                            'name': sched.get('name', ''),
+                            'group_name': sched.get('group_name', group_name),
+                            'start_time': sched.get('start_time', ''),
+                            'end_time': sched.get('end_time', ''),
+                            'bonus_points': int(sched.get('bonus_points', 0) or 0),
+                        }
+            except Exception:
+                pass
+            finally:
+                try: arc_conn.close()
+                except Exception: pass
+        return None
 
     def replace_student_time_bonus_for_group_on_date(
         self,
@@ -9984,7 +10072,13 @@ class Database:
 
         results = [dict(row) for row in rows]
         # --- שליפה מארכיון ---
-        main_ids = set(int(r.get('id') or 0) for r in results)
+        # dedup לפי (student_id, bonus_schedule_id, given_date) — מעדיף main DB
+        main_keys = set()
+        for r in results:
+            try:
+                main_keys.add((int(r.get('student_id') or 0), int(r.get('bonus_schedule_id') or 0), str(r.get('given_date') or '')))
+            except Exception:
+                pass
         arc_conn = self._get_archive_connection()
         if arc_conn:
             try:
@@ -9993,8 +10087,10 @@ class Database:
                     (given_date,)).fetchall()
                 for ar in (arc_rows or []):
                     d = dict(ar)
-                    if int(d.get('id') or 0) not in main_ids:
+                    key = (int(d.get('student_id') or 0), int(d.get('bonus_schedule_id') or 0), str(d.get('given_date') or ''))
+                    if key not in main_keys:
                         results.append(d)
+                        main_keys.add(key)
             except Exception:
                 pass
             finally:
@@ -10017,7 +10113,13 @@ class Database:
 
         results = [dict(row) for row in rows]
         # --- שליפה מארכיון ---
-        main_ids = set(int(r.get('id') or 0) for r in results)
+        # dedup לפי (student_id, bonus_schedule_id, given_date) — מעדיף main DB
+        main_keys = set()
+        for r in results:
+            try:
+                main_keys.add((int(r.get('student_id') or 0), int(r.get('bonus_schedule_id') or 0), str(r.get('given_date') or '')))
+            except Exception:
+                pass
         arc_conn = self._get_archive_connection()
         if arc_conn:
             try:
@@ -10026,8 +10128,10 @@ class Database:
                     (int(bonus_schedule_id),)).fetchall()
                 for ar in (arc_rows or []):
                     d = dict(ar)
-                    if int(d.get('id') or 0) not in main_ids:
+                    key = (int(d.get('student_id') or 0), int(d.get('bonus_schedule_id') or 0), str(d.get('given_date') or ''))
+                    if key not in main_keys:
                         results.append(d)
+                        main_keys.add(key)
             except Exception:
                 pass
             finally:

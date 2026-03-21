@@ -17,7 +17,7 @@ from .modules.routes import (
     public, contact, register, teacher_auth, admin_dashboard,
     pairing, sync, license, classes, students, teachers,
     messages, settings, logs, import_export, payment,
-    admin_super, reports, quick_update, account
+    admin_super, admin_pages, reports, quick_update, account
 )
 
 app = FastAPI(title="SchoolPoints Sync")
@@ -75,6 +75,7 @@ app.include_router(logs.router)
 app.include_router(import_export.router)
 app.include_router(payment.router)
 app.include_router(admin_super.router)
+app.include_router(admin_pages.router)
 app.include_router(reports.router)
 app.include_router(quick_update.router)
 app.include_router(account.router)

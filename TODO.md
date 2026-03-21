@@ -441,9 +441,20 @@ SchoolPoints/
 
 ---
 
-**עדכון אחרון:** 19/03/2026 (תיקוני ארכיון/ניקוי DB)  
-**מטלה נוכחית:** תיקוני באגים קריטיים במנגנון ארכיון DB  
+**עדכון אחרון:** 19/03/2026 (תיקוני ארכיון + ייצוא בונוס + תיקון תיקוף מרוכז)  
+**מטלה נוכחית:** תיקוני באגים קריטיים במנגנון ארכיון DB ובתיקון תיקוף מרוכז  
 **הבא בתור:** וריאנטים למוצר בווב, תפריט מורה מוגבל, ערכת צבעים מתקדמת, Local Sync single-writer
+
+### תיקוני ארכיון + ייצוא בונוס + תיקון תיקוף מרוכז (מרץ 2026 – סיבוב 2):
+- [x] **באג: פונקציות בדיקת בונוס לא בודקות ארכיון:** `get_student_time_bonus_for_group_on_date`, `has_student_received_time_bonus_group_on_date`, `has_student_received_time_bonus_on_date` בדקו רק main DB. כשנתונים הועברו לארכיון → תיקון ידני לא זיהה בונוס קיים → כפל נקודות אפשרי / רשומות חסרות. תוקן: fallback לארכיון בכל 3 הפונקציות (database.py).
+- [x] **באג UTC בתיקון ידני:** `datetime.now().astimezone().tzinfo` נותן timezone של **היום** ולא של התאריך היעד → הפרש שעה בתקופת שינוי שעון קיץ. תוקן: שימוש ב-`time.mktime(dt_obj.timetuple())` שמכבד DST של התאריך עצמו (admin_station.py, שני המקומות).
+- [x] **באג: except:pass בולע שגיאות בתיקון מרוכז:** כל שלב ב-`_bulk_fix_apply_single` בלע שגיאות בשקט → תיקוף נרשם אבל בונוס לא. תוקן: logging עם `safe_print(f"[BULK-FIX] ...")` בכל נקודת כשל.
+- [x] **באג dedup בייצוא:** `get_time_bonus_given_for_date/bonus` השתמשו ב-ID למניעת כפילויות, אבל כשתלמיד יש לו רשומה ב-main + archive עם IDs שונים → כפילות בייצוא. תוקן: dedup לפי `(student_id, bonus_schedule_id, given_date)` במקום ID.
+- [x] **logging ל-_get_archive_connection:** הוספת הודעות שגיאה כשארכיון לא נמצא / לא נגיש / חסר טבלאות.
+- [x] **תיקון DB רובע 12.3:** סקריפט `fix_march12_bonuses.py` — הורץ על DB של LOG, 31 רשומות time_bonus_given הושלמו (0 נק', נוכחות לייצוא). DB מוכן להשתלה.
+- [x] **באג: ענף "אותן נקודות" בתיקון ידני/מרוכז:** כשרשומת בונוס קיימת **רק בארכיון**, `update_time_bonus_given_at_for_group_on_date` עושה UPDATE על main DB (0 rows) → לא נוצרת רשומה. תוקן: שימוש ב-`record_time_bonus_given_on_date` (UPSERT) שיוצר רשומה חדשה אם לא קיימת. תוקן ב-`_bulk_fix_apply_single` + `open_manual_swipe_override` (admin_station.py).
+- [x] **logging ב-`open_manual_swipe_override`:** הוחלפו `except Exception: pass` ב-logging עם prefix `[MANUAL-FIX]`.
+- [ ] **לוודא שתיקוני תיקוף מרוכז שהמשתמש עשה מופיעים בייצוא** — אחרי השתלת DB + קוד מעודכן, לבדוק.
 
 ### תיקוני ארכיון וניקוי DB (מרץ 2026) – אובדן נתוני הגעה:
 - [x] **באג UTC קריטי:** `datetime('now', '-7 days')` מחזיר UTC אבל timestamps נשמרים בשעון מקומי → מחיקה ~2 שעות מוקדם מדי. תוקן: הוספת `'localtime'` לכל שאילתות datetime בניקוי+ארכיון.

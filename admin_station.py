@@ -4135,11 +4135,13 @@ class AdminStation:
             swiped_at = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
 
             # Export expects time_bonus_given.given_at to be UTC (historical behavior).
+            # time.mktime מכבד DST של התאריך היעד (לא של היום) — מונע הפרש שעה בתקופת שינוי שעון
             try:
+                import time as _time
                 from datetime import timezone
-                local_tz = datetime.now().astimezone().tzinfo
-                dt_local = dt_obj.replace(tzinfo=local_tz)
-                given_at_utc = dt_local.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+                local_ts = _time.mktime(dt_obj.timetuple())
+                utc_dt = datetime.fromtimestamp(local_ts, tz=timezone.utc)
+                given_at_utc = utc_dt.strftime('%Y-%m-%d %H:%M:%S')
             except Exception:
                 given_at_utc = swiped_at
             try:
@@ -4198,42 +4200,34 @@ class AdminStation:
                         if bonus_points > 0:
                             try:
                                 bonus_name = str(time_bonus.get('name') or '').strip()
-                            except Exception:
-                                bonus_name = ''
-                            try:
                                 self.db.add_points(int(student_id), int(bonus_points), f"⏰ בונוס זמנים ({bonus_name}): +{int(bonus_points)}", "תיקון ידני")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                safe_print(f"[MANUAL-FIX] add_points error for student {student_id}: {e}")
                         try:
                             self.db.record_time_bonus_given_on_date(int(student_id), int(bonus_schedule_id), d, given_at=given_at_utc)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            safe_print(f"[MANUAL-FIX] record_time_bonus_given error for student {student_id}: {e}")
                     else:
                         if int(bonus_points) > int(existing_points):
-                            try:
-                                delta = int(bonus_points) - int(existing_points)
-                            except Exception:
-                                delta = 0
+                            delta = int(bonus_points) - int(existing_points)
                             if delta > 0:
                                 try:
                                     bonus_name = str(time_bonus.get('name') or '').strip()
-                                except Exception:
-                                    bonus_name = ''
-                                try:
                                     self.db.add_points(int(student_id), int(delta), f"⏰ תיקון בונוס זמנים ({bonus_name}): +{int(delta)}", "תיקון ידני")
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    safe_print(f"[MANUAL-FIX] add_points (delta) error for student {student_id}: {e}")
                             try:
                                 if bonus_group:
                                     self.db.replace_student_time_bonus_for_group_on_date(int(student_id), str(bonus_group), str(d), int(bonus_schedule_id), given_at=given_at_utc)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                safe_print(f"[MANUAL-FIX] replace_bonus error for student {student_id}: {e}")
                         else:
+                            # רשומה קיימת (אותן נקודות או יותר) — UPSERT כדי שתעבוד גם כשהרשומה רק בארכיון
                             try:
-                                if bonus_group:
-                                    self.db.update_time_bonus_given_at_for_group_on_date(int(student_id), str(bonus_group), str(d), given_at=given_at_utc)
-                            except Exception:
-                                pass
+                                existing_sched_id = int(existing_bonus.get('bonus_schedule_id') or bonus_schedule_id)
+                                self.db.record_time_bonus_given_on_date(int(student_id), existing_sched_id, d, given_at=given_at_utc)
+                            except Exception as e:
+                                safe_print(f"[MANUAL-FIX] upsert_given_at error for student {student_id}: {e}")
 
 
 
@@ -4330,11 +4324,13 @@ class AdminStation:
             return False, 'תלמיד לא תקין'
         swiped_at = dt_obj.strftime('%Y-%m-%d %H:%M:%S')
         card_number = str(student.get('card_number') or '').strip()
+        # המרת שעה מקומית ל-UTC — time.mktime מכבד DST של התאריך היעד (לא של היום)
         try:
+            import time as _time
             from datetime import timezone
-            local_tz = datetime.now().astimezone().tzinfo
-            dt_local = dt_obj.replace(tzinfo=local_tz)
-            given_at_utc = dt_local.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+            local_ts = _time.mktime(dt_obj.timetuple())
+            utc_dt = datetime.fromtimestamp(local_ts, tz=timezone.utc)
+            given_at_utc = utc_dt.strftime('%Y-%m-%d %H:%M:%S')
         except Exception:
             given_at_utc = swiped_at
         try:
@@ -4346,7 +4342,8 @@ class AdminStation:
         class_name = str(student.get('class_name') or '').strip()
         try:
             time_bonus = self.db.get_active_time_bonus_now(class_name=class_name, now_dt=dt_obj)
-        except Exception:
+        except Exception as e:
+            safe_print(f"[BULK-FIX] get_active_time_bonus_now error for student {student_id}: {e}")
             time_bonus = None
         if time_bonus:
             try:
@@ -4366,7 +4363,8 @@ class AdminStation:
             try:
                 if bonus_group:
                     existing_bonus = self.db.get_student_time_bonus_for_group_on_date(student_id, bonus_group, date_str)
-            except Exception:
+            except Exception as e:
+                safe_print(f"[BULK-FIX] get_student_time_bonus error for student {student_id}: {e}")
                 existing_bonus = None
             existing_points = 0
             try:
@@ -4381,12 +4379,12 @@ class AdminStation:
                             bonus_name = str(time_bonus.get('name') or '').strip()
                             self.db.add_points(student_id, bonus_points,
                                                f"⏰ בונוס זמנים ({bonus_name}): +{bonus_points}", "תיקון ידני מרוכז")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            safe_print(f"[BULK-FIX] add_points error for student {student_id}: {e}")
                     try:
                         self.db.record_time_bonus_given_on_date(student_id, bonus_schedule_id, date_str, given_at=given_at_utc)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        safe_print(f"[BULK-FIX] record_time_bonus_given error for student {student_id}: {e}")
                 else:
                     if int(bonus_points) > int(existing_points):
                         delta = int(bonus_points) - int(existing_points)
@@ -4395,21 +4393,24 @@ class AdminStation:
                                 bonus_name = str(time_bonus.get('name') or '').strip()
                                 self.db.add_points(student_id, delta,
                                                    f"⏰ תיקון בונוס זמנים ({bonus_name}): +{delta}", "תיקון ידני מרוכז")
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                safe_print(f"[BULK-FIX] add_points (delta) error for student {student_id}: {e}")
                         try:
                             if bonus_group:
                                 self.db.replace_student_time_bonus_for_group_on_date(
                                     student_id, bonus_group, date_str, bonus_schedule_id, given_at=given_at_utc)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            safe_print(f"[BULK-FIX] replace_bonus error for student {student_id}: {e}")
                     else:
+                        # רשומה קיימת (אותן נקודות או יותר) — UPSERT כדי שתעבוד גם כשהרשומה רק בארכיון
                         try:
-                            if bonus_group:
-                                self.db.update_time_bonus_given_at_for_group_on_date(
-                                    student_id, bonus_group, date_str, given_at=given_at_utc)
-                        except Exception:
-                            pass
+                            existing_sched_id = int(existing_bonus.get('bonus_schedule_id') or bonus_schedule_id)
+                            self.db.record_time_bonus_given_on_date(
+                                student_id, existing_sched_id, date_str, given_at=given_at_utc)
+                        except Exception as e:
+                            safe_print(f"[BULK-FIX] upsert_given_at error for student {student_id}: {e}")
+        else:
+            safe_print(f"[BULK-FIX] No active time bonus found for student {student_id} class='{class_name}' at {date_str} {time_str}")
         return True, 'OK'
 
     def _bulk_fix_build_ui(self, dlg, content_frame, mode_frame, mode_var, status_var,
