@@ -131,7 +131,26 @@ def admin_institutions(request: Request) -> str:
         try:
             cur.execute('SELECT tenant_id, name, api_key, created_at, contact_name, email, phone, plan, last_login, login_count FROM institutions ORDER BY created_at DESC')
         except Exception:
-            cur.execute('SELECT tenant_id, name, api_key, created_at FROM institutions ORDER BY created_at DESC')
+            conn.rollback()
+            # Try to add missing columns
+            for col_def in [
+                "ALTER TABLE institutions ADD COLUMN contact_name TEXT DEFAULT ''",
+                "ALTER TABLE institutions ADD COLUMN email TEXT DEFAULT ''",
+                "ALTER TABLE institutions ADD COLUMN phone TEXT DEFAULT ''",
+                "ALTER TABLE institutions ADD COLUMN plan TEXT DEFAULT 'trial'",
+                "ALTER TABLE institutions ADD COLUMN last_login TEXT DEFAULT ''",
+                "ALTER TABLE institutions ADD COLUMN login_count INTEGER DEFAULT 0",
+            ]:
+                try:
+                    cur.execute(col_def)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+            try:
+                cur.execute('SELECT tenant_id, name, api_key, created_at, contact_name, email, phone, plan, last_login, login_count FROM institutions ORDER BY created_at DESC')
+            except Exception:
+                conn.rollback()
+                cur.execute('SELECT tenant_id, name, api_key, created_at FROM institutions ORDER BY created_at DESC')
         rows = cur.fetchall() or []
         
         list_html = ""
