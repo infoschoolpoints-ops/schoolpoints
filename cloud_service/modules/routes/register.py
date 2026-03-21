@@ -63,6 +63,12 @@ _REG_FORM = """
 <div class="st">בחרו מסלול</div>
 <input type="hidden" name="plan" id="planInput" value="__PLAN__"/>
 <div class="pg">
+  <div class="pc" data-plan="trial" onclick="selPlan('trial')">
+    <div class="pbdg" style="background:#3498db;">חינם!</div>
+    <div class="pn">ניסיון</div>
+    <div class="pp" style="font-size:22px;">7 ימים חינם</div>
+    <ul class="pf"><li>גישה מלאה לכל התכונות</li><li>עד 2 עמדות</li><li>ללא התחייבות</li><li>שדרוג בכל עת</li></ul>
+  </div>
   <div class="pc" data-plan="basic" onclick="selPlan('basic')">
     <div class="pn">Basic</div>
     <div class="pp">&#8362;50<span>/חודש</span></div>
@@ -105,7 +111,7 @@ function selPlan(p){
   document.getElementById('planInput').value=p;
   document.querySelectorAll('.pc').forEach(c=>{c.classList.toggle('sel',c.dataset.plan===p);});
 }
-(function(){var p='__PLAN__';if(p)selPlan(p);else selPlan('extended');})();
+(function(){var p='__PLAN__';if(p)selPlan(p);else selPlan('trial');})();
 
 async function submitReg(e){
   e.preventDefault();
@@ -148,8 +154,8 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
     password  = str(payload.get('password') or '').strip()
     plan      = str(payload.get('plan') or 'basic').strip()
     terms_ok  = payload.get('terms')
-    if plan not in ('basic', 'extended', 'unlimited'):
-        plan = 'basic'
+    if plan not in ('trial', 'basic', 'extended', 'unlimited'):
+        plan = 'trial'
     if not inst_name or not email or not password or not contact:
         raise HTTPException(400, detail="\u05d7\u05e1\u05e8\u05d9\u05dd \u05e9\u05d3\u05d5\u05ea \u05d7\u05d5\u05d1\u05d4")
     if not terms_ok:

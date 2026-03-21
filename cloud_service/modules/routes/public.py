@@ -39,6 +39,45 @@ def root() -> Response:
 def admin_redirect() -> Response:
     return RedirectResponse(url="/admin/login", status_code=302)
 
+_HOME_CARDS = """
+<div style="margin-top:50px;text-align:center;position:relative;z-index:5;">
+  <h2 style="font-size:32px;font-weight:900;margin-bottom:8px;background:linear-gradient(135deg,#2ecc71,#00cec9);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">למה SchoolPoints?</h2>
+  <p style="font-size:16px;opacity:.8;max-width:620px;margin:0 auto 30px;line-height:1.7;">הפלטפורמה שהופכת כל מבצע חינוכי לחוויה מרגשת &mdash; כרטיסים חכמים, מעקב בזמן אמת ותגמול שמניע להצטיינות.</p>
+</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:20px;max-width:1100px;margin:0 auto;position:relative;z-index:5;">
+  <div class="glass" style="padding:26px;border-radius:20px;text-align:center;">
+    <div style="font-size:44px;margin-bottom:12px;">🏆</div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:10px;color:#fff;">הצטיינות והתמדה</div>
+    <div style="font-size:15px;opacity:.8;line-height:1.6;">תלמידים צוברים נקודות על הישגים, הגעה בזמן והתנהגות מצטיינת. תחרות חיובית שמעלה מוטיבציה!</div>
+  </div>
+  <div class="glass" style="padding:26px;border-radius:20px;text-align:center;">
+    <div style="font-size:44px;margin-bottom:12px;">💳</div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:10px;color:#fff;">כרטיס אישי חכם</div>
+    <div style="font-size:15px;opacity:.8;line-height:1.6;">לכל תלמיד כרטיס מהודר ואישי &mdash; לא עוד ניירות שנאבדות! העברה מהירה בעמדה, יתרה מעודכנת תמיד.</div>
+  </div>
+  <div class="glass" style="padding:26px;border-radius:20px;text-align:center;">
+    <div style="font-size:44px;margin-bottom:12px;">📊</div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:10px;color:#fff;">מעקב והתקדמות</div>
+    <div style="font-size:15px;opacity:.8;line-height:1.6;">הצוות החינוכי עוקב אחר מצב כל תלמיד בלוח בקרה אחד. דוחות, גרפים ותובנות לשיפור מתמיד.</div>
+  </div>
+  <div class="glass" style="padding:26px;border-radius:20px;text-align:center;">
+    <div style="font-size:44px;margin-bottom:12px;">🎁</div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:10px;color:#fff;">תגמול נאה ושמחה</div>
+    <div style="font-size:15px;opacity:.8;line-height:1.6;">אווירת מבצע מרגשת! תלמידים מממשים נקודות לפרסים, חוויות וקניות &mdash; שמחה וסיפוק אמיתיים.</div>
+  </div>
+  <div class="glass" style="padding:26px;border-radius:20px;text-align:center;">
+    <div style="font-size:44px;margin-bottom:12px;">👥</div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:10px;color:#fff;">מעקב צוותי</div>
+    <div style="font-size:15px;opacity:.8;line-height:1.6;">מחנכים ורכזים רואים את ההתקדמות של כל תלמיד ותלמידה, מזהים מי צריך חיזוק ומי בדרך להצטיינות.</div>
+  </div>
+  <div class="glass" style="padding:26px;border-radius:20px;text-align:center;">
+    <div style="font-size:44px;margin-bottom:12px;">🚀</div>
+    <div style="font-weight:900;font-size:20px;margin-bottom:10px;color:#fff;">פשוט להתחיל</div>
+    <div style="font-size:15px;opacity:.8;line-height:1.6;">התקנה מהירה, ייבוא תלמידים מאקסל, הדפסת כרטיסים ותוך דקות &mdash; המבצע באוויר!</div>
+  </div>
+</div>
+"""
+
 @router.get('/web', response_class=HTMLResponse)
 @router.get('/web/', response_class=HTMLResponse)
 def web_home() -> str:
@@ -168,23 +207,7 @@ def web_home() -> str:
             <div class="montage-card card-3"><img src="/web/assets/guide_images/01.png" alt="Screen 3"></div>
         </div>
 
-        <div style="margin-top:60px; display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:24px; max-width:1100px; margin-left:auto; margin-right:auto; position:relative; z-index:5;">
-            <div class="glass" style="padding:30px; border-radius:20px; text-align:center;">
-                <div style="font-size:48px; margin-bottom:16px;">☁️</div>
-                <div style="font-weight:900; font-size:22px; margin-bottom:12px; color:#fff;">ענן היברידי</div>
-                <div style="font-size:16px; opacity:0.8; line-height:1.6;">הנתונים מסונכרנים בזמן אמת. גם אם האינטרנט נופל, העמדות ממשיכות לעבוד והנתונים יעלו כשהחיבור יחזור.</div>
-            </div>
-            <div class="glass" style="padding:30px; border-radius:20px; text-align:center;">
-                <div style="font-size:48px; margin-bottom:16px;">💎</div>
-                <div style="font-weight:900; font-size:22px; margin-bottom:12px; color:#fff;">ממשק זכוכיתי</div>
-                <div style="font-size:16px; opacity:0.8; line-height:1.6;">עיצוב נקי ומודרני המותאם לכל המסכים. חווית משתמש נוחה ואינטואיטיבית למורים ולתלמידים.</div>
-            </div>
-            <div class="glass" style="padding:30px; border-radius:20px; text-align:center;">
-                <div style="font-size:48px; margin-bottom:16px;">🛡️</div>
-                <div style="font-weight:900; font-size:22px; margin-bottom:12px; color:#fff;">אבטחה מתקדמת</div>
-                <div style="font-size:16px; opacity:0.8; line-height:1.6;">הצפנת נתונים, גיבויים אוטומטיים וניהול הרשאות קפדני לשמירה על פרטיות המוסד.</div>
-            </div>
-        </div>
+        """ + _HOME_CARDS + """
     </div>
     """
     return public_web_shell('תוכנת הנקודות', body)
@@ -202,11 +225,22 @@ def web_guide(request: Request) -> str:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
         return public_web_shell('מדריך', body, request=request)
 
-    # Serve as standalone HTML – preserve original styling
+    # Fix image/link paths
     html_content = html_content.replace('src="guide_images/', 'src="/web/assets/guide_images/')
     html_content = html_content.replace('src="images/', 'src="/web/assets/guide_images/')
     html_content = html_content.replace('href="equipment_required.html"', 'href="/web/equipment-required"')
-    return html_content
+    # Strip any existing <html>/<head>/<body> tags to embed in shell
+    import re as _re
+    inner = html_content
+    # Extract body content if full HTML doc
+    body_match = _re.search(r'<body[^>]*>(.*)</body>', inner, _re.DOTALL | _re.IGNORECASE)
+    if body_match:
+        inner = body_match.group(1)
+    # Extract inline styles from head to preserve them
+    style_parts = _re.findall(r'(<style[^>]*>.*?</style>)', html_content, _re.DOTALL | _re.IGNORECASE)
+    style_block = '\n'.join(style_parts) if style_parts else ''
+    wrapped = style_block + '<div style="max-width:100%;overflow-x:auto;">' + inner + '</div>'
+    return public_web_shell('\u05de\u05d3\u05e8\u05d9\u05da', wrapped, request=request)
 
 @router.get('/web/pricing', response_class=HTMLResponse)
 def web_pricing() -> str:
@@ -342,7 +376,16 @@ def web_equipment_required(request: Request) -> str:
         body = "<h2>רשימת ציוד נדרש</h2><p>העמוד עדיין לא זמין.</p>"
         return public_web_shell("רשימת ציוד נדרש", body)
     
-    # Serve as standalone HTML – preserve original styling
+    # Fix image paths
     html_content = html_content.replace('src="equipment_required_files/', 'src="/web/assets/equipment_required_files/')
     html_content = html_content.replace("src='equipment_required_files/", "src='/web/assets/equipment_required_files/")
-    return html_content
+    # Strip any existing <html>/<head>/<body> tags to embed in shell
+    import re as _re
+    inner = html_content
+    body_match = _re.search(r'<body[^>]*>(.*)</body>', inner, _re.DOTALL | _re.IGNORECASE)
+    if body_match:
+        inner = body_match.group(1)
+    style_parts = _re.findall(r'(<style[^>]*>.*?</style>)', html_content, _re.DOTALL | _re.IGNORECASE)
+    style_block = '\n'.join(style_parts) if style_parts else ''
+    wrapped = style_block + '<div style="max-width:100%;overflow-x:auto;">' + inner + '</div>'
+    return public_web_shell('\u05e6\u05d9\u05d5\u05d3 \u05e0\u05d3\u05e8\u05e9', wrapped, request=request)

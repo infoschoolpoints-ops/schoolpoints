@@ -128,7 +128,10 @@ def admin_institutions(request: Request) -> str:
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute('SELECT tenant_id, name, api_key, created_at, contact_name, email, phone, plan, last_login, login_count FROM institutions ORDER BY created_at DESC')
+        try:
+            cur.execute('SELECT tenant_id, name, api_key, created_at, contact_name, email, phone, plan, last_login, login_count FROM institutions ORDER BY created_at DESC')
+        except Exception:
+            cur.execute('SELECT tenant_id, name, api_key, created_at FROM institutions ORDER BY created_at DESC')
         rows = cur.fetchall() or []
         
         list_html = ""
@@ -138,8 +141,7 @@ def admin_institutions(request: Request) -> str:
             elif hasattr(r, 'keys'):
                 d = {k: r[k] for k in r.keys()}
             else:
-                cols = ['tenant_id','name','api_key','created_at','contact_name','email','phone','plan','last_login','login_count']
-                d = dict(zip(cols, r))
+                d = {'tenant_id': r[0], 'name': r[1], 'api_key': r[2], 'created_at': r[3] if len(r) > 3 else ''}
             
             plan_val = d.get('plan') or 'trial'
             plan_colors = {'basic':'#3498db','extended':'#2ecc71','unlimited':'#9b59b6','trial':'#95a5a6'}
