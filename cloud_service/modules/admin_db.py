@@ -157,6 +157,29 @@ def get_all_plans() -> list:
         except: pass
 
 
+def verify_staff_login(username: str, password: str) -> dict | None:
+    """Verify staff username+password. Returns staff dict or None."""
+    from .auth import check_password_hash
+    ensure_admin_tables()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder(
+            "SELECT * FROM admin_staff WHERE username=? AND is_active=1 LIMIT 1"), (username,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = row_to_dict(row)
+        if check_password_hash(d.get('password_hash', ''), password):
+            return d
+        return None
+    except Exception:
+        return None
+    finally:
+        try: conn.close()
+        except: pass
+
+
 def row_to_dict(r) -> dict:
     """Convert a DB row to a plain dict."""
     if isinstance(r, dict):

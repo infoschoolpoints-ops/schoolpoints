@@ -10,7 +10,7 @@ from ..ui import basic_web_shell
 from ..db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, delete_tenant_db, tenant_db_connection, generate_numeric_tenant_id
 from ..config import ADMIN_KEY, MASTER_LOGIN_SECRET, USE_POSTGRES, DATA_DIR
 from ..auth import pbkdf2_hash
-from ..admin_db import ensure_admin_tables, get_tenant_stats, get_all_plans, row_to_dict
+from ..admin_db import ensure_admin_tables, get_tenant_stats, get_all_plans, row_to_dict, verify_staff_login
 import os
 import shutil
 
@@ -95,42 +95,95 @@ def require_admin_key(request: Request) -> bool:
     try:
         cookie = request.cookies.get('admin_key')
         expected = admin_expected_key()
-        if not expected: return True # Dev mode or no key set? secure defaults usually imply block. 
-        # But if ADMIN_KEY env is empty, maybe allow local? No, deny.
-        if not expected: return False 
-        return str(cookie or '').strip() == expected
+        if expected and str(cookie or '').strip() == expected:
+            return True
+        staff = request.cookies.get('admin_staff_session')
+        if staff and _verify_staff_session(staff):
+            return True
+        if not expected:
+            return True
+        return False
     except:
         return False
 
+def _verify_staff_session(token: str) -> bool:
+    import hmac as _hmac, hashlib as _hl
+    try:
+        parts = token.split(':', 1)
+        if len(parts) != 2: return False
+        username, sig = parts
+        secret = (admin_expected_key() or 'x').encode()
+        exp = _hmac.new(secret, username.encode(), _hl.sha256).hexdigest()
+        return _hmac.compare_digest(sig, exp)
+    except: return False
+
+def _create_staff_session(username: str) -> str:
+    import hmac as _hmac, hashlib as _hl
+    secret = (admin_expected_key() or 'x').encode()
+    sig = _hmac.new(secret, username.encode(), _hl.sha256).hexdigest()
+    return f"{username}:{sig}"
+
 @router.get('/admin/login', response_class=HTMLResponse)
-def admin_login_page() -> str:
-    body = """
-    <div style="max-width:400px; margin:50px auto;">
-        <h2>כניסת מנהל מערכת</h2>
-        <form method="post" action="/admin/login">
-            <div class="form-group">
-                <label>Admin Key</label>
-                <input name="admin_key" type="password" class="form-input" required />
-            </div>
-            <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
-        </form>
+def admin_login_page(request: Request, err: str = '') -> str:
+    err_html = f'<div style="background:#fee;color:#c00;padding:10px;border-radius:10px;margin-bottom:14px;text-align:center;">{err}</div>' if err else ''
+    body = f"""
+    <div style="max-width:420px; margin:40px auto;">
+        <h2 style="text-align:center;">כניסת ניהול</h2>
+        {err_html}
+        <div class="card" style="padding:20px;margin-bottom:16px;">
+            <h3 style="margin-top:0;">כניסת צוות</h3>
+            <form method="post" action="/admin/login">
+                <input type="hidden" name="login_type" value="staff">
+                <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">שם משתמש</label><input name="username" class="form-input" required autocomplete="username"></div>
+                <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">סיסמה</label><input name="password" type="password" class="form-input" required autocomplete="current-password"></div>
+                <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
+            </form>
+        </div>
+        <div class="card" style="padding:20px;">
+            <h3 style="margin-top:0;">כניסה עם מפתח מנהל</h3>
+            <form method="post" action="/admin/login">
+                <input type="hidden" name="login_type" value="key">
+                <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">Admin Key</label><input name="admin_key" type="password" class="form-input" required></div>
+                <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
+            </form>
+        </div>
     </div>
     """
-    return super_admin_shell("Admin Login", body)
+    return basic_web_shell("כניסת ניהול", body, request)
 
 @router.post('/admin/login')
-def admin_login_submit(admin_key: str = Form(...)) -> Response:
-    expected = admin_expected_key()
-    if expected and str(admin_key or '').strip() != expected:
-        return HTMLResponse("<h3>Invalid admin key</h3>", status_code=403)
-    resp = RedirectResponse(url="/admin/institutions", status_code=302)
-    resp.set_cookie('admin_key', str(admin_key or '').strip(), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
-    return resp
+def admin_login_submit(
+    request: Request,
+    login_type: str = Form('key'),
+    admin_key: str = Form(''),
+    username: str = Form(''),
+    password: str = Form('')
+) -> Response:
+    if login_type == 'staff':
+        u = str(username or '').strip()
+        p = str(password or '').strip()
+        if not u or not p:
+            return RedirectResponse(url="/admin/login?err=חסר+שם+משתמש+או+סיסמה", status_code=302)
+        staff = verify_staff_login(u, p)
+        if not staff:
+            return RedirectResponse(url="/admin/login?err=שם+משתמש+או+סיסמה+שגויים", status_code=302)
+        resp = RedirectResponse(url="/admin/institutions", status_code=302)
+        token = _create_staff_session(u)
+        resp.set_cookie('admin_staff_session', token, httponly=True, samesite='lax', max_age=60*60*8)
+        return resp
+    else:
+        expected = admin_expected_key()
+        if expected and str(admin_key or '').strip() != expected:
+            return RedirectResponse(url="/admin/login?err=מפתח+שגוי", status_code=302)
+        resp = RedirectResponse(url="/admin/institutions", status_code=302)
+        resp.set_cookie('admin_key', str(admin_key or '').strip(), httponly=True, samesite='lax', max_age=60*60*24*30)
+        return resp
 
 @router.get('/admin/logout')
 def admin_logout() -> Response:
     resp = RedirectResponse(url="/admin/login", status_code=302)
     resp.delete_cookie('admin_key')
+    resp.delete_cookie('admin_staff_session')
     return resp
 
 @router.get('/admin/institutions', response_class=HTMLResponse)

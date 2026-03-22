@@ -12,11 +12,23 @@ router = APIRouter()
 
 def _req_admin(request):
     from ..config import ADMIN_KEY
+    import hmac as _hmac, hashlib as _hl
     try:
-        c = request.cookies.get('admin_key')
         k = ADMIN_KEY
-        if not k: return True
-        return str(c or '').strip() == k
+        c = request.cookies.get('admin_key')
+        if k and str(c or '').strip() == k:
+            return True
+        staff = request.cookies.get('admin_staff_session')
+        if staff:
+            parts = staff.split(':', 1)
+            if len(parts) == 2:
+                secret = (k or 'x').encode()
+                exp = _hmac.new(secret, parts[0].encode(), _hl.sha256).hexdigest()
+                if _hmac.compare_digest(parts[1], exp):
+                    return True
+        if not k:
+            return True
+        return False
     except: return False
 
 _NAV = '<div style="background:rgba(0,0,0,0.06);border-radius:14px;padding:8px 16px;margin-bottom:20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><a href="/admin/institutions" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">מוסדות</a><a href="/admin/plans" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">מסלולים</a><a href="/admin/payments" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">תשלומים</a><a href="/admin/staff" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">צוות</a><a href="/admin/registrations" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">הרשמות</a><span style="flex:1;"></span><a href="/admin/logout" style="padding:6px 14px;border-radius:10px;font-size:12px;text-decoration:none;color:#e74c3c;">יציאה</a></div>'
