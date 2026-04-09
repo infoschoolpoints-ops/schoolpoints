@@ -1437,6 +1437,162 @@ def ensure_pending_registrations_table() -> None:
         try: conn.close()
         except: pass
 
+def init_global_tables() -> None:
+    """Create global tables if they don't exist (called once on startup)."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS institutions (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    api_key TEXT NOT NULL,
+                    password_hash TEXT,
+                    contact_name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    plan TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            for col_def in [
+                'contact_name TEXT', 'email TEXT', 'phone TEXT', 'plan TEXT',
+                'last_login TIMESTAMPTZ', 'login_count INTEGER DEFAULT 0',
+            ]:
+                try:
+                    cur.execute(f'ALTER TABLE institutions ADD COLUMN IF NOT EXISTS {col_def}')
+                except Exception:
+                    pass
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS changes (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    station_id TEXT,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS sync_events (
+                    id BIGSERIAL PRIMARY KEY,
+                    tenant_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    station_id TEXT,
+                    change_local_id BIGINT,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(tenant_id, event_id)
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS contact_messages (
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT,
+                    email TEXT,
+                    subject TEXT,
+                    message TEXT,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS snapshots2 (
+                    tenant_id TEXT PRIMARY KEY,
+                    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                    snapshot_gzip BYTEA
+                )
+            ''')
+        else:
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS institutions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    api_key TEXT NOT NULL,
+                    password_hash TEXT,
+                    contact_name TEXT,
+                    email TEXT,
+                    phone TEXT,
+                    plan TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            for col in ['contact_name', 'email', 'phone', 'plan', 'password_hash']:
+                try:
+                    cur.execute(f'ALTER TABLE institutions ADD COLUMN {col} TEXT')
+                except Exception:
+                    pass
+            for col_def in ['last_login TEXT', 'login_count INTEGER DEFAULT 0']:
+                try:
+                    cur.execute(f'ALTER TABLE institutions ADD COLUMN {col_def}')
+                except Exception:
+                    pass
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS changes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    station_id TEXT,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS sync_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tenant_id TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    station_id TEXT,
+                    change_local_id INTEGER,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT,
+                    action_type TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT,
+                    received_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(tenant_id, event_id)
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS contact_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT,
+                    email TEXT,
+                    subject TEXT,
+                    message TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS snapshots2 (
+                    tenant_id TEXT PRIMARY KEY,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    snapshot_gzip BLOB
+                )
+            ''')
+        conn.commit()
+        logger.info("Global tables ensured.")
+    except Exception as e:
+        logger.error(f"init_global_tables error: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def ensure_password_reset_tokens_table() -> None:
     """Ensure the password_reset_tokens table exists."""
     conn = get_db_connection()

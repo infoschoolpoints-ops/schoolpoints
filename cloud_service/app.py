@@ -13,6 +13,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .modules.config import DATA_DIR
+from .modules.db import init_global_tables
 from .modules.routes import (
     public, contact, register, teacher_auth, admin_dashboard,
     pairing, sync, license, classes, students, teachers,
@@ -21,6 +22,11 @@ from .modules.routes import (
 )
 
 app = FastAPI(title="SchoolPoints Sync")
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    init_global_tables()
 
 # Mount assets if needed (though public.py handles specific assets, we might want a general static mount if used)
 # app.mount("/static", StaticFiles(directory="static"), name="static")
