@@ -7992,11 +7992,34 @@ class Database:
                         pass
 
             # merge & sort by timestamp
+            # --- dedup: סינון points_history שכפולים ב-points_log (main + archive) ---
+            # sig_points_log נבנה רק מ-main, אבל out כבר כולל גם archive points_log
+            all_plog_sigs = set()
+            for d in (out or []):
+                ts = str(d.get('created_at') or '').strip()
+                try:
+                    dv = int(d.get('delta') or 0)
+                except Exception:
+                    dv = 0
+                rs = str(d.get('reason') or '').strip()
+                an = str(d.get('actor_name') or '').strip()
+                if ts:
+                    all_plog_sigs.add((ts, dv, rs, an))
+
             merged = []
             for d in (out or []):
                 d['_src'] = 'points_log'
                 merged.append(d)
             for d in (out2 or []):
+                ts = str(d.get('created_at') or '').strip()
+                try:
+                    dv = int(d.get('delta') or 0)
+                except Exception:
+                    dv = 0
+                rs = str(d.get('reason') or '').strip()
+                an = str(d.get('actor_name') or '').strip()
+                if ts and (ts, dv, rs, an) in all_plog_sigs:
+                    continue  # כפילות: כבר קיים ב-points_log (main או archive)
                 d['_src'] = 'points_history'
                 merged.append(d)
 

@@ -20,11 +20,10 @@ _INST_COLS = [
     "max_stations INTEGER DEFAULT 2",
 ]
 
+# (plan_key, display_name, price_monthly, description, features_json, max_stations, is_active, sort_order, duration_months, is_featured, is_visible)
 _DEFAULT_PLANS = [
-    ('trial', 'ניסיון', 0, '7 ימים חינם – גישה מלאה', '["גישה מלאה","עד 2 עמדות","ללא התחייבות"]', 2, 1, 0),
-    ('basic', 'Basic', 50, 'מסלול בסיסי', '["עד 2 עמדות","סנכרון ענן","תמיכה במייל"]', 2, 1, 1),
-    ('extended', 'Extended', 100, 'מסלול מורחב', '["עד 5 עמדות","חנות","דוחות מתקדמים"]', 5, 1, 2),
-    ('unlimited', 'Unlimited', 200, 'ללא הגבלה', '["עמדות ללא הגבלה","קיוסק","תמיכה טלפונית + API"]', 999, 1, 3),
+    ('short', 'מסלול קצר', 700, 'תשלום ל-2 חודשים', '["גישה מלאה לכל הפיצ\u05f3רים","סנכרון ענן","עמדות ללא הגבלה","תמיכה מלאה"]', 999, 1, 1, 2, 0, 1),
+    ('annual', 'מסלול שנתי', 200, 'תשלום חודשי ל-12 חודשים', '["גישה מלאה לכל הפיצ\u05f3רים","סנכרון ענן","עמדות ללא הגבלה","תמיכה מלאה","חיסכון משמעותי!"]', 999, 1, 2, 12, 1, 1),
 ]
 
 
@@ -53,8 +52,21 @@ def ensure_admin_tables():
             plan_key TEXT PRIMARY KEY, display_name TEXT NOT NULL,
             price_monthly INTEGER DEFAULT 0, description TEXT DEFAULT '',
             features_json TEXT DEFAULT '[]', max_stations INTEGER DEFAULT 2,
-            is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0)""")
+            is_active INTEGER DEFAULT 1, sort_order INTEGER DEFAULT 0,
+            duration_months INTEGER DEFAULT 1, is_featured INTEGER DEFAULT 0,
+            is_visible INTEGER DEFAULT 1)""")
         conn.commit()
+        # Add new columns if table existed before migration
+        for _new_col in ['duration_months INTEGER DEFAULT 1', 'is_featured INTEGER DEFAULT 0', 'is_visible INTEGER DEFAULT 1']:
+            try:
+                if USE_POSTGRES:
+                    cur.execute(f'ALTER TABLE plan_config ADD COLUMN IF NOT EXISTS {_new_col}')
+                else:
+                    cur.execute(f'ALTER TABLE plan_config ADD COLUMN {_new_col}')
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except: pass
 
         # seed defaults
         cur.execute("SELECT COUNT(*) FROM plan_config")
@@ -63,8 +75,8 @@ def ensure_admin_tables():
         if cnt == 0:
             for p in _DEFAULT_PLANS:
                 cur.execute(sql_placeholder(
-                    "INSERT INTO plan_config (plan_key,display_name,price_monthly,description,features_json,max_stations,is_active,sort_order)"
-                    " VALUES (?,?,?,?,?,?,?,?)"), p)
+                    "INSERT INTO plan_config (plan_key,display_name,price_monthly,description,features_json,max_stations,is_active,sort_order,duration_months,is_featured,is_visible)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)"), p)
             conn.commit()
 
         # institution_payments

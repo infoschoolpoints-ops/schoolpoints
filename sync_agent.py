@@ -2369,6 +2369,37 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 except Exception as e:
                     print(f"[BOOTSTRAP] Error setting local since_id: {e}")
 
+            # --- Detect tenant change: push full snapshot to new cloud DB ---
+            last_synced_tenant = str(_get_sync_state(conn0, 'last_synced_tenant_id', '') or '').strip()
+            if tenant_id and api_key and snapshot_url and last_synced_tenant and last_synced_tenant != tenant_id:
+                print(f"[BOOTSTRAP] Tenant changed: {last_synced_tenant!r} -> {tenant_id!r} — pushing full snapshot to new cloud DB")
+                try:
+                    snap = build_snapshot(conn0)
+                    _snap_ok = False
+                    try:
+                        _snap_ok = push_snapshot2(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                    except Exception:
+                        _snap_ok = False
+                    if not _snap_ok:
+                        _snap_ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                    if _snap_ok:
+                        _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
+                        _set_sync_state(conn0, 'pull_since_id', '0')
+                        # Mark all existing change_log as synced so they don't re-push individually
+                        try:
+                            conn0.execute("UPDATE change_log SET synced_at = datetime('now') WHERE synced_at IS NULL")
+                            conn0.commit()
+                        except Exception:
+                            pass
+                        print("[BOOTSTRAP] Full snapshot pushed after tenant change — all data synced to new cloud")
+                    else:
+                        print("[BOOTSTRAP] Snapshot push failed after tenant change — will retry next loop")
+                except Exception as _snap_err:
+                    print(f"[BOOTSTRAP] Tenant change snapshot error: {_snap_err}")
+            elif tenant_id and api_key and not last_synced_tenant:
+                # First time: just record current tenant_id
+                _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
+
             done = str(_get_sync_state(conn0, 'bootstrap_snapshot_done', '0') or '0').strip()
             should_run = force_bootstrap or (done != '1')
             if should_run and tenant_id and api_key and snapshot_url:

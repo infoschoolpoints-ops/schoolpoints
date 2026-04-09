@@ -9908,8 +9908,20 @@ class AdminStation:
             shared = cfg.get('shared_folder') or cfg.get('network_root')
 
         previously_configured = bool(shared)
+
+        # הסתרת חלון הטעינה כדי שדיאלוגים יהיו גלויים (root מוסתר → transient children גם מוסתרים)
+        _loading_win = None
+        try:
+            ld = getattr(self.root, '_sp_admin_loading', None)
+            if ld and ld.get('window'):
+                _loading_win = ld['window']
+        except Exception:
+            pass
+
         if shared and not self._isdir_safe(shared):
             try:
+                if _loading_win:
+                    _loading_win.withdraw()
                 messagebox.showwarning(
                     "תיקייה משותפת לא זמינה",
                     "נראה שהמחשב כבר הוגדר בעבר לתיקיית נתונים משותפת, אך כרגע אין גישה אליה.\n\n"
@@ -9921,6 +9933,11 @@ class AdminStation:
                 pass
 
         if not (shared and self._isdir_safe(shared)):
+            try:
+                if _loading_win:
+                    _loading_win.withdraw()
+            except Exception:
+                pass
             if not self._open_admin_shared_folder_dialog(
                 cfg,
                 first_run=not previously_configured,
@@ -9929,6 +9946,12 @@ class AdminStation:
                 previously_configured=previously_configured,
             ):
                 return False
+            # שחזור חלון הטעינה
+            try:
+                if _loading_win:
+                    _loading_win.deiconify()
+            except Exception:
+                pass
             try:
                 cfg = self.load_app_config() or cfg
             except Exception:
@@ -9949,6 +9972,8 @@ class AdminStation:
             _is_secondary = bool(getattr(temp_db, '_remote_write_url', None))
             if _is_secondary:
                 try:
+                    if _loading_win:
+                        _loading_win.withdraw()
                     messagebox.showwarning(
                         "עמדה משנית – נתונים לא נטענו",
                         "העמדה מזוהה כעמדה משנית, אך מסד הנתונים ריק.\n\n"
@@ -9959,6 +9984,11 @@ class AdminStation:
                 except Exception:
                     pass
                 return False
+            try:
+                if _loading_win:
+                    _loading_win.withdraw()
+            except Exception:
+                pass
             if not self._open_initial_admin_dialog(temp_db):
                 return False
         return True
@@ -9973,8 +10003,10 @@ class AdminStation:
             pass
         dialog.configure(bg='#ecf0f1')
         dialog.overrideredirect(False)  # מפורשות מאפשר מזעור
-        dialog.transient(self.root)
+        # transient ל-root מוסתר גורם לדיאלוג להיות בלתי נראה ב-Windows — לא להשתמש
         dialog.grab_set()
+        dialog.lift()
+        dialog.focus_force()
         dialog.resizable(True, True)
         title_text = "ברוכים הבאים לעמדת הניהול" if first_run else "חיבור לתיקיית נתונים משותפת"
         tk.Label(
@@ -10340,8 +10372,10 @@ class AdminStation:
         except Exception:
             pass
         dialog.configure(bg='#ecf0f1')
-        dialog.transient(self.root)
+        # transient ל-root מוסתר גורם לדיאלוג להיות בלתי נראה ב-Windows — לא להשתמש
         dialog.grab_set()
+        dialog.lift()
+        dialog.focus_force()
         dialog.resizable(True, True)
         tk.Label(dialog, text="יצירת מנהל ראשוני", font=('Arial', 14, 'bold'), bg='#ecf0f1').pack(pady=15)
         tk.Label(dialog, text="שם המנהל:", font=('Arial', 11), bg='#ecf0f1').pack(pady=5)

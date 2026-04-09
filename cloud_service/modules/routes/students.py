@@ -466,16 +466,48 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
     tenant_id = web_tenant_from_cookie(request)
     if not tenant_id: raise HTTPException(status_code=400, detail="Missing tenant")
     
+    teacher = web_current_teacher(request) or {}
+    is_admin = (int(teacher.get('is_admin') or 0) == 1)
+    teacher_id = int(teacher.get('id') or 0)
+    
     conn = tenant_db_connection(tenant_id)
     try:
         cur = conn.cursor()
+        
+        # Non-admin teachers: only see students from their classes
+        allowed_classes = None
+        if not is_admin and teacher_id > 0:
+            try:
+                cur.execute(sql_placeholder('SELECT class_name FROM teacher_classes WHERE teacher_id = ?'), (teacher_id,))
+                tc_rows = cur.fetchall() or []
+                allowed_classes = []
+                for tcr in tc_rows:
+                    cn = tcr['class_name'] if isinstance(tcr, dict) else tcr[0]
+                    if cn:
+                        allowed_classes.append(str(cn).strip())
+            except Exception:
+                allowed_classes = None
+        
         q_str = str(q or '').strip()
         sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number FROM students"
         params = []
+        where_parts = []
+        
         if q_str:
-            sql += " WHERE (first_name LIKE ? OR last_name LIKE ? OR card_number LIKE ? OR class_name LIKE ? OR id_number LIKE ?)"
+            where_parts.append("(first_name LIKE ? OR last_name LIKE ? OR card_number LIKE ? OR class_name LIKE ? OR id_number LIKE ?)")
             p = f"%{q_str}%"
             params = [p, p, p, p, p]
+        
+        if allowed_classes is not None and len(allowed_classes) > 0:
+            placeholders = ','.join(['?' for _ in allowed_classes])
+            where_parts.append(f"class_name IN ({placeholders})")
+            params.extend(allowed_classes)
+        elif allowed_classes is not None and len(allowed_classes) == 0:
+            # Teacher has no assigned classes — show nothing
+            return {'items': []}
+        
+        if where_parts:
+            sql += " WHERE " + " AND ".join(where_parts)
         
         sql += " ORDER BY class_name, last_name"
         

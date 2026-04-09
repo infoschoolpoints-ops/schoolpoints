@@ -47,11 +47,13 @@ def admin_plans_page(request: Request) -> str:
     rows = ""
     for p in plans:
         pk = p.get('plan_key','')
-        feats = p.get('features_json','[]')
-        try: fl = json.loads(feats) if isinstance(feats,str) else feats
-        except: fl = []
-        fs = ', '.join(fl) if fl else ''
-        rows += f'<tr style="border-bottom:1px solid #eee;"><td style="padding:10px;font-weight:700;">{p.get("display_name","")}</td><td style="padding:10px;font-family:monospace;">{pk}</td><td style="padding:10px;">₪{p.get("price_monthly",0)}</td><td style="padding:10px;font-size:12px;">{p.get("description","")}</td><td style="padding:10px;font-size:12px;">{fs}</td><td style="padding:10px;text-align:center;">{p.get("max_stations",2)}</td><td style="padding:10px;"><a href="/admin/plans/{pk}" style="font-size:12px;padding:4px 10px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;">ערוך</a></td></tr>'
+        price = int(p.get('price_monthly',0))
+        dur = int(p.get('duration_months',1) or 1)
+        total = price * dur
+        vis = '✅' if int(p.get('is_visible',1) or 1) else '❌'
+        feat_flag = '⭐' if int(p.get('is_featured',0) or 0) else ''
+        price_str = f'₪{price}/חוד' + (f' (×{dur}=₪{total})' if dur > 1 else '')
+        rows += f'<tr style="border-bottom:1px solid #eee;"><td style="padding:10px;font-weight:700;">{p.get("display_name","")} {feat_flag}</td><td style="padding:10px;font-family:monospace;">{pk}</td><td style="padding:10px;">{price_str}</td><td style="padding:10px;font-size:12px;">{p.get("description","")}</td><td style="padding:10px;text-align:center;">{vis}</td><td style="padding:10px;display:flex;gap:4px;"><a href="/admin/plans/{pk}" style="font-size:12px;padding:4px 10px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;">ערוך</a><form method="post" action="/admin/plans/{pk}/toggle-visible" style="display:inline;"><button style="font-size:11px;padding:4px 8px;background:#e67e22;color:#fff;border:none;border-radius:8px;cursor:pointer;">{"הסתר" if int(p.get("is_visible",1) or 1) else "הצג"}</button></form><form method="post" action="/admin/plans/{pk}/delete" style="display:inline;" onsubmit="return confirm(\'\u05dc\u05de\u05d7\u05d5\u05e7?\');"><button style="font-size:11px;padding:4px 8px;background:#e74c3c;color:#fff;border:none;border-radius:8px;cursor:pointer;">מחק</button></form></td></tr>'
 
     body = f"""
     <h2>ניהול מסלולים</h2>
@@ -60,14 +62,25 @@ def admin_plans_page(request: Request) -> str:
             <thead style="background:rgba(0,0,0,0.05);"><tr>
                 <th style="padding:10px;text-align:right;">שם תצוגה</th>
                 <th style="padding:10px;text-align:right;">מפתח</th>
-                <th style="padding:10px;text-align:right;">מחיר/חודש</th>
+                <th style="padding:10px;text-align:right;">מחיר</th>
                 <th style="padding:10px;text-align:right;">תיאור</th>
-                <th style="padding:10px;text-align:right;">פיצ'רים</th>
-                <th style="padding:10px;text-align:center;">מקס עמדות</th>
+                <th style="padding:10px;text-align:center;">נראה</th>
                 <th style="padding:10px;text-align:right;">פעולות</th>
             </tr></thead>
             <tbody>{rows}</tbody>
         </table>
+    </div>
+    <div class="card" style="padding:16px;margin-top:16px;">
+        <h3 style="margin-top:0;">הוספת מסלול</h3>
+        <form method="post" action="/admin/plans/add">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
+                <input name="plan_key" placeholder="מפתח (אנגלית) *" class="form-input" required>
+                <input name="display_name" placeholder="שם תצוגה *" class="form-input" required>
+                <input name="price_monthly" placeholder="מחיר/חודש" type="number" class="form-input" required>
+                <input name="duration_months" placeholder="מס' חודשים" type="number" value="1" class="form-input">
+            </div>
+            <div style="margin-top:10px;"><button class="btn-primary">הוסף</button></div>
+        </form>
     </div>
     """
     return _shell("ניהול מסלולים", body, request)
@@ -92,6 +105,9 @@ def admin_plan_edit(request: Request, pk: str) -> str:
     try: fl = json.loads(feats) if isinstance(feats,str) else feats
     except: fl = []
     fs = '\n'.join(fl)
+    is_feat = int(p.get('is_featured',0) or 0)
+    is_vis = int(p.get('is_visible',1) or 1)
+    dur = int(p.get('duration_months',1) or 1)
     body = f"""
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
         <a href="/admin/plans" style="font-size:13px;color:#666;text-decoration:none;">← חזרה</a>
@@ -102,8 +118,13 @@ def admin_plan_edit(request: Request, pk: str) -> str:
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                 <div><label style="font-size:12px;color:#666;">שם תצוגה</label><input name="display_name" value="{p.get('display_name','')}" class="form-input" required></div>
                 <div><label style="font-size:12px;color:#666;">מחיר חודשי (₪)</label><input name="price_monthly" value="{p.get('price_monthly',0)}" class="form-input" type="number" required></div>
+                <div><label style="font-size:12px;color:#666;">מס' חודשים</label><input name="duration_months" value="{dur}" class="form-input" type="number"></div>
                 <div><label style="font-size:12px;color:#666;">מקס עמדות</label><input name="max_stations" value="{p.get('max_stations',2)}" class="form-input" type="number"></div>
                 <div><label style="font-size:12px;color:#666;">סדר תצוגה</label><input name="sort_order" value="{p.get('sort_order',0)}" class="form-input" type="number"></div>
+                <div style="display:flex;gap:16px;align-items:center;padding-top:18px;">
+                    <label style="font-size:13px;"><input type="checkbox" name="is_featured" value="1" {'checked' if is_feat else ''}> מומלץ</label>
+                    <label style="font-size:13px;"><input type="checkbox" name="is_visible" value="1" {'checked' if is_vis else ''}> נראה באתר</label>
+                </div>
             </div>
             <div style="margin-top:10px;"><label style="font-size:12px;color:#666;">תיאור</label><input name="description" value="{p.get('description','')}" class="form-input"></div>
             <div style="margin-top:10px;"><label style="font-size:12px;color:#666;">פיצ'רים (שורה לכל פיצ'ר)</label><textarea name="features" class="form-input" rows="4">{fs}</textarea></div>
@@ -116,8 +137,10 @@ def admin_plan_edit(request: Request, pk: str) -> str:
 @router.post('/admin/plans/{pk}/update')
 def admin_plan_update(request: Request, pk: str,
     display_name: str = Form(...), price_monthly: int = Form(0),
-    max_stations: int = Form(2), sort_order: int = Form(0),
-    description: str = Form(''), features: str = Form('')
+    duration_months: int = Form(1), max_stations: int = Form(2),
+    sort_order: int = Form(0), description: str = Form(''),
+    features: str = Form(''), is_featured: int = Form(0),
+    is_visible: int = Form(0),
 ) -> Response:
     if not _req_admin(request):
         return Response("Unauthorized", status_code=401)
@@ -127,13 +150,67 @@ def admin_plan_update(request: Request, pk: str,
     try:
         cur = conn.cursor()
         cur.execute(sql_placeholder(
-            "UPDATE plan_config SET display_name=?, price_monthly=?, description=?, features_json=?, max_stations=?, sort_order=? WHERE plan_key=?"),
-            (display_name.strip(), price_monthly, description.strip(), feat_json, max_stations, sort_order, pk))
+            "UPDATE plan_config SET display_name=?, price_monthly=?, description=?, features_json=?, max_stations=?, sort_order=?, duration_months=?, is_featured=?, is_visible=? WHERE plan_key=?"),
+            (display_name.strip(), price_monthly, description.strip(), feat_json, max_stations, sort_order, max(1, duration_months), 1 if is_featured else 0, 1 if is_visible else 0, pk))
         conn.commit()
     finally:
         try: conn.close()
         except: pass
     return RedirectResponse(url="/admin/plans", status_code=302)
+
+@router.post('/admin/plans/{pk}/toggle-visible')
+def admin_plan_toggle_visible(request: Request, pk: str) -> Response:
+    if not _req_admin(request):
+        return Response("Unauthorized", status_code=401)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder('SELECT is_visible FROM plan_config WHERE plan_key=?'), (pk,))
+        row = cur.fetchone()
+        if row:
+            cur_vis = int((row['is_visible'] if isinstance(row, dict) else row[0]) or 0)
+            cur.execute(sql_placeholder('UPDATE plan_config SET is_visible=? WHERE plan_key=?'), (0 if cur_vis else 1, pk))
+            conn.commit()
+    finally:
+        try: conn.close()
+        except: pass
+    return RedirectResponse(url='/admin/plans', status_code=302)
+
+@router.post('/admin/plans/{pk}/delete')
+def admin_plan_delete(request: Request, pk: str) -> Response:
+    if not _req_admin(request):
+        return Response("Unauthorized", status_code=401)
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder('DELETE FROM plan_config WHERE plan_key=?'), (pk,))
+        conn.commit()
+    finally:
+        try: conn.close()
+        except: pass
+    return RedirectResponse(url='/admin/plans', status_code=302)
+
+@router.post('/admin/plans/add')
+def admin_plan_add(request: Request,
+    plan_key: str = Form(...), display_name: str = Form(...),
+    price_monthly: int = Form(0), duration_months: int = Form(1),
+) -> Response:
+    if not _req_admin(request):
+        return Response("Unauthorized", status_code=401)
+    ensure_admin_tables()
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder(
+            "INSERT INTO plan_config (plan_key,display_name,price_monthly,duration_months) VALUES (?,?,?,?)"),
+            (plan_key.strip(), display_name.strip(), price_monthly, max(1, duration_months)))
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        try: conn.close()
+        except: pass
+    return RedirectResponse(url=f'/admin/plans/{plan_key.strip()}', status_code=302)
 
 # ---------------------------------------------------------------------------
 # Payments

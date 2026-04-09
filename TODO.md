@@ -441,7 +441,7 @@ SchoolPoints/
 
 ---
 
-**עדכון אחרון:** 19/03/2026 (תיקוני ארכיון + ייצוא בונוס + תיקון תיקוף מרוכז)  
+**עדכון אחרון:** 23/03/2026 (תיקון כפילויות בייצוא + תיקון דיאלוג הגדרה נעלם)  
 **מטלה נוכחית:** תיקוני באגים קריטיים במנגנון ארכיון DB ובתיקון תיקוף מרוכז  
 **הבא בתור:** וריאנטים למוצר בווב, תפריט מורה מוגבל, ערכת צבעים מתקדמת, Local Sync single-writer
 
@@ -454,6 +454,8 @@ SchoolPoints/
 - [x] **תיקון DB רובע 12.3:** סקריפט `fix_march12_bonuses.py` — הורץ על DB של LOG, 31 רשומות time_bonus_given הושלמו (0 נק', נוכחות לייצוא). DB מוכן להשתלה.
 - [x] **באג: ענף "אותן נקודות" בתיקון ידני/מרוכז:** כשרשומת בונוס קיימת **רק בארכיון**, `update_time_bonus_given_at_for_group_on_date` עושה UPDATE על main DB (0 rows) → לא נוצרת רשומה. תוקן: שימוש ב-`record_time_bonus_given_on_date` (UPSERT) שיוצר רשומה חדשה אם לא קיימת. תוקן ב-`_bulk_fix_apply_single` + `open_manual_swipe_override` (admin_station.py).
 - [x] **logging ב-`open_manual_swipe_override`:** הוחלפו `except Exception: pass` ב-logging עם prefix `[MANUAL-FIX]`.
+- [x] **באג כפילויות בייצוא היסטוריית נקודות לתלמיד:** `get_points_log_for_student` מיזג `points_log` (main+archive) עם `points_history` (main+archive), אבל ה-signature dedup (`sig_points_log`) נבנה רק מ-main `points_log` → רשומות שארכבו ל-archive `points_log` לא סוננו מ-`points_history` → כל שורה הופיעה פעמיים (אחת עם old_points, אחת בלי). תוקן: dedup סופי ב-merge step שבונה signature set מכל ה-`points_log` (main + archive) ומסנן `points_history` כפולים (database.py).
+- [x] **באג: דיאלוג הגדרה ראשונית נעלם (התקנה נתקעת ב-15%):** `_open_admin_shared_folder_dialog` ו-`_open_initial_admin_dialog` השתמשו ב-`transient(self.root)` כש-root מוסתר (withdrawn). ב-Windows, חלון transient לחלון מוסתר בלתי נראה → המשתמש רואה loading ב-15% בזמן שדיאלוג ההגדרה חופשי פתוח מאחוריו. תוקן: הסרת `transient`, הוספת `lift()+focus_force()`, והסתרת חלון הטעינה לפני פתיחת דיאלוגים (admin_station.py).
 - [ ] **לוודא שתיקוני תיקוף מרוכז שהמשתמש עשה מופיעים בייצוא** — אחרי השתלת DB + קוד מעודכן, לבדוק.
 
 ### תיקוני ארכיון וניקוי DB (מרץ 2026) – אובדן נתוני הגעה:

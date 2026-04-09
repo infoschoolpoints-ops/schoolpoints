@@ -244,23 +244,66 @@ def web_guide(request: Request) -> str:
 
 @router.get('/web/pricing', response_class=HTMLResponse)
 def web_pricing() -> str:
-    body = """
+    import json as _json
+    from ..admin_db import ensure_admin_tables, get_all_plans
+    ensure_admin_tables()
+    plans = [p for p in get_all_plans() if int(p.get('is_active') or 0) == 1 and int(p.get('is_visible') or 1) == 1]
+
+    cards_html = ""
+    for p in plans:
+        pk = p.get('plan_key', '')
+        name = p.get('display_name', '')
+        price = int(p.get('price_monthly') or 0)
+        dur = int(p.get('duration_months') or 1)
+        total = price * dur
+        desc = p.get('description', '')
+        featured = int(p.get('is_featured') or 0)
+        feats_raw = p.get('features_json', '[]')
+        try:
+            feats = _json.loads(feats_raw) if isinstance(feats_raw, str) else feats_raw
+        except Exception:
+            feats = []
+        feat_html = ''.join(f'<li>{f}</li>' for f in feats if f)
+
+        featured_cls = ' featured' if featured else ''
+        badge = '<div style="position:absolute; top:12px; left:-30px; transform:rotate(-45deg); background:#e74c3c; color:white; padding:5px 40px; font-size:12px; font-weight:bold; box-shadow:0 2px 5px rgba(0,0,0,0.2);">מומלץ</div>' if featured else ''
+
+        if dur > 1:
+            price_html = f'<div class="pricing-price">₪{price}<span>/חודש</span></div><div style="font-size:16px;margin-top:-14px;margin-bottom:16px;opacity:.85;">סה״כ ל-{dur} חודשים: <b style="color:#2ecc71;">₪{total}</b></div>'
+        else:
+            price_html = f'<div class="pricing-price">₪{price}<span>/חודש</span></div>'
+
+        cards_html += f'''
+        <div class="pricing-card{featured_cls}">
+          {badge}
+          <div class="pricing-title">{name}</div>
+          {price_html}
+          <div style="font-size:13px;opacity:.7;margin-bottom:14px;">{desc}</div>
+          <ul class="pricing-features">{feat_html}</ul>
+          <a href="/web/register?plan={pk}" class="pricing-btn">בחר מסלול</a>
+        </div>
+        '''
+
+    if not cards_html:
+        cards_html = '<div style="text-align:center;opacity:.7;padding:40px;">אין מסלולים זמינים כרגע.</div>'
+
+    body = f"""
     <style>
-      .pricing-container { display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; margin-top: 30px; }
-      .pricing-card { flex: 1; min-width: 280px; max-width: 320px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 24px; text-align: center; transition: transform 0.3s, box-shadow 0.3s; position: relative; overflow: hidden; }
-      .pricing-card:hover { transform: translateY(-5px); box-shadow: 0 10px 30px rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.2); }
-      .pricing-card.featured { background: linear-gradient(145deg, rgba(46, 204, 113, 0.1), rgba(39, 174, 96, 0.15)); border: 1px solid rgba(46, 204, 113, 0.4); transform: scale(1.05); z-index: 1; }
-      .pricing-card.featured:hover { transform: scale(1.05) translateY(-5px); }
-      .pricing-title { font-size: 24px; font-weight: 900; margin-bottom: 10px; color: #fff; }
-      .pricing-price { font-size: 36px; font-weight: 800; margin-bottom: 20px; color: #2ecc71; }
-      .pricing-price span { font-size: 16px; font-weight: 400; opacity: 0.7; }
-      .pricing-features { text-align: right; margin-bottom: 24px; list-style: none; padding: 0; }
-      .pricing-features li { margin-bottom: 10px; padding-right: 20px; position: relative; font-size: 14px; opacity: 0.9; }
-      .pricing-features li::before { content: "✓"; position: absolute; right: 0; color: #2ecc71; font-weight: bold; }
-      .pricing-btn { display: inline-block; width: 100%; padding: 12px; background: rgba(255,255,255,0.1); color: #fff; border-radius: 10px; font-weight: 700; text-decoration: none; transition: background 0.2s; box-sizing: border-box; }
-      .pricing-btn:hover { background: rgba(255,255,255,0.2); }
-      .featured .pricing-btn { background: #2ecc71; border: none; }
-      .featured .pricing-btn:hover { background: #27ae60; }
+      .pricing-container {{ display: flex; flex-wrap: wrap; justify-content: center; gap: 20px; margin-top: 30px; }}
+      .pricing-card {{ flex: 1; min-width: 280px; max-width: 360px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 16px; padding: 24px; text-align: center; transition: transform 0.3s, box-shadow 0.3s; position: relative; overflow: hidden; }}
+      .pricing-card:hover {{ transform: translateY(-5px); box-shadow: 0 10px 30px rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.2); }}
+      .pricing-card.featured {{ background: linear-gradient(145deg, rgba(46, 204, 113, 0.1), rgba(39, 174, 96, 0.15)); border: 1px solid rgba(46, 204, 113, 0.4); transform: scale(1.05); z-index: 1; }}
+      .pricing-card.featured:hover {{ transform: scale(1.05) translateY(-5px); }}
+      .pricing-title {{ font-size: 24px; font-weight: 900; margin-bottom: 10px; color: #fff; }}
+      .pricing-price {{ font-size: 36px; font-weight: 800; margin-bottom: 20px; color: #2ecc71; }}
+      .pricing-price span {{ font-size: 16px; font-weight: 400; opacity: 0.7; }}
+      .pricing-features {{ text-align: right; margin-bottom: 24px; list-style: none; padding: 0; }}
+      .pricing-features li {{ margin-bottom: 10px; padding-right: 20px; position: relative; font-size: 14px; opacity: 0.9; }}
+      .pricing-features li::before {{ content: "✓"; position: absolute; right: 0; color: #2ecc71; font-weight: bold; }}
+      .pricing-btn {{ display: inline-block; width: 100%; padding: 12px; background: rgba(255,255,255,0.1); color: #fff; border-radius: 10px; font-weight: 700; text-decoration: none; transition: background 0.2s; box-sizing: border-box; }}
+      .pricing-btn:hover {{ background: rgba(255,255,255,0.2); }}
+      .featured .pricing-btn {{ background: #2ecc71; border: none; }}
+      .featured .pricing-btn:hover {{ background: #27ae60; }}
     </style>
 
     <div style="text-align:center;">
@@ -269,49 +312,9 @@ def web_pricing() -> str:
     </div>
 
     <div class="pricing-container">
-      <div class="pricing-card">
-        <div class="pricing-title">Basic</div>
-        <div class="pricing-price">₪50<span>/חודש</span></div>
-        <ul class="pricing-features">
-          <li>עד 2 עמדות (מחשבים)</li>
-          <li>סנכרון ענן מלא</li>
-          <li>ניהול תלמידים ונקודות</li>
-          <li>ללא מודול חנות</li>
-          <li>תמיכה במייל</li>
-        </ul>
-        <a href="/web/register?plan=basic" class="pricing-btn">בחר מסלול</a>
-      </div>
-
-      <div class="pricing-card featured">
-        <div style="position:absolute; top:12px; left:-30px; transform:rotate(-45deg); background:#e74c3c; color:white; padding:5px 40px; font-size:12px; font-weight:bold; box-shadow:0 2px 5px rgba(0,0,0,0.2);">מומלץ</div>
-        <div class="pricing-title">Extended</div>
-        <div class="pricing-price">₪100<span>/חודש</span></div>
-        <ul class="pricing-features">
-          <li>עד 5 עמדות</li>
-          <li>סנכרון ענן מלא</li>
-          <li>כל הפיצ'רים של Basic</li>
-          <li>מודול חנות וקניות</li>
-          <li>דוחות מתקדמים</li>
-          <li>גיבוי היסטוריה ל-3 שנים</li>
-        </ul>
-        <a href="/web/register?plan=extended" class="pricing-btn">בחר מסלול</a>
-      </div>
-
-      <div class="pricing-card">
-        <div class="pricing-title">Unlimited</div>
-        <div class="pricing-price">₪200<span>/חודש</span></div>
-        <ul class="pricing-features">
-          <li>ללא הגבלת עמדות</li>
-          <li>כל הפיצ'רים של Extended</li>
-          <li>מודול קיוסק (Cashier)</li>
-          <li>תמיכה טלפונית</li>
-          <li>API פתוח לאינטגרציות</li>
-          <li>דומיין אישי (אופציונלי)</li>
-        </ul>
-        <a href="/web/register?plan=unlimited" class="pricing-btn">בחר מסלול</a>
-      </div>
+      {cards_html}
     </div>
-    
+
     <div style="text-align:center; margin-top:40px; font-size:14px; opacity:0.6;">
       * המחירים כוללים מע"מ. ניתן לבטל בכל עת.
     </div>

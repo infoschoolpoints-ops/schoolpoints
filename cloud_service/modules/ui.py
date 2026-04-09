@@ -1,7 +1,20 @@
 from fastapi import Request
 from typing import Optional
 
-def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
+def basic_web_shell(title: str, body_html: str, request: Request = None, is_admin: bool = None) -> str:
+    # Auto-detect admin role from request if not explicitly provided
+    if is_admin is None and request:
+        try:
+            from .auth import web_current_teacher, web_master_ok
+            if web_master_ok(request):
+                is_admin = True
+            else:
+                teacher = web_current_teacher(request)
+                is_admin = bool(teacher and int(teacher.get('is_admin') or 0) == 1) if teacher else True
+        except Exception:
+            is_admin = True
+    elif is_admin is None:
+        is_admin = True
     style_block = """
       <style>
         :root {
@@ -340,33 +353,27 @@ def basic_web_shell(title: str, body_html: str, request: Request = None) -> str:
     
     current_path = request.url.path if request else '/'
     
-    # Sidebar Navigation Items
-    menu_items = [
-        {'url': '/web/admin', 'icon': '🏠', 'label': 'לוח בקרה'},
-        {'url': '/web/students', 'icon': '🎓', 'label': 'תלמידים'},
-        {'url': '/web/teachers', 'icon': '👥', 'label': 'מורים'},
-        {'url': '/web/messages', 'icon': '💬', 'label': 'הודעות כלליות'},
-        {'url': '/web/special-bonus', 'icon': '🎁', 'label': 'בונוס מיוחד'},
-        {'url': '/web/time-bonus', 'icon': '⏰', 'label': 'בונוס זמנים'},
-        {'url': '/web/upgrades', 'icon': '🎨', 'label': 'שדרוגים'},
-        {'url': '/web/purchases', 'icon': '🛒', 'label': 'קניות'},
-        {'url': '/web/holidays', 'icon': '📅', 'label': 'חגים'},
-        {'url': '/web/max-points', 'icon': '📉', 'label': 'מגבלת ניקוד'},
-        {'url': '/web/anti-spam', 'icon': '🛡️', 'label': 'אנטי-ספאם'},
-        {'url': '/web/quiet-mode', 'icon': '🌙', 'label': 'מצב שקט'},
-        {'url': '/web/settings', 'icon': '⚙', 'label': 'הגדרות'},
-        {'url': '/web/import', 'icon': '📥', 'label': 'ייבוא'},
-        {'url': '/web/reports', 'icon': '📤', 'label': 'ייצוא / דוחות'},
-        {'url': '/web/personal', 'icon': '👤', 'label': 'אזור אישי'},
-        {'url': '/web/guide', 'icon': '📘', 'label': 'מדריך'},
+    # Sidebar Navigation Items — filtered by role
+    _all_menu_items = [
+        {'url': '/web/admin', 'icon': '🏠', 'label': 'לוח בקרה', 'admin_only': False},
+        {'url': '/web/students', 'icon': '🎓', 'label': 'תלמידים', 'admin_only': False},
+        {'url': '/web/teachers', 'icon': '👥', 'label': 'מורים', 'admin_only': True},
+        {'url': '/web/messages', 'icon': '💬', 'label': 'הודעות כלליות', 'admin_only': True},
+        {'url': '/web/special-bonus', 'icon': '🎁', 'label': 'בונוס מיוחד', 'admin_only': True},
+        {'url': '/web/time-bonus', 'icon': '⏰', 'label': 'בונוס זמנים', 'admin_only': True},
+        {'url': '/web/upgrades', 'icon': '🎨', 'label': 'שדרוגים', 'admin_only': True},
+        {'url': '/web/purchases', 'icon': '🛒', 'label': 'קניות', 'admin_only': True},
+        {'url': '/web/holidays', 'icon': '📅', 'label': 'חגים', 'admin_only': True},
+        {'url': '/web/max-points', 'icon': '📉', 'label': 'מגבלת ניקוד', 'admin_only': True},
+        {'url': '/web/anti-spam', 'icon': '🛡️', 'label': 'אנטי-ספאם', 'admin_only': True},
+        {'url': '/web/quiet-mode', 'icon': '🌙', 'label': 'מצב שקט', 'admin_only': True},
+        {'url': '/web/settings', 'icon': '⚙', 'label': 'הגדרות', 'admin_only': True},
+        {'url': '/web/import', 'icon': '📥', 'label': 'ייבוא', 'admin_only': True},
+        {'url': '/web/reports', 'icon': '📤', 'label': 'ייצוא / דוחות', 'admin_only': True},
+        {'url': '/web/personal', 'icon': '👤', 'label': 'אזור אישי', 'admin_only': False},
+        {'url': '/web/guide', 'icon': '📘', 'label': 'מדריך', 'admin_only': False},
     ]
-    
-    # Check if admin (this part needs context, maybe passed in args or extracted from request)
-    # For now static, but ideally we check permissions
-    # In app.py we have teacher context. 
-    # To keep this pure, we can render the sidebar links based on a passed list or just default.
-    # For basic shell we might not need full sidebar logic here if it varies.
-    # But let's assume standard layout.
+    menu_items = [m for m in _all_menu_items if is_admin or not m.get('admin_only')]
     
     sidebar_html = ""
     for item in menu_items:
