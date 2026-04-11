@@ -2505,7 +2505,7 @@ def web_purchases(request: Request):
 
 @router.get("/web/personal", response_class=HTMLResponse)
 def web_personal(request: Request):
-    guard = web_require_admin_teacher(request)
+    guard = web_require_teacher(request)
     if guard: return guard
     html_content = """
     <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">

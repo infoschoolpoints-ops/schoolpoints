@@ -50,10 +50,12 @@ def admin_plans_page(request: Request) -> str:
         price = int(p.get('price_monthly',0))
         dur = int(p.get('duration_months',1) or 1)
         total = price * dur
-        vis = '✅' if int(p.get('is_visible',1) or 1) else '❌'
-        feat_flag = '⭐' if int(p.get('is_featured',0) or 0) else ''
+        _vis = int(p.get('is_visible') if p.get('is_visible') is not None else 1)
+        vis = '✅' if _vis else '❌'
+        feat_flag = '⭐' if int(p.get('is_featured') or 0) else ''
         price_str = f'₪{price}/חוד' + (f' (×{dur}=₪{total})' if dur > 1 else '')
-        rows += f'<tr style="border-bottom:1px solid #eee;"><td style="padding:10px;font-weight:700;">{p.get("display_name","")} {feat_flag}</td><td style="padding:10px;font-family:monospace;">{pk}</td><td style="padding:10px;">{price_str}</td><td style="padding:10px;font-size:12px;">{p.get("description","")}</td><td style="padding:10px;text-align:center;">{vis}</td><td style="padding:10px;display:flex;gap:4px;"><a href="/admin/plans/{pk}" style="font-size:12px;padding:4px 10px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;">ערוך</a><form method="post" action="/admin/plans/{pk}/toggle-visible" style="display:inline;"><button style="font-size:11px;padding:4px 8px;background:#e67e22;color:#fff;border:none;border-radius:8px;cursor:pointer;">{"הסתר" if int(p.get("is_visible",1) or 1) else "הצג"}</button></form><form method="post" action="/admin/plans/{pk}/delete" style="display:inline;" onsubmit="return confirm(\'\u05dc\u05de\u05d7\u05d5\u05e7?\');"><button style="font-size:11px;padding:4px 8px;background:#e74c3c;color:#fff;border:none;border-radius:8px;cursor:pointer;">מחק</button></form></td></tr>'
+        vis_btn = 'הסתר' if _vis else 'הצג'
+        rows += f'<tr style="border-bottom:1px solid #eee;"><td style="padding:10px;font-weight:700;">{p.get("display_name","")} {feat_flag}</td><td style="padding:10px;font-family:monospace;">{pk}</td><td style="padding:10px;">{price_str}</td><td style="padding:10px;font-size:12px;">{p.get("description","")}</td><td style="padding:10px;text-align:center;">{vis}</td><td style="padding:10px;display:flex;gap:4px;"><a href="/admin/plans/{pk}" style="font-size:12px;padding:4px 10px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;">ערוך</a><form method="post" action="/admin/plans/{pk}/toggle-visible" style="display:inline;"><button style="font-size:11px;padding:4px 8px;background:#e67e22;color:#fff;border:none;border-radius:8px;cursor:pointer;">{vis_btn}</button></form><form method="post" action="/admin/plans/{pk}/delete" style="display:inline;" onsubmit="return confirm(\'למחוק?\');"><button style="font-size:11px;padding:4px 8px;background:#e74c3c;color:#fff;border:none;border-radius:8px;cursor:pointer;">מחק</button></form></td></tr>'
 
     body = f"""
     <h2>ניהול מסלולים</h2>

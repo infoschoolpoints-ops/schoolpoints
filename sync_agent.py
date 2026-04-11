@@ -2396,8 +2396,24 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                         print("[BOOTSTRAP] Snapshot push failed after tenant change — will retry next loop")
                 except Exception as _snap_err:
                     print(f"[BOOTSTRAP] Tenant change snapshot error: {_snap_err}")
-            elif tenant_id and api_key and not last_synced_tenant:
-                # First time: just record current tenant_id
+            elif tenant_id and api_key and snapshot_url and not last_synced_tenant:
+                # First time: record tenant_id AND push full snapshot so cloud has everything
+                print(f"[BOOTSTRAP] First run — pushing full snapshot to cloud for tenant {tenant_id}")
+                try:
+                    snap = build_snapshot(conn0)
+                    _snap_ok = False
+                    try:
+                        _snap_ok = push_snapshot2(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                    except Exception:
+                        _snap_ok = False
+                    if not _snap_ok:
+                        _snap_ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                    if _snap_ok:
+                        print("[BOOTSTRAP] First-run full snapshot pushed OK")
+                    else:
+                        print("[BOOTSTRAP] First-run snapshot push failed — will retry via periodic push")
+                except Exception as _fre:
+                    print(f"[BOOTSTRAP] First-run snapshot error: {_fre}")
                 _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
 
             done = str(_get_sync_state(conn0, 'bootstrap_snapshot_done', '0') or '0').strip()
@@ -2427,6 +2443,8 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
     _file_sync_interval = 300  # 5 minutes normally; grows on 404
     last_config_bridge = 0.0
     _config_bridge_interval = 300  # 5 minutes
+    last_snapshot_push = 0.0
+    _snapshot_push_interval = 6 * 3600  # full snapshot push every 6 hours
     # בעמדה ראשית (master) עם local sync, cloud pull/push פועל רגיל עם cloud credentials
     pull_enabled = bool(pull_url and api_key and tenant_id)
     try:
@@ -2590,6 +2608,42 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         except Exception as _cb_err:
             try:
                 print(f"[CONFIG-BRIDGE] {_cb_err}")
+            except Exception:
+                pass
+
+        # --- PERIODIC FULL SNAPSHOT PUSH (every 6 hours) ---
+        # Ensures ALL tables (settings, time_bonus, anti_spam, etc.) reach the cloud
+        # even if change_log entries were already marked as synced
+        try:
+            now_sp = time.time()
+            if snapshot_url and api_key and tenant_id and (now_sp - last_snapshot_push > _snapshot_push_interval):
+                if not (local_sync_enabled and local_sync_role == 'client'):
+                    print("[SNAPSHOT-PERIODIC] Pushing full snapshot to cloud...")
+                    _sp_conn = _connect(db_path)
+                    try:
+                        _sp_snap = build_snapshot(_sp_conn)
+                        _sp_ok = False
+                        try:
+                            _sp_ok = push_snapshot2(snapshot_url, _sp_snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                        except Exception:
+                            _sp_ok = False
+                        if not _sp_ok:
+                            try:
+                                _sp_ok = push_snapshot(snapshot_url, _sp_snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                            except Exception:
+                                _sp_ok = False
+                        if _sp_ok:
+                            last_snapshot_push = now_sp
+                            print("[SNAPSHOT-PERIODIC] OK")
+                        else:
+                            last_snapshot_push = now_sp - _snapshot_push_interval + 600  # retry in 10 min
+                            print("[SNAPSHOT-PERIODIC] FAILED — will retry in 10 min")
+                    finally:
+                        try: _sp_conn.close()
+                        except: pass
+        except Exception as _sp_err:
+            try:
+                print(f"[SNAPSHOT-PERIODIC] Error: {_sp_err}")
             except Exception:
                 pass
 

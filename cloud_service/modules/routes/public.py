@@ -247,7 +247,9 @@ def web_pricing() -> str:
     import json as _json
     from ..admin_db import ensure_admin_tables, get_all_plans
     ensure_admin_tables()
-    plans = [p for p in get_all_plans() if int(p.get('is_active') or 0) == 1 and int(p.get('is_visible') or 1) == 1]
+    plans = [p for p in get_all_plans()
+             if int(p.get('is_active') or 0) == 1
+             and int(p.get('is_visible') if p.get('is_visible') is not None else 1) == 1]
 
     cards_html = ""
     for p in plans:
