@@ -110,6 +110,47 @@ def _scalar_or_none(row: Any) -> Any:
     except Exception:
         return None
 
+@router.get('/sync/diag')
+def sync_diag(tenant_id: str, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
+    """Diagnostic endpoint: show all tables, row counts, and key settings in tenant DB."""
+    tenant_id = str(tenant_id or '').strip()
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant_id')
+    api_key = get_api_key(request, api_key).strip()
+    if not verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='invalid api_key')
+
+    tconn = tenant_db_connection(tenant_id)
+    result: Dict[str, Any] = {'tenant_id': tenant_id, 'tables': {}, 'settings_keys': [], 'errors': []}
+    try:
+        tables = list_user_tables(tconn)
+        cur = tconn.cursor()
+        for t in tables:
+            try:
+                cur.execute(f'SELECT COUNT(*) FROM {t}')
+                row = cur.fetchone()
+                cnt = (row[0] if not isinstance(row, dict) else list(row.values())[0]) if row else 0
+                result['tables'][t] = int(cnt)
+            except Exception as e:
+                result['tables'][t] = f'error: {e}'
+        # Show settings keys
+        try:
+            cur.execute('SELECT key, LENGTH(value) as val_len FROM settings ORDER BY key')
+            rows = cur.fetchall() or []
+            for r in rows:
+                if isinstance(r, dict):
+                    result['settings_keys'].append({'key': r['key'], 'val_len': r.get('val_len', 0)})
+                else:
+                    result['settings_keys'].append({'key': r[0], 'val_len': r[1]})
+        except Exception as e:
+            result['errors'].append(f'settings query: {e}')
+    except Exception as e:
+        result['errors'].append(str(e))
+    finally:
+        try: tconn.close()
+        except: pass
+    return result
+
 @router.get('/sync/status')
 def sync_status(tenant_id: str, request: Request, api_key: str = Header(default="")) -> Dict[str, Any]:
     tenant_id = str(tenant_id or '').strip()

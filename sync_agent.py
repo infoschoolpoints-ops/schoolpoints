@@ -2706,19 +2706,39 @@ if __name__ == '__main__':
             base = str(cfg.get('sync_push_url') or '').strip()
             if base.endswith('/sync/push'):
                 snapshot_url = base[:-len('/sync/push')] + '/sync/snapshot'
+        # Run config bridge first so anti_spam, quiet_mode, etc. are in settings table
+        print("[SNAPSHOT] Running config bridge (config.json → settings table)...")
+        try:
+            n1 = _push_config_to_db_settings(str(db_path), base_dir)
+            n2 = _push_color_settings_to_db(str(db_path), base_dir)
+            print(f"[SNAPSHOT] Config bridge: {n1} settings + {n2} color settings pushed to DB")
+        except Exception as _cbe:
+            print(f"[SNAPSHOT] Config bridge error: {_cbe}")
         conn = _connect(db_path)
         try:
             snap = build_snapshot(conn)
         finally:
             conn.close()
         print(f"[SNAPSHOT] Teachers: {len(snap.get('teachers') or [])} | Students: {len(snap.get('students') or [])}")
+        # Show all tables in snapshot for diagnostics
+        snap_data = snap.get('snapshot') if isinstance(snap, dict) else {}
+        if isinstance(snap_data, dict):
+            print(f"[SNAPSHOT] Tables in snapshot ({len(snap_data)}):")
+            for tbl, rows in sorted(snap_data.items()):
+                cnt = len(rows) if isinstance(rows, list) else '?'
+                print(f"  - {tbl}: {cnt} rows")
+        print(f"[SNAPSHOT] tenant_id={tenant_id} snapshot_url={snapshot_url}")
         ok = False
         try:
             ok = push_snapshot2(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
-        except Exception:
+        except Exception as _e:
+            print(f"[SNAPSHOT] push_snapshot2 error: {_e}")
             ok = False
         if not ok:
-            ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+            try:
+                ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+            except Exception as _e2:
+                print(f"[SNAPSHOT] push_snapshot error: {_e2}")
         print('[SNAPSHOT] OK' if ok else '[SNAPSHOT] FAILED')
     elif args.once:
         push_url = args.push_url or str(cfg.get('sync_push_url') or DEFAULT_PUSH_URL).strip()
