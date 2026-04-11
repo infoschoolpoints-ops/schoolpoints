@@ -38,7 +38,9 @@ PAYME_SELLER_ID = os.environ.get('PAYME_SELLER_ID', '').strip()
 PAYME_API_KEY = os.environ.get('PAYME_API_KEY', '').strip()
 PAYME_TEST_MODE = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
 PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://ng.payme.io/api'
-PAYME_LIVE = bool(PAYME_SELLER_ID and PAYME_API_KEY)
+PAYME_FORM_READY = bool(PAYME_API_KEY)          # enough to show hosted fields form
+PAYME_CHARGE_READY = bool(PAYME_SELLER_ID and PAYME_API_KEY)  # enough to actually charge
+PAYME_LIVE = PAYME_FORM_READY                   # show real form when API key exists
 
 
 def _get_plan_details(plan_key: str) -> Dict[str, Any]:
@@ -378,8 +380,8 @@ def api_payment_charge(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not buyer_key or not email or amount <= 0:
         return {'ok': False, 'error': 'חסרים פרטים'}
 
-    if not PAYME_LIVE:
-        return {'ok': False, 'error': 'שרת התשלומים לא מוגדר'}
+    if not PAYME_CHARGE_READY:
+        return {'ok': False, 'error': 'חשבון הסליקה בתהליך הפעלה — נסה שוב בעוד מספר ימים'}
 
     plan_data = _get_plan_details(plan)
     plan_name = plan_data.get('display_name') or plan
