@@ -275,7 +275,9 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
               .then(function(resp) {{ return resp.json(); }})
               .then(function(data) {{
                 if (data.ok) {{
-                  window.location.href = '/web/payment/success?email={safe_email}';
+                  var url = '/web/payment/success?email={safe_email}';
+                  if (data.tenant_id) url += '&tenant_id=' + encodeURIComponent(data.tenant_id);
+                  window.location.href = url;
                 }} else {{
                   msg.textContent = data.error || data.detail || 'שגיאה בתשלום';
                   msg.style.color = '#e74c3c';
@@ -322,7 +324,7 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
                         body:JSON.stringify({{email:'{safe_email}',status:'success',amount:{total},plan:'{safe_plan}'}})
                     }});
                     var d=await r.json();
-                    if(d.ok){{ window.location.href='/web/payment/success?email={safe_email}'; }}
+                    if(d.ok){{ var u='/web/payment/success?email={safe_email}'; if(d.tenant_id) u+='&tenant_id='+encodeURIComponent(d.tenant_id); window.location.href=u; }}
                     else {{ alert('שגיאה: '+(d.detail||'unknown')); btn.disabled=false; btn.textContent='שלם ₪{total}'; }}
                 }} catch(e){{ alert('שגיאה בתקשורת'); btn.disabled=false; btn.textContent='שלם ₪{total}'; }}
             }}
@@ -333,13 +335,28 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
 
 
 @router.get('/web/payment/success', response_class=HTMLResponse)
-def web_payment_success(request: Request, email: str = Query(default='')) -> str:
+def web_payment_success(request: Request, email: str = Query(default=''), tenant_id: str = Query(default='')) -> str:
+    safe_email = html_mod.escape(email)
+    safe_tid = html_mod.escape(tenant_id)
+    activate_link = f'/web/activate?tenant_id={safe_tid}' if tenant_id else '/web/activate'
+
     body = f"""
-    <div style="text-align:center; padding:40px 20px;">
+    <div style="text-align:center; padding:40px 20px; max-width:560px; margin:0 auto;">
       <div style="font-size:64px; margin-bottom:16px;">✅</div>
       <h2 style="color:#2ecc71;">התשלום עבר בהצלחה!</h2>
-      <p style="opacity:.8;">פרטי ההתחברות נשלחו למייל <b>{email}</b></p>
-      <a href="/web/signin" class="btn-glass primary" style="margin-top:20px; padding:14px 28px; font-size:16px;">מעבר להתחברות</a>
+      <p style="opacity:.8;">פרטי ההתחברות נשלחו למייל <b>{safe_email}</b></p>
+
+      <div style="background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.15); border-radius:12px; padding:20px; margin:24px 0; text-align:right; line-height:1.9;">
+        <div style="font-weight:700; font-size:16px; margin-bottom:8px; text-align:center;">השלב הבא — הפעלת התוכנה</div>
+        <div>1. התקן והפעל את התוכנה במחשב</div>
+        <div>2. פתח <b>⚙ הגדרות מערכת → רישום מערכת</b></div>
+        <div>3. העתק את <b>קוד המערכת</b> המוצג שם</div>
+        <div>4. לחץ על הכפתור למטה כדי לקבל קוד הפעלה</div>
+      </div>
+
+      <a href="{activate_link}" style="display:inline-block; padding:14px 32px; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; border-radius:10px; font-size:16px; font-weight:700; text-decoration:none; margin-bottom:12px;">הפעלת רישיון</a>
+      <br/>
+      <a href="/web/download" style="opacity:.6; font-size:14px;">להורדת התוכנה</a>
     </div>
     """
     return public_web_shell("תשלום הצליח", body, request=request)
@@ -407,8 +424,9 @@ def api_payment_charge(payload: Dict[str, Any]) -> Dict[str, Any]:
             raw_response=json.dumps(result, ensure_ascii=False, default=str)[:2000],
         )
         # Approve pending registration
-        _approve_by_email(email)
-        return {'ok': True, 'sale_id': ref}
+        approve_result = _approve_by_email(email)
+        tid = approve_result.get('tenant_id', '') if isinstance(approve_result, dict) else ''
+        return {'ok': True, 'sale_id': ref, 'tenant_id': tid}
     else:
         error_msg = result.get('error') or 'התשלום נכשל'
         _record_payment(

@@ -101,6 +101,7 @@ def approve_pending_registration(reg_id: int) -> Dict[str, Any]:
         # ensure_tenant_db_exists handles table creation for both SQLite and Postgres in db.py now.
         
         download_url = "https://schoolpoints.co.il/web/download"
+        activate_url = f"https://schoolpoints.co.il/web/activate?tenant_id={tenant_id}"
         
         body = f"""
         <div dir="rtl" style="font-family:Arial, sans-serif; line-height:1.6; color:#333;">
@@ -116,14 +117,18 @@ def approve_pending_registration(reg_id: int) -> Dict[str, Any]:
             </div>
             
             <p>
-                <b>להורדת התוכנה והתקנה ראשונית:</b><br/>
-                <a href="{download_url}">לחץ כאן להורדה</a>
+                <b>להורדת התוכנה:</b><br/>
+                <a href="{download_url}" style="color:#2ecc71;">לחץ כאן להורדה</a>
             </p>
             
-            <p>
-                במסך ההגדרות בתוכנה, הזן את מזהה המוסד שלך ({tenant_id}) כדי להתחבר לענן.
-                המערכת תזהה את הרישיון שלך באופן אוטומטי ותפעיל את התוכנה.
-            </p>
+            <div style="background:#eaf7ee; padding:15px; border-radius:10px; border:1px solid #c3e6cb; margin:20px 0;">
+                <h3 style="margin-top:0; color:#27ae60;">הפעלת הרישיון:</h3>
+                <div>1. התקן והפעל את התוכנה</div>
+                <div>2. פתח <b>⚙ הגדרות מערכת → רישום מערכת</b></div>
+                <div>3. העתק את <b>קוד המערכת</b> המוצג שם</div>
+                <div>4. <a href="{activate_url}" style="color:#2ecc71; font-weight:bold;">לחץ כאן להפעלת הרישיון</a> — הדבק את קוד המערכת וקבל קוד הפעלה</div>
+                <div>5. הדבק את קוד ההפעלה בתוכנה</div>
+            </div>
             
             <hr style="border:0; border-top:1px solid #eee; margin:20px 0;">
             <div style="font-size:12px; color:#888;">
