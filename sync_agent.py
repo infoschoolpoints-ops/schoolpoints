@@ -2374,6 +2374,12 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
             if tenant_id and api_key and snapshot_url and last_synced_tenant and last_synced_tenant != tenant_id:
                 print(f"[BOOTSTRAP] Tenant changed: {last_synced_tenant!r} -> {tenant_id!r} — pushing full snapshot to new cloud DB")
                 try:
+                    # Ensure config.json settings (anti_spam, quiet_mode, etc.) are in DB before snapshot
+                    try:
+                        _push_config_to_db_settings(str(db_path), base_dir)
+                        _push_color_settings_to_db(str(db_path), base_dir)
+                    except Exception as _cbe:
+                        print(f"[BOOTSTRAP] Config bridge pre-push: {_cbe}")
                     snap = build_snapshot(conn0)
                     _snap_ok = False
                     try:
@@ -2400,6 +2406,12 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 # First time: record tenant_id AND push full snapshot so cloud has everything
                 print(f"[BOOTSTRAP] First run — pushing full snapshot to cloud for tenant {tenant_id}")
                 try:
+                    # Ensure config.json settings (anti_spam, quiet_mode, etc.) are in DB before snapshot
+                    try:
+                        _push_config_to_db_settings(str(db_path), base_dir)
+                        _push_color_settings_to_db(str(db_path), base_dir)
+                    except Exception as _cbe:
+                        print(f"[BOOTSTRAP] Config bridge pre-push: {_cbe}")
                     snap = build_snapshot(conn0)
                     _snap_ok = False
                     try:
@@ -2444,7 +2456,7 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
     last_config_bridge = 0.0
     _config_bridge_interval = 300  # 5 minutes
     last_snapshot_push = 0.0
-    _snapshot_push_interval = 6 * 3600  # full snapshot push every 6 hours
+    _snapshot_push_interval = 30 * 60  # full snapshot push every 30 minutes
     # בעמדה ראשית (master) עם local sync, cloud pull/push פועל רגיל עם cloud credentials
     pull_enabled = bool(pull_url and api_key and tenant_id)
     try:

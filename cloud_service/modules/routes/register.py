@@ -54,7 +54,54 @@ _FORM_CSS = """<style>
 .pbdg{display:inline-block;background:#e74c3c;color:#fff;font-size:11px;padding:2px 10px;border-radius:20px;margin-bottom:8px;font-weight:700}
 @media(max-width:768px){.rc{padding:28px 20px}.rh h2{font-size:32px}.pc{min-width:100%;max-width:100%}}
 </style>"""
-_REG_FORM = """
+def _build_plan_cards_html() -> str:
+    """Build dynamic plan cards from DB plan_config table."""
+    import json as _json
+    from ..admin_db import ensure_admin_tables, get_all_plans
+    ensure_admin_tables()
+    plans = [p for p in get_all_plans()
+             if int(p.get('is_active') or 0) == 1
+             and int(p.get('is_visible') if p.get('is_visible') is not None else 1) == 1]
+
+    # Always include a trial option
+    has_trial = any(p.get('plan_key') == 'trial' for p in plans)
+    trial_card = ('<div class="pc" data-plan="trial" onclick="selPlan(\'trial\')">' +
+        '<div class="pbdg" style="background:#3498db;">חינם!</div>' +
+        '<div class="pn">ניסיון</div>' +
+        '<div class="pp" style="font-size:22px;">7 ימים חינם</div>' +
+        '<ul class="pf"><li>גישה מלאה לכל התכונות</li><li>עד 2 עמדות</li><li>ללא התחייבות</li><li>שדרוג בכל עת</li></ul></div>')
+
+    cards = ''
+    if not has_trial:
+        cards += trial_card
+
+    for p in plans:
+        pk = html_mod.escape(p.get('plan_key', ''))
+        name = html_mod.escape(p.get('display_name', ''))
+        price = int(p.get('price_monthly') or 0)
+        dur = int(p.get('duration_months') or 1)
+        total = price * dur
+        featured = int(p.get('is_featured') or 0)
+        feats_raw = p.get('features_json', '[]')
+        try:
+            feats = _json.loads(feats_raw) if isinstance(feats_raw, str) else feats_raw
+        except Exception:
+            feats = []
+        feat_html = ''.join(f'<li>{html_mod.escape(str(f))}</li>' for f in feats if f)
+        badge = f'<div class="pbdg">מומלץ</div>' if featured else ''
+        if dur > 1:
+            price_disp = f'<div class="pp">&#8362;{price}<span>/חודש</span></div><div style="font-size:12px;opacity:.8;margin-top:-8px;margin-bottom:8px;">סה״כ ל-{dur} חודשים: <b style="color:#2ecc71;">₪{total}</b></div>'
+        else:
+            price_disp = f'<div class="pp">&#8362;{price}<span>/חודש</span></div>'
+        cards += (f'<div class="pc" data-plan="{pk}" onclick="selPlan(\'{pk}\')">' +
+            badge + f'<div class="pn">{name}</div>{price_disp}' +
+            f'<ul class="pf">{feat_html}</ul></div>')
+
+    if not cards:
+        cards = trial_card
+    return cards
+
+_REG_FORM_TEMPLATE = """
 <div class="rw"><div class="rh">
 <h2>פתיחת חשבון מוסד</h2>
 <p>הצטרפו למערכת ניהול הנקודות המתקדמת בישראל</p></div>
@@ -63,28 +110,7 @@ _REG_FORM = """
 <div class="st">בחרו מסלול</div>
 <input type="hidden" name="plan" id="planInput" value="__PLAN__"/>
 <div class="pg">
-  <div class="pc" data-plan="trial" onclick="selPlan('trial')">
-    <div class="pbdg" style="background:#3498db;">חינם!</div>
-    <div class="pn">ניסיון</div>
-    <div class="pp" style="font-size:22px;">7 ימים חינם</div>
-    <ul class="pf"><li>גישה מלאה לכל התכונות</li><li>עד 2 עמדות</li><li>ללא התחייבות</li><li>שדרוג בכל עת</li></ul>
-  </div>
-  <div class="pc" data-plan="basic" onclick="selPlan('basic')">
-    <div class="pn">Basic</div>
-    <div class="pp">&#8362;50<span>/חודש</span></div>
-    <ul class="pf"><li>עד 2 עמדות</li><li>סנכרון ענן מלא</li><li>ניהול תלמידים ונקודות</li><li>תמיכה במייל</li></ul>
-  </div>
-  <div class="pc" data-plan="extended" onclick="selPlan('extended')">
-    <div class="pbdg">מומלץ</div>
-    <div class="pn">Extended</div>
-    <div class="pp">&#8362;100<span>/חודש</span></div>
-    <ul class="pf"><li>עד 5 עמדות</li><li>כל הפיצ'רים של Basic</li><li>מודול חנות</li><li>דוחות מתקדמים</li></ul>
-  </div>
-  <div class="pc" data-plan="unlimited" onclick="selPlan('unlimited')">
-    <div class="pn">Unlimited</div>
-    <div class="pp">&#8362;200<span>/חודש</span></div>
-    <ul class="pf"><li>ללא הגבלת עמדות</li><li>כל הפיצ'רים של Extended</li><li>מודול קיוסק</li><li>תמיכה טלפונית + API</li></ul>
-  </div>
+  __PLAN_CARDS__
 </div>
 
 <div class="st">פרטי המוסד</div>
@@ -141,7 +167,8 @@ async function submitReg(e){
 @router.get('/web/register', response_class=HTMLResponse)
 def web_register(request: Request) -> str:
     plan = request.query_params.get('plan', '')
-    body = _FORM_CSS + _REG_FORM.replace('__PLAN__', html_mod.escape(plan))
+    plan_cards = _build_plan_cards_html()
+    body = _FORM_CSS + _REG_FORM_TEMPLATE.replace('__PLAN__', html_mod.escape(plan)).replace('__PLAN_CARDS__', plan_cards)
     return public_web_shell("\u05e4\u05ea\u05d9\u05d7\u05ea \u05d7\u05e9\u05d1\u05d5\u05df", body, request=request)
 
 @router.post('/api/register')
@@ -154,7 +181,18 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
     password  = str(payload.get('password') or '').strip()
     plan      = str(payload.get('plan') or 'basic').strip()
     terms_ok  = payload.get('terms')
-    if plan not in ('trial', 'basic', 'extended', 'unlimited'):
+    # Validate plan against DB plan_config + always allow 'trial'
+    valid_plans = {'trial'}
+    try:
+        from ..admin_db import ensure_admin_tables, get_all_plans
+        ensure_admin_tables()
+        for p in get_all_plans():
+            pk = str(p.get('plan_key') or '').strip()
+            if pk and int(p.get('is_active') or 0) == 1:
+                valid_plans.add(pk)
+    except Exception:
+        pass
+    if plan not in valid_plans:
         plan = 'trial'
     if not inst_name or not email or not password or not contact:
         raise HTTPException(400, detail="\u05d7\u05e1\u05e8\u05d9\u05dd \u05e9\u05d3\u05d5\u05ea \u05d7\u05d5\u05d1\u05d4")
