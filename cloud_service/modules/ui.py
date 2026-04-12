@@ -1,7 +1,7 @@
 from fastapi import Request
 from typing import Optional
 
-def basic_web_shell(title: str, body_html: str, request: Request = None, is_admin: bool = None) -> str:
+def basic_web_shell(title: str, body_html: str, request: Request = None, is_admin: bool = None, hide_sidebar: bool = False) -> str:
     # Auto-detect admin role from request if not explicitly provided
     if is_admin is None and request:
         try:
@@ -385,19 +385,22 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
         </a>
         """
         
-    sidebar_block = f"""
-      <aside class="sidebar glass">
-        <div class="side-title">תפריט</div>
-        <div class="side-links">
-          {sidebar_html}
-          <div style="margin:10px 0; border-top:1px solid rgba(255,255,255,0.1);"></div>
-          <a href="/web/logout" class="s-tile">
-            <div class="icon">🚪</div>
-            <div class="label">יציאה</div>
-          </a>
-        </div>
-      </aside>
-    """
+    if hide_sidebar:
+        sidebar_block = ""
+    else:
+        sidebar_block = f"""
+          <aside class="sidebar glass">
+            <div class="side-title">תפריט</div>
+            <div class="side-links">
+              {sidebar_html}
+              <div style="margin:10px 0; border-top:1px solid rgba(255,255,255,0.1);"></div>
+              <a href="/web/logout" class="s-tile">
+                <div class="icon">🚪</div>
+                <div class="label">יציאה</div>
+              </a>
+            </div>
+          </aside>
+        """
 
     return f"""
     <!DOCTYPE html>

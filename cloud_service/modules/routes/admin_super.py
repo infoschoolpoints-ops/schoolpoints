@@ -88,7 +88,7 @@ _ADMIN_NAV = """
 
 def super_admin_shell(title: str, body: str, request: Request = None) -> str:
     full_body = _ADMIN_NAV + body
-    html = basic_web_shell(title, full_body, request)
+    html = basic_web_shell(title, full_body, request, hide_sidebar=True)
     return html
 
 def require_admin_key(request: Request) -> bool:

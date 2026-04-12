@@ -152,9 +152,15 @@ async function submitReg(e){
     var r=await fetch("/api/register",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(d)});
     var j=await r.json();
     if(r.ok&&j.ok){
-      msg.className="mo mok";
-      msg.innerHTML="החשבון נפתח בהצלחה!<br>קוד המוסד שלכם: <b>"+j.tenant_id+"</b><br>הקוד נשלח גם למייל.";
-      setTimeout(function(){window.location.href="/web/signin";},4000);
+      if(j.redirect){
+        msg.className="mo mok";
+        msg.textContent="מעבר לדף תשלום...";
+        setTimeout(function(){window.location.href=j.redirect;},800);
+      } else {
+        msg.className="mo mok";
+        msg.innerHTML="החשבון נפתח בהצלחה!<br>קוד המוסד שלכם: <b>"+j.tenant_id+"</b><br>הקוד נשלח גם למייל.";
+        setTimeout(function(){window.location.href="/web/signin";},4000);
+      }
     } else {
       var det=j.detail||"שגיאה";msg.className="mo mer";msg.textContent=det;
       btn.disabled=false;btn.textContent="פתיחת חשבון";
@@ -170,6 +176,21 @@ def web_register(request: Request) -> str:
     plan_cards = _build_plan_cards_html()
     body = _FORM_CSS + _REG_FORM_TEMPLATE.replace('__PLAN__', html_mod.escape(plan)).replace('__PLAN_CARDS__', plan_cards)
     return public_web_shell("\u05e4\u05ea\u05d9\u05d7\u05ea \u05d7\u05e9\u05d1\u05d5\u05df", body, request=request)
+
+def _plan_requires_payment(plan: str) -> bool:
+    """Check if a plan requires payment (non-zero price)."""
+    if plan == 'trial':
+        return False
+    try:
+        from ..admin_db import ensure_admin_tables, get_all_plans
+        ensure_admin_tables()
+        for p in get_all_plans():
+            if str(p.get('plan_key') or '') == plan:
+                price = int(p.get('price_monthly') or 0)
+                return price > 0
+    except Exception:
+        pass
+    return False
 
 @router.post('/api/register')
 def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
@@ -204,6 +225,7 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
     conn = get_db_connection()
     try:
         cur = conn.cursor()
+        # Check email not already registered
         try:
             cur.execute(sql_placeholder('SELECT 1 FROM institutions WHERE email = ? LIMIT 1'), (email,))
             if cur.fetchone():
@@ -212,28 +234,44 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
             raise
         except Exception:
             pass
-        inst_code = generate_numeric_tenant_id(conn)
-        api_key = secrets.token_urlsafe(24)
-        try:
+
+        needs_payment = _plan_requires_payment(plan)
+
+        if needs_payment:
+            # --- PAID PLAN: save to pending_registrations, redirect to payment ---
+            inst_code = generate_numeric_tenant_id(conn)
             cur.execute(sql_placeholder(
-                "INSERT INTO institutions (tenant_id,name,api_key,password_hash,contact_name,email,phone,plan)"
+                "INSERT INTO pending_registrations (institution_name,institution_code,contact_name,email,phone,password_hash,plan,payment_status)"
                 " VALUES (?,?,?,?,?,?,?,?)"),
-                (inst_code, inst_name, api_key, password_hash, contact, email, phone, plan))
-        except Exception as e:
-            logger.error(f"Insert institution error: {e}")
-            cur.execute(sql_placeholder(
-                "INSERT INTO institutions (tenant_id,name,api_key,password_hash) VALUES (?,?,?,?)"),
-                (inst_code, inst_name, api_key, password_hash))
-        try:
-            ensure_tenant_db_exists(str(inst_code))
-        except Exception as e:
-            try: conn.rollback()
-            except: pass
-            raise HTTPException(500, detail=f'DB creation failed: {e}')
-        conn.commit()
-        _send_welcome_email(contact, email, inst_name, inst_code, plan)
-        _notify_admin(inst_name, inst_code, contact, email, phone, plan)
-        return {'ok': True, 'tenant_id': inst_code, 'plan': plan}
+                (inst_name, inst_code, contact, email, phone, password_hash, plan, 'pending'))
+            conn.commit()
+            import urllib.parse as _up
+            pay_url = f'/web/payment?reg_email={_up.quote(email)}&plan={_up.quote(plan)}'
+            return {'ok': True, 'redirect': pay_url, 'needs_payment': True, 'plan': plan}
+        else:
+            # --- FREE / TRIAL: create institution immediately ---
+            inst_code = generate_numeric_tenant_id(conn)
+            api_key = secrets.token_urlsafe(24)
+            try:
+                cur.execute(sql_placeholder(
+                    "INSERT INTO institutions (tenant_id,name,api_key,password_hash,contact_name,email,phone,plan)"
+                    " VALUES (?,?,?,?,?,?,?,?)"),
+                    (inst_code, inst_name, api_key, password_hash, contact, email, phone, plan))
+            except Exception as e:
+                logger.error(f"Insert institution error: {e}")
+                cur.execute(sql_placeholder(
+                    "INSERT INTO institutions (tenant_id,name,api_key,password_hash) VALUES (?,?,?,?)"),
+                    (inst_code, inst_name, api_key, password_hash))
+            try:
+                ensure_tenant_db_exists(str(inst_code))
+            except Exception as e:
+                try: conn.rollback()
+                except: pass
+                raise HTTPException(500, detail=f'DB creation failed: {e}')
+            conn.commit()
+            _send_welcome_email(contact, email, inst_name, inst_code, plan)
+            _notify_admin(inst_name, inst_code, contact, email, phone, plan)
+            return {'ok': True, 'tenant_id': inst_code, 'plan': plan}
     except HTTPException:
         raise
     except Exception as e:
