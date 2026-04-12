@@ -95,3 +95,10 @@ update_*_from_excel.py
 build_v2_excel.py
 update_excel_v2.py
 cashier_station_fixed.py
+
+# Secrets / credentials — NEVER commit
+*.env
+.env.*
+*.secret
+*neonctl*
+*init.txt
