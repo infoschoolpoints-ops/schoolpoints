@@ -2508,7 +2508,13 @@ def web_personal(request: Request):
     guard = web_require_teacher(request)
     if guard: return guard
     html_content = """
+    <a href="/web/my-account" style="display:flex;align-items:center;gap:12px;padding:14px 20px;border-radius:14px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;text-decoration:none;font-weight:700;font-size:15px;margin-bottom:20px;">
+      <span style="font-size:22px;">🏢</span>
+      <span>חשבון המוסד ושינוי מסלול</span>
+      <span style="margin-right:auto;opacity:.8;">←</span>
+    </a>
     <div class="card" style="padding:20px; background:#fff; border-radius:10px; border:1px solid #eee;">
+      <h3 style="margin-top:0;margin-bottom:16px;font-size:16px;color:#2c3e50;">פרטים אישיים (מורה)</h3>
       <div class="form-group" style="margin-bottom:15px;">
         <label style="display:block; margin-bottom:5px; font-weight:600;">שם המורה</label>
         <input id="per-name" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box;">

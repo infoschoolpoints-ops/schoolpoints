@@ -90,7 +90,7 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
             # Teachers
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS teachers (
-                    id INTEGER PRIMARY KEY,
+                    id SERIAL PRIMARY KEY,
                     name TEXT,
                     card_number TEXT,
                     card_number2 TEXT,

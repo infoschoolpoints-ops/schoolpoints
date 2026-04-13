@@ -421,10 +421,15 @@ def api_teacher_save(request: Request, payload: TeacherSavePayload):
         tid = cols.pop('teacher_id', None)
         
         if not tid:
-            # Insert
-            # Get max ID manually for numeric ID consistency if SQLite
-            # Actually, standard autoincrement or serial is fine, but for teachers we usually want stable IDs.
-            # Let's rely on DB autoincrement for simplicity, or max+1 strategy if we want to mimic legacy.
+            # Insert — compute next ID explicitly for compatibility with
+            # existing Postgres DBs where teachers.id may lack a SERIAL sequence.
+            try:
+                cur.execute(sql_placeholder("SELECT COALESCE(MAX(id),0)+1 AS next_id FROM teachers"))
+                next_id_row = cur.fetchone()
+                next_id = (next_id_row['next_id'] if isinstance(next_id_row, dict) else next_id_row[0]) if next_id_row else 1
+            except Exception:
+                next_id = 1
+            cols['id'] = next_id
             
             columns = list(cols.keys())
             placeholders = ','.join(['?' for _ in columns])
@@ -436,7 +441,7 @@ def api_teacher_save(request: Request, payload: TeacherSavePayload):
                 tid = row['id'] if isinstance(row, dict) else row[0]
             else:
                 cur.execute(sql, list(cols.values()))
-                tid = cur.lastrowid
+                tid = cur.lastrowid or next_id
                 
             record_sync_event(
                 tenant_id=tenant_id,

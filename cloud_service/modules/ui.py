@@ -1,7 +1,7 @@
 from fastapi import Request
 from typing import Optional
 
-def basic_web_shell(title: str, body_html: str, request: Request = None, is_admin: bool = None, hide_sidebar: bool = False) -> str:
+def basic_web_shell(title: str, body_html: str, request: Request = None, is_admin: bool = None, hide_sidebar: bool = False, custom_sidebar: str = None) -> str:
     # Auto-detect admin role from request if not explicitly provided
     if is_admin is None and request:
         try:
@@ -371,6 +371,7 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
         {'url': '/web/import', 'icon': '📥', 'label': 'ייבוא', 'admin_only': True},
         {'url': '/web/reports', 'icon': '📤', 'label': 'ייצוא / דוחות', 'admin_only': True},
         {'url': '/web/personal', 'icon': '👤', 'label': 'אזור אישי', 'admin_only': False},
+        {'url': '/web/my-account', 'icon': '🏢', 'label': 'חשבון מוסד', 'admin_only': True},
         {'url': '/web/guide', 'icon': '📘', 'label': 'מדריך', 'admin_only': False},
     ]
     menu_items = [m for m in _all_menu_items if is_admin or not m.get('admin_only')]
@@ -385,7 +386,9 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
         </a>
         """
         
-    if hide_sidebar:
+    if custom_sidebar is not None:
+        sidebar_block = custom_sidebar
+    elif hide_sidebar:
         sidebar_block = ""
     else:
         sidebar_block = f"""

@@ -74,21 +74,41 @@ def admin_status_bar() -> str:
         try: conn.close()
         except: pass
 
-_ADMIN_NAV = """
-<div style="background:rgba(0,0,0,0.06);border-radius:14px;padding:8px 16px;margin-bottom:20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-  <a href="/admin/institutions" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">🏫 מוסדות</a>
-  <a href="/admin/plans" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">💰 מסלולים</a>
-  <a href="/admin/payments" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">💳 תשלומים</a>
-  <a href="/admin/staff" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">👥 צוות</a>
-  <a href="/admin/registrations" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">📋 הרשמות</a>
-  <span style="flex:1;"></span>
-  <a href="/admin/logout" style="padding:6px 14px;border-radius:10px;font-size:12px;text-decoration:none;color:#e74c3c;">🚪 יציאה</a>
-</div>
-"""
+_ADMIN_SIDEBAR_ITEMS = [
+    {'url': '/admin/institutions', 'icon': '🏫', 'label': 'מוסדות'},
+    {'url': '/admin/plans',        'icon': '💰', 'label': 'מסלולים'},
+    {'url': '/admin/payments',     'icon': '💳', 'label': 'תשלומים'},
+    {'url': '/admin/registrations','icon': '📋', 'label': 'הרשמות'},
+    {'url': '/admin/staff',        'icon': '👥', 'label': 'צוות'},
+]
+
+def _build_admin_sidebar(request: Request = None) -> str:
+    current_path = request.url.path if request else ''
+    links = ''
+    for item in _ADMIN_SIDEBAR_ITEMS:
+        active = 'active' if current_path == item['url'] else ''
+        links += f"""
+        <a href="{item['url']}" class="s-tile {active}">
+            <div class="icon">{item['icon']}</div>
+            <div class="label">{item['label']}</div>
+        </a>"""
+    links += """
+        <div style="margin:10px 0; border-top:1px solid rgba(255,255,255,0.1);"></div>
+        <a href="/admin/logout" class="s-tile" style="color:#e74c3c;">
+            <div class="icon">�</div>
+            <div class="label">יציאה</div>
+        </a>"""
+    return f"""
+      <aside class="sidebar glass">
+        <div class="side-title">ניהול על</div>
+        <div class="side-links">
+          {links}
+        </div>
+      </aside>"""
 
 def super_admin_shell(title: str, body: str, request: Request = None) -> str:
-    full_body = _ADMIN_NAV + body
-    html = basic_web_shell(title, full_body, request, hide_sidebar=True)
+    sidebar = _build_admin_sidebar(request)
+    html = basic_web_shell(title, body, request, is_admin=True, custom_sidebar=sidebar)
     return html
 
 def require_admin_key(request: Request) -> bool:

@@ -187,10 +187,15 @@ def _plan_requires_payment(plan: str) -> bool:
         for p in get_all_plans():
             if str(p.get('plan_key') or '') == plan:
                 price = int(p.get('price_monthly') or 0)
+                logger.info(f"_plan_requires_payment: plan={plan}, price={price}, requires={price > 0}")
                 return price > 0
-    except Exception:
-        pass
-    return False
+        logger.warning(f"_plan_requires_payment: plan '{plan}' not found in plan_config")
+    except Exception as exc:
+        logger.error(f"_plan_requires_payment failed: {exc}")
+    # If plan not found but it's not 'trial', assume payment is needed
+    # to avoid creating unpaid institutions for paid plans
+    logger.warning(f"_plan_requires_payment: defaulting to True for unknown plan '{plan}'")
+    return True
 
 @router.post('/api/register')
 def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
@@ -204,6 +209,7 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
     terms_ok  = payload.get('terms')
     # Validate plan against DB plan_config + always allow 'trial'
     valid_plans = {'trial'}
+    _plans_loaded = False
     try:
         from ..admin_db import ensure_admin_tables, get_all_plans
         ensure_admin_tables()
@@ -211,9 +217,12 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
             pk = str(p.get('plan_key') or '').strip()
             if pk and int(p.get('is_active') or 0) == 1:
                 valid_plans.add(pk)
-    except Exception:
-        pass
-    if plan not in valid_plans:
+        _plans_loaded = True
+    except Exception as exc:
+        logger.error(f"Failed to load plans from DB during registration: {exc}")
+    logger.info(f"Registration: plan={plan}, valid_plans={valid_plans}, plans_loaded={_plans_loaded}")
+    if _plans_loaded and plan not in valid_plans:
+        logger.warning(f"Plan '{plan}' not in valid_plans, resetting to trial")
         plan = 'trial'
     if not inst_name or not email or not password or not contact:
         raise HTTPException(400, detail="\u05d7\u05e1\u05e8\u05d9\u05dd \u05e9\u05d3\u05d5\u05ea \u05d7\u05d5\u05d1\u05d4")
