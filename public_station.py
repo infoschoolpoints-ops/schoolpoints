@@ -1945,6 +1945,15 @@ class PublicStation:
                 self._news_ticker_watchdog_job = self.root.after(4000, self._news_ticker_watchdog)
         except Exception:
             self._news_ticker_watchdog_job = None
+
+        # UI freeze watchdog + periodic GC
+        try:
+            self._watchdog_main_ts = time.time()
+            self.root.after(10000, self._ui_freeze_watchdog)
+            self._start_watchdog_thread()
+            self.root.after(300000, self._periodic_gc)
+        except Exception:
+            pass
     
     def bind_keyboard(self):
         """קישור אירועי מקלדת"""
@@ -2763,10 +2772,6 @@ class PublicStation:
 
             # הצגת האזור מיד, כדי שהמשתמש יראה תוצאה גם אם טעינת תמונה/סטטיסטיקות איטית
             self.show_info()
-            try:
-                self.root.update_idletasks()
-            except Exception:
-                pass
 
             # פעולות כבדות יותר (תמונה, הודעות, סטטיסטיקות)
             self.update_student_photo(student)
@@ -2912,7 +2917,6 @@ class PublicStation:
 
         try:
             self._closure_overlay.lift()
-            self._closure_overlay.update_idletasks()
         except Exception:
             pass
 
@@ -3584,6 +3588,58 @@ class PublicStation:
         except Exception:
             self._news_ticker_watchdog_job = None
 
+    def _ui_freeze_watchdog(self):
+        """Watchdog: detects UI freeze and forces restart.
+        A background thread sets _watchdog_ping_ts periodically.
+        If the main thread can't process after() callbacks for >120s, the UI is frozen."""
+        try:
+            now = time.time()
+            self._watchdog_main_ts = now  # main thread is alive if this runs
+            last_bg = float(getattr(self, '_watchdog_bg_ts', 0) or 0)
+            # Background thread updates _watchdog_bg_ts every 10s
+            # If main thread hasn't run this callback in >120s, we're frozen
+            # But we can only detect this FROM the main thread, so we use a
+            # background thread that checks if _watchdog_main_ts is stale
+        except Exception:
+            pass
+        try:
+            self.root.after(10000, self._ui_freeze_watchdog)
+        except Exception:
+            pass
+
+    def _start_watchdog_thread(self):
+        """Start background thread that monitors UI responsiveness."""
+        import threading
+        def _watchdog_loop():
+            while True:
+                try:
+                    time.sleep(30)
+                    last_main = float(getattr(self, '_watchdog_main_ts', 0) or 0)
+                    now = time.time()
+                    if last_main > 0 and (now - last_main) > 120:
+                        # UI frozen for >120 seconds - force restart
+                        print(f"[WATCHDOG] UI frozen for {now - last_main:.0f}s - forcing restart!")
+                        try:
+                            os.execv(sys.executable, [sys.executable] + sys.argv)
+                        except Exception:
+                            os._exit(99)  # Last resort
+                except Exception:
+                    pass
+        t = threading.Thread(target=_watchdog_loop, daemon=True)
+        t.start()
+
+    def _periodic_gc(self):
+        """Periodic garbage collection to prevent memory accumulation over long runs."""
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
+        try:
+            self.root.after(300000, self._periodic_gc)  # every 5 minutes
+        except Exception:
+            pass
+
     def refresh_news_items_loop(self):
         """ריענון רשימת החדשות (לשינויים מעמדת הניהול)."""
         try:
@@ -3672,7 +3728,6 @@ class PublicStation:
 
             # גובה אזור המונטאז' בפועל – לפי גובה חלון השורש פחות רצועת החדשות התחתונה.
             try:
-                self.root.update_idletasks()
                 root_h = self.root.winfo_height() or screen_h
             except Exception:
                 root_h = screen_h
@@ -3680,7 +3735,6 @@ class PublicStation:
             news_h = 0
             if hasattr(self, 'news_frame'):
                 try:
-                    self.news_frame.update_idletasks()
                     news_h = self.news_frame.winfo_height() or 0
                 except Exception:
                     news_h = 0
@@ -6401,14 +6455,10 @@ class PublicStation:
             pass
 
     def _position_anti_spam_overlay(self) -> None:
+        # Note: update_idletasks removed to prevent reentrant Tkinter callbacks
         ov = getattr(self, '_anti_spam_overlay', None)
         if ov is None:
             return
-
-        try:
-            self.root.update_idletasks()
-        except Exception:
-            pass
 
         sw = int(getattr(self, 'screen_width', 0) or self.root.winfo_width() or 0)
         sh = int(getattr(self, 'screen_height', 0) or self.root.winfo_height() or 0)
@@ -6630,11 +6680,6 @@ class PublicStation:
             pass
 
         self._position_anti_spam_overlay()
-
-        try:
-            self.root.update_idletasks()
-        except Exception:
-            pass
 
         try:
             w = int(self._anti_spam_overlay.winfo_width() or 0)

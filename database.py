@@ -1154,12 +1154,12 @@ class Database:
 
         attempt = 0
         corrupt_attempts = 0
-        _max_lock_attempts = 30
+        _max_lock_attempts = 8
         while True:
             try:
-                conn = sqlite3.connect(self.db_path, timeout=10)
+                conn = sqlite3.connect(self.db_path, timeout=3)
                 conn.row_factory = sqlite3.Row  # מאפשר גישה לעמודות לפי שם
-                self._apply_pragmas(conn)
+                self._apply_pragmas(conn, busy_timeout_ms=3000)
                 # עמדה משנית: עטוף ב-proxy שמפנה כתיבות דרך HTTP
                 if self._remote_write_url:
                     return _RemoteWriteConnection(conn, self._remote_write_url, self._remote_write_api_key)
@@ -1181,7 +1181,7 @@ class Database:
                         except Exception:
                             pass
                         raise
-                    time.sleep(0.3 + 0.2 * min(attempt, 10))
+                    time.sleep(0.2 + 0.1 * min(attempt, 5))
                     continue
                 # DB לא נגיש בזמן ריצה – ניסיון אחד עם DB מקומי
                 if ('unable to open' in msg or 'disk i/o' in msg) and self._is_unc_path():

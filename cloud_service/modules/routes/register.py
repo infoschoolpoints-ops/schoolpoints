@@ -250,13 +250,15 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
             return {'ok': True, 'redirect': pay_url, 'needs_payment': True, 'plan': plan}
         else:
             # --- FREE / TRIAL: create institution immediately ---
+            from ..registration_logic import _compute_license_expiry
             inst_code = generate_numeric_tenant_id(conn)
             api_key = secrets.token_urlsafe(24)
+            license_expiry = _compute_license_expiry(plan)
             try:
                 cur.execute(sql_placeholder(
-                    "INSERT INTO institutions (tenant_id,name,api_key,password_hash,contact_name,email,phone,plan)"
-                    " VALUES (?,?,?,?,?,?,?,?)"),
-                    (inst_code, inst_name, api_key, password_hash, contact, email, phone, plan))
+                    "INSERT INTO institutions (tenant_id,name,api_key,password_hash,contact_name,email,phone,plan,license_expiry)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)"),
+                    (inst_code, inst_name, api_key, password_hash, contact, email, phone, plan, license_expiry))
             except Exception as e:
                 logger.error(f"Insert institution error: {e}")
                 cur.execute(sql_placeholder(

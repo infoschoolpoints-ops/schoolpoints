@@ -141,6 +141,60 @@ _ACCT_CSS = """<style>
 </style>"""
 
 
+@router.get('/web/expired', response_class=HTMLResponse)
+def web_expired(request: Request) -> str:
+    """Page shown when institution's license has expired."""
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id:
+        return RedirectResponse(url='/web/signin', status_code=302)
+    inst = _get_institution(tenant_id)
+    plans_map = _get_plans_map()
+    plan = str((inst or {}).get('plan') or 'trial')
+    pn = _plan_display_name(plan, plans_map)
+    expiry = str((inst or {}).get('license_expiry') or '')[:10]
+    email = str((inst or {}).get('email') or '')
+
+    # Build upgrade cards
+    cards = ''
+    available = [p for pk, p in plans_map.items()
+                 if int(p.get('is_active') or 0) == 1
+                 and int(p.get('is_visible') if p.get('is_visible') is not None else 1) == 1
+                 and int(p.get('price_monthly') or 0) > 0]
+    available.sort(key=lambda p: int(p.get('sort_order') or 0))
+    for p in available:
+        pk = html_mod.escape(str(p.get('plan_key','')))
+        dn = html_mod.escape(str(p.get('display_name','')))
+        price = int(p.get('price_monthly') or 0)
+        dur = int(p.get('duration_months') or 1)
+        total = price * dur
+        pay_url = f'/web/payment?reg_email={_up.quote(email)}&plan={_up.quote(pk)}'
+        cards += f'''<a href="{pay_url}" style="display:block;border:2px solid rgba(255,255,255,.15);border-radius:14px;padding:20px;text-align:center;text-decoration:none;color:inherit;min-width:180px;transition:all .3s;">
+          <div style="font-size:18px;font-weight:800;margin-bottom:6px;">{dn}</div>
+          <div style="font-size:24px;font-weight:700;color:#2ecc71;">&#8362;{price}<span style="font-size:13px;opacity:.7;">/\u05d7\u05d5\u05d3\u05e9</span></div>
+          <div style="font-size:12px;opacity:.7;">\u05e1\u05d4\u05f4\u05db &#8362;{total}</div>
+        </a>'''
+
+    body = f'''
+    <div style="max-width:560px;margin:0 auto;padding:40px 20px;text-align:center;">
+      <div style="font-size:64px;margin-bottom:16px;">⏳</div>
+      <h2 style="color:#e74c3c;">\u05d4\u05de\u05e0\u05d5\u05d9 \u05e9\u05dc\u05da \u05e4\u05d2 \u05ea\u05d5\u05e7\u05e3</h2>
+      <p style="opacity:.8;">\u05de\u05e1\u05dc\u05d5\u05dc: <b>{html_mod.escape(pn)}</b> | \u05ea\u05d5\u05e7\u05e3: <b>{html_mod.escape(expiry)}</b></p>
+      <p style="opacity:.7;">\u05d4\u05de\u05e2\u05e8\u05db\u05ea \u05d7\u05e1\u05d5\u05de\u05d4 \u05dc\u05e6\u05e4\u05d9\u05d9\u05d4 \u05d1\u05dc\u05d1\u05d3. \u05db\u05d3\u05d9 \u05dc\u05d4\u05de\u05e9\u05d9\u05da \u05dc\u05d4\u05e9\u05ea\u05de\u05e9, \u05d9\u05e9 \u05dc\u05d7\u05d3\u05e9 \u05d0\u05ea \u05d4\u05de\u05e0\u05d5\u05d9.</p>
+
+      <div style="display:flex;gap:16px;justify-content:center;margin:28px 0;flex-wrap:wrap;">
+        {cards}
+      </div>
+
+      <div style="margin-top:16px;">
+        <a href="/web/my-account" style="color:#667eea;font-weight:600;text-decoration:none;">\u05d0\u05d6\u05d5\u05e8 \u05d0\u05d9\u05e9\u05d9</a>
+        &nbsp;|&nbsp;
+        <a href="/web/logout" style="color:#e74c3c;text-decoration:none;">\u05d9\u05e6\u05d9\u05d0\u05d4</a>
+      </div>
+    </div>
+    '''
+    return public_web_shell('\u05de\u05e0\u05d5\u05d9 \u05e4\u05d2 \u05ea\u05d5\u05e7\u05e3', body, request=request)
+
+
 @router.post('/api/upgrade-plan')
 def api_upgrade_plan(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Upgrade plan — updates institution record. Called after successful payment."""

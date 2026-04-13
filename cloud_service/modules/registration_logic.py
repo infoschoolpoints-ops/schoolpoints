@@ -2,6 +2,7 @@ import secrets
 import html
 import os
 import logging
+import datetime
 from typing import Dict, Any, Optional
 
 from .db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, generate_numeric_tenant_id, tenant_db_connection
@@ -9,6 +10,28 @@ from .email import send_email
 from .config import REGISTRATION_NOTIFY_EMAIL
 
 logger = logging.getLogger("schoolpoints.registration")
+
+
+def _compute_license_expiry(plan: str) -> str:
+    """Compute license_expiry date string based on plan.
+    trial = 7 days, paid plans use duration_months from plan_config."""
+    now = datetime.date.today()
+    if plan == 'trial':
+        expiry = now + datetime.timedelta(days=7)
+        return expiry.isoformat()
+    try:
+        from .admin_db import ensure_admin_tables, get_all_plans
+        ensure_admin_tables()
+        for p in get_all_plans():
+            if str(p.get('plan_key') or '') == plan:
+                months = int(p.get('duration_months') or 1)
+                days = months * 30  # approximate
+                expiry = now + datetime.timedelta(days=days)
+                return expiry.isoformat()
+    except Exception:
+        pass
+    # Fallback: 30 days
+    return (now + datetime.timedelta(days=30)).isoformat()
 
 def approve_pending_registration(reg_id: int) -> Dict[str, Any]:
     """Approve a pending registration: create tenant, send email, mark completed."""
@@ -63,16 +86,15 @@ def approve_pending_registration(reg_id: int) -> Dict[str, Any]:
         
         # 2. Create Institution
         api_key = secrets.token_urlsafe(24)
+        plan = str(r.get('plan') or 'trial')
+        license_expiry = _compute_license_expiry(plan)
         
         try:
-            # Check columns in institutions table to avoid errors if schema differs
-            # Assuming standard schema from db.py
             cur.execute(
-                sql_placeholder("INSERT INTO institutions (tenant_id, name, api_key, password_hash, contact_name, email, phone, plan) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"),
-                (tenant_id, inst_name, api_key, pwd_hash, contact, email, r.get('phone'), r.get('plan'))
+                sql_placeholder("INSERT INTO institutions (tenant_id, name, api_key, password_hash, contact_name, email, phone, plan, license_expiry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+                (tenant_id, inst_name, api_key, pwd_hash, contact, email, r.get('phone'), plan, license_expiry)
             )
         except Exception as e:
-            # Fallback if columns missing?
             logger.error(f"Error inserting institution: {e}")
             try:
                 cur.execute(

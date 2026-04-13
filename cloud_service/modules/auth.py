@@ -98,6 +98,50 @@ def web_require_tenant(request: Request) -> Optional[Response]:
         return RedirectResponse(url='/web/signin', status_code=302)
     return None
 
+
+def check_license_expired(tenant_id: str) -> bool:
+    """Check if institution's license has expired. Returns True if expired."""
+    if not tenant_id:
+        return False
+    try:
+        import datetime
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(sql_placeholder(
+                'SELECT license_expiry FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id,))
+            row = cur.fetchone()
+            if not row:
+                return False
+            expiry_str = str((row['license_expiry'] if isinstance(row, dict) else row[0]) or '').strip()
+            if not expiry_str:
+                return False  # No expiry set = not expired (legacy)
+            expiry_date = datetime.date.fromisoformat(expiry_str[:10])
+            return datetime.date.today() > expiry_date
+        finally:
+            try: conn.close()
+            except: pass
+    except Exception:
+        return False
+
+
+def web_check_license_expiry(request: Request) -> Optional[Response]:
+    """Guard: check if license expired. Returns redirect to expiry page, or None if ok.
+    Allows access to my-account, activate, payment pages so user can renew."""
+    path = request.url.path if request else ''
+    # Always allow these paths even when expired (needed for renewal flow)
+    _allowed = ('/web/my-account', '/web/activate', '/web/payment', '/web/signin',
+                '/web/logout', '/web/login', '/web/forgot-password', '/web/register',
+                '/web/expired', '/web/download', '/web/personal')
+    if any(path.startswith(a) for a in _allowed):
+        return None
+    tid = web_tenant_from_cookie(request)
+    if not tid:
+        return None
+    if check_license_expired(tid):
+        return RedirectResponse(url='/web/expired', status_code=302)
+    return None
+
 def web_next_from_request(request: Request, default: str = '/web/admin') -> str:
     """Get 'next' url from query param or default."""
     nxt = str(request.query_params.get('next') or '').strip()
