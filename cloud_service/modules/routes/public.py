@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, FileResponse
-from ..ui import public_web_shell
+from ..ui import public_web_shell, basic_web_shell
 from ..utils import read_text_file, replace_guide_base64_images
 from ..config import ROOT_DIR
 import os
@@ -221,8 +221,22 @@ def web_guide(request: Request) -> str:
         if html_content:
             break
 
+    # Detect if user is logged in (teacher session or institution session)
+    _logged_in = False
+    try:
+        from ..auth import web_current_teacher, web_tenant_from_cookie, web_master_ok
+        if web_current_teacher(request) or web_tenant_from_cookie(request) or web_master_ok(request):
+            _logged_in = True
+    except Exception:
+        pass
+
+    _back_btn = '<div style="margin-bottom:20px;"><a href="/web/admin" class="btn-glass primary">← חזרה ללוח הבקרה</a></div>'
+    _back_btn_bottom = '<div style="margin-top:28px;text-align:center;"><a href="/web/admin" class="btn-glass primary">← חזרה ללוח הבקרה</a></div>'
+
     if not html_content:
         body = "<h2>מדריך</h2><p>המדריך עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">חזרה</a></div>"
+        if _logged_in:
+            return basic_web_shell('מדריך', body, request=request)
         return public_web_shell('מדריך', body, request=request)
 
     # Fix image/link paths
@@ -240,6 +254,10 @@ def web_guide(request: Request) -> str:
     style_parts = _re.findall(r'(<style[^>]*>.*?</style>)', html_content, _re.DOTALL | _re.IGNORECASE)
     style_block = '\n'.join(style_parts) if style_parts else ''
     wrapped = style_block + '<div style="max-width:100%;overflow-x:auto;">' + inner + '</div>'
+
+    if _logged_in:
+        full_body = _back_btn + wrapped + _back_btn_bottom
+        return basic_web_shell('\u05de\u05d3\u05e8\u05d9\u05da', full_body, request=request)
     return public_web_shell('\u05de\u05d3\u05e8\u05d9\u05da', wrapped, request=request)
 
 @router.get('/web/pricing', response_class=HTMLResponse)
