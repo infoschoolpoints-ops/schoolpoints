@@ -81,6 +81,20 @@ async def catch_exceptions_middleware(request: Request, call_next):
         return Response(content="Internal Server Error", status_code=500)
 
 
+@app.middleware("http")
+async def license_expiry_middleware(request: Request, call_next):
+    """Block access to tenant web pages when license has expired."""
+    try:
+        path = request.url.path or ''
+        if path.startswith('/web/'):
+            from modules.auth import web_check_license_expiry
+            guard = web_check_license_expiry(request)
+            if guard:
+                return guard
+    except Exception:
+        pass
+    return await call_next(request)
+
 
 @app.get("/", include_in_schema=False)
 def root() -> Response:
@@ -15054,6 +15068,14 @@ def web_admin(request: Request):
     guard = _web_require_teacher(request)
     if guard:
         return guard
+    # Check license expiry
+    try:
+        from modules.auth import web_check_license_expiry
+        expiry_guard = web_check_license_expiry(request)
+        if expiry_guard:
+            return expiry_guard
+    except Exception:
+        pass
     
     teacher = _web_current_teacher(request)
     if not teacher:

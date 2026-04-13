@@ -1460,6 +1460,7 @@ def init_global_tables() -> None:
             for col_def in [
                 'contact_name TEXT', 'email TEXT', 'phone TEXT', 'plan TEXT',
                 'last_login TIMESTAMPTZ', 'login_count INTEGER DEFAULT 0',
+                'license_expiry TEXT',
             ]:
                 try:
                     cur.execute(f'ALTER TABLE institutions ADD COLUMN IF NOT EXISTS {col_def}')
@@ -1531,7 +1532,7 @@ def init_global_tables() -> None:
                     cur.execute(f'ALTER TABLE institutions ADD COLUMN {col} TEXT')
                 except Exception:
                     pass
-            for col_def in ['last_login TEXT', 'login_count INTEGER DEFAULT 0']:
+            for col_def in ['last_login TEXT', 'login_count INTEGER DEFAULT 0', 'license_expiry TEXT']:
                 try:
                     cur.execute(f'ALTER TABLE institutions ADD COLUMN {col_def}')
                 except Exception:

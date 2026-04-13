@@ -197,7 +197,7 @@ def web_expired(request: Request) -> str:
 
 @router.post('/api/upgrade-plan')
 def api_upgrade_plan(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
-    """Upgrade plan — updates institution record. Called after successful payment."""
+    """Upgrade plan — updates institution record and license_expiry. Called after successful payment."""
     tenant_id = web_tenant_from_cookie(request)
     if not tenant_id:
         raise HTTPException(401, detail="Not authenticated")
@@ -208,12 +208,15 @@ def api_upgrade_plan(request: Request, payload: Dict[str, Any] = Body(...)) -> D
     inst = _get_institution(tenant_id)
     if not inst:
         raise HTTPException(404, detail="\u05de\u05d5\u05e1\u05d3 \u05dc\u05d0 \u05e0\u05de\u05e6\u05d0")
+    from ..registration_logic import _compute_license_expiry
+    new_expiry = _compute_license_expiry(new_plan)
     conn = get_db_connection()
     try:
         cur = conn.cursor()
-        cur.execute(sql_placeholder('UPDATE institutions SET plan = ? WHERE tenant_id = ?'), (new_plan, tenant_id))
+        cur.execute(sql_placeholder('UPDATE institutions SET plan = ?, license_expiry = ? WHERE tenant_id = ?'),
+                    (new_plan, new_expiry, tenant_id))
         conn.commit()
-        return {'ok': True, 'plan': new_plan}
+        return {'ok': True, 'plan': new_plan, 'license_expiry': new_expiry}
     finally:
         try: conn.close()
         except: pass

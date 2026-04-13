@@ -462,6 +462,15 @@ def sync_push(payload: SyncPushRequest, request: Request, api_key: str = Header(
     api_key = get_api_key(request, api_key).strip()
     if not api_key:
         raise HTTPException(status_code=401, detail="missing api_key")
+    # Block sync when license expired
+    try:
+        from ..auth import check_license_expired
+        if check_license_expired(str(payload.tenant_id).strip()):
+            raise HTTPException(status_code=403, detail="license_expired")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
 
     if not str(payload.tenant_id).strip():
         raise HTTPException(status_code=400, detail="invalid tenant_id")
