@@ -601,6 +601,23 @@ def admin_institution_update(
     finally:
         try: conn.close()
         except: pass
+    # Push institution_info sync event so local software updates license/plan
+    try:
+        from ..sync_logic import record_sync_event
+        record_sync_event(
+            tenant_id=tid,
+            station_id='admin',
+            entity_type='institution_info',
+            entity_id=tid,
+            action_type='update',
+            payload={
+                'license_expiry': license_expiry.strip(),
+                'plan': plan.strip(),
+                'name': name.strip(),
+            }
+        )
+    except Exception:
+        pass
     return RedirectResponse(url=f"/admin/institutions/{tid}", status_code=302)
 
 @router.get('/admin/registrations', response_class=HTMLResponse)

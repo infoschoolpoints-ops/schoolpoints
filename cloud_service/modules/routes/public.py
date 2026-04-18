@@ -212,6 +212,50 @@ def web_home() -> str:
     """
     return public_web_shell('תוכנת הנקודות', body)
 
+@router.get('/web/equipment-required', response_class=HTMLResponse)
+def web_equipment_required(request: Request) -> str:
+    html_content = ""
+    for fname in ('equipment_required.html', 'equipment-required.html'):
+        path = os.path.join(ROOT_DIR, fname)
+        html_content = read_text_file(path)
+        if html_content:
+            break
+
+    _logged_in = False
+    try:
+        from ..auth import web_current_teacher, web_tenant_from_cookie, web_master_ok
+        if web_current_teacher(request) or web_tenant_from_cookie(request) or web_master_ok(request):
+            _logged_in = True
+    except Exception:
+        pass
+
+    _back_btn = '<div style="margin-bottom:20px;"><a href="/web/guide" class="btn-glass primary">← חזרה למדריך</a></div>'
+    _back_btn_bottom = '<div style="margin-top:28px;text-align:center;"><a href="/web/guide" class="btn-glass primary">← חזרה למדריך</a></div>'
+
+    if not html_content:
+        body = "<h2>ציוד נדרש</h2><p>דף הציוד הנדרש עדיין לא זמין.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/guide\">חזרה למדריך</a></div>"
+        if _logged_in:
+            return basic_web_shell('ציוד נדרש', body, request=request)
+        return public_web_shell('ציוד נדרש', body, request=request)
+
+    import re as _re2
+    html_content = html_content.replace('src="guide_images/', 'src="/web/assets/guide_images/')
+    html_content = html_content.replace('src="images/', 'src="/web/assets/guide_images/')
+    html_content = html_content.replace('href="guide_index.html"', 'href="/web/guide"')
+    inner = html_content
+    body_match2 = _re2.search(r'<body[^>]*>(.*)</body>', inner, _re2.DOTALL | _re2.IGNORECASE)
+    if body_match2:
+        inner = body_match2.group(1)
+    style_parts2 = _re2.findall(r'(<style[^>]*>.*?</style>)', html_content, _re2.DOTALL | _re2.IGNORECASE)
+    style_block2 = '\n'.join(style_parts2) if style_parts2 else ''
+    wrapped2 = style_block2 + '<div style="max-width:100%;overflow-x:auto;">' + inner + '</div>'
+
+    if _logged_in:
+        full_body2 = _back_btn + wrapped2 + _back_btn_bottom
+        return basic_web_shell('ציוד נדרש', full_body2, request=request)
+    return public_web_shell('ציוד נדרש', wrapped2, request=request)
+
+
 @router.get('/web/guide', response_class=HTMLResponse)
 def web_guide(request: Request) -> str:
     html_content = ""

@@ -2171,6 +2171,58 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                     _upsert_row(conn, table, pk_col, row)
                     applied += 1
 
+            # Handle institution_info: write license_expiry and plan to config.json
+            if entity_type == 'institution_info' and action_type == 'update':
+                try:
+                    new_expiry = str(payload.get('license_expiry') or '').strip()
+                    new_plan = str(payload.get('plan') or '').strip()
+                    if new_expiry or new_plan:
+                        try:
+                            _base = os.path.dirname(os.path.abspath(__file__))
+                            _cfg = _load_config(_base)
+                            if not isinstance(_cfg, dict):
+                                _cfg = {}
+                            changed = False
+                            if new_expiry and _cfg.get('license_expiry') != new_expiry:
+                                _cfg['license_expiry'] = new_expiry
+                                changed = True
+                            if new_plan and _cfg.get('plan') != new_plan:
+                                _cfg['plan'] = new_plan
+                                changed = True
+                            if changed:
+                                _save_config(_base, _cfg)
+                                print(f"[SYNC] institution_info: updated license_expiry={new_expiry} plan={new_plan}")
+                        except Exception as _cfg_e:
+                            print(f"[SYNC] institution_info config write error: {_cfg_e}")
+                    # Also update settings table for easy access
+                    if new_expiry:
+                        try:
+                            cur.execute(
+                                'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
+                                'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+                                ('license_expiry', new_expiry)
+                            )
+                        except Exception:
+                            try:
+                                cur.execute('UPDATE settings SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', (new_expiry, 'license_expiry'))
+                            except Exception:
+                                pass
+                    if new_plan:
+                        try:
+                            cur.execute(
+                                'INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) '
+                                'ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP',
+                                ('plan', new_plan)
+                            )
+                        except Exception:
+                            try:
+                                cur.execute('UPDATE settings SET value=?, updated_at=CURRENT_TIMESTAMP WHERE key=?', (new_plan, 'plan'))
+                            except Exception:
+                                pass
+                    applied += 1
+                except Exception as _inst_e:
+                    print(f"[SYNC] institution_info error: {_inst_e}")
+
             # לוג אם לא טופל ע"י אף handler
             _handled_types = ('student_points', 'student', 'teacher', 'setting',
                               'static_message', 'threshold_message', 'news_item', 'ads_item', 'student_message',
@@ -2178,7 +2230,8 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                               'scheduled_service', 'scheduled_service_date', 'public_closure',
                               'teacher_class', 'student_tier', 'time_bonus_given', 'card_block',
                               'cashier_responsible', 'activity_claim', 'service_reservation',
-                              'purchase', 'refund', 'product', 'product_variant', 'product_category')
+                              'purchase', 'refund', 'product', 'product_variant', 'product_category',
+                              'institution_info', 'class')
             if entity_type and entity_type not in _handled_types:
                 try:
                     print(f"[APPLY] UNHANDLED #{_ev_id_short} type={entity_type}/{action_type} eid={entity_id}")
