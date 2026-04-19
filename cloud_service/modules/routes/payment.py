@@ -139,7 +139,7 @@ def _payme_generate_sale(*, amount: float, product_name: str,
         return {'ok': False, 'error': err, **result}
     except Exception as e:
         logger.error(f"[PAYME] generate-sale error: {e}")
-        return {'ok': False, 'error': str(e)}
+        return {'ok': False, 'error': f"[url={url}] {e}"}
 
 
 def _record_payment(*, tenant_id: str, email: str, plan: str, amount: int,
