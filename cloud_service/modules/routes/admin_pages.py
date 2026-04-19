@@ -33,7 +33,7 @@ def _req_admin(request):
 
 _NAV = '<div style="background:rgba(0,0,0,0.06);border-radius:14px;padding:8px 16px;margin-bottom:20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;"><a href="/admin/institutions" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">מוסדות</a><a href="/admin/plans" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">מסלולים</a><a href="/admin/payments" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">תשלומים</a><a href="/admin/staff" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">צוות</a><a href="/admin/registrations" style="padding:6px 14px;border-radius:10px;font-size:13px;font-weight:700;text-decoration:none;color:#333;background:rgba(255,255,255,0.7);">הרשמות</a><span style="flex:1;"></span><a href="/admin/logout" style="padding:6px 14px;border-radius:10px;font-size:12px;text-decoration:none;color:#e74c3c;">יציאה</a></div>'
 
-def _shell(t, b, r=None): return basic_web_shell(t, _NAV + b, r)
+def _shell(t, b, r=None): return basic_web_shell(t, _NAV + b, r, hide_sidebar=True)
 
 # ---------------------------------------------------------------------------
 # Plan Management

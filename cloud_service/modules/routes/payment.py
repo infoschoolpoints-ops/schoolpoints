@@ -72,6 +72,7 @@ def _payme_generate_sale(*, amount: float, product_name: str,
                           sale_callback_url: str, sale_return_url: str,
                           buyer_key: str = '',
                           payer_email: str = '',
+                          payer_name: str = '',
                           seller_payme_id: str = '') -> Dict[str, Any]:
     """Call PayMe generate-sale API.
     
@@ -84,17 +85,23 @@ def _payme_generate_sale(*, amount: float, product_name: str,
 
     payload = {
         'seller_payme_id': seller_payme_id or PAYME_SELLER_ID,
-        'sale_price': int(amount * 100),  # PayMe expects agorot (cents)
+        'sale_price': int(amount * 100),  # PayMe expects agorot
         'currency': 'ILS',
         'product_name': product_name,
         'sale_callback_url': sale_callback_url,
         'sale_return_url': sale_return_url,
+        'sale_type': 'J4',       # basic sale
+        'installments': 1,
         'language': 'he',
     }
     if buyer_key:
         payload['buyer_key'] = buyer_key
     if payer_email:
         payload['payer_email'] = payer_email
+    if payer_name:
+        parts = payer_name.strip().split(' ', 1)
+        payload['payer_first_name'] = parts[0]
+        payload['payer_last_name'] = parts[1] if len(parts) > 1 else ''
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     url = f'{PAYME_API_URL}/generate-sale'
     req = urllib.request.Request(url, data=data, headers={
@@ -102,13 +109,18 @@ def _payme_generate_sale(*, amount: float, product_name: str,
         'Accept': 'application/json',
     })
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = resp.read().decode('utf-8', errors='ignore')
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                body = resp.read().decode('utf-8', errors='ignore')
+        except urllib.error.HTTPError as http_err:
+            body = http_err.read().decode('utf-8', errors='ignore')
+            logger.error(f"[PAYME] HTTP {http_err.code}: {body[:500]}")
         result = json.loads(body)
         logger.info(f"[PAYME] generate-sale response: {body[:500]}")
         if result.get('status_code') == 0 or result.get('payme_status') == 'success':
             return {'ok': True, **result}
-        return {'ok': False, 'error': result.get('status_error_details') or body[:200], **result}
+        err = result.get('status_error_details') or result.get('payme_status') or body[:300]
+        return {'ok': False, 'error': err, **result}
     except Exception as e:
         logger.error(f"[PAYME] generate-sale error: {e}")
         return {'ok': False, 'error': str(e)}
@@ -171,12 +183,25 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
         base_url = str(request.base_url).rstrip('/')
         sale_callback_url = f'{base_url}/api/payment/webhook/payme'
         sale_return_url = f'{base_url}/web/payment/success?email={urllib.parse.quote(reg_email)}'
+        # Try to get contact name from pending registration
+        payer_name = ''
+        try:
+            _conn = get_db_connection()
+            _cur = _conn.cursor()
+            _cur.execute(sql_placeholder("SELECT contact_name FROM pending_registrations WHERE email=? ORDER BY id DESC LIMIT 1"), (reg_email,))
+            _row = _cur.fetchone()
+            if _row:
+                payer_name = str((_row['contact_name'] if isinstance(_row, dict) else _row[0]) or '').strip()
+            _conn.close()
+        except Exception:
+            pass
         sale_result = _payme_generate_sale(
             amount=float(total),
             product_name=f'SchoolPoints - {plan_name}',
             sale_callback_url=sale_callback_url,
             sale_return_url=sale_return_url,
             payer_email=reg_email,
+            payer_name=payer_name,
         )
         if sale_result.get('ok') and sale_result.get('sale_url'):
             return RedirectResponse(url=sale_result['sale_url'], status_code=302)
