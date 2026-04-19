@@ -389,7 +389,7 @@ def _auto_approve_free(email: str, plan: str, request: Request):
 # Backend charge endpoint — receives token from frontend, calls PayMe API
 # ---------------------------------------------------------------------------
 @router.post('/api/payment/charge')
-def api_payment_charge(payload: Dict[str, Any]) -> Dict[str, Any]:
+def api_payment_charge(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
     """Receive buyer_key from PayMe Hosted Fields tokenization, call generate-sale."""
     buyer_key = str(payload.get('buyer_key') or '').strip()
     email = str(payload.get('email') or '').strip()
@@ -406,8 +406,9 @@ def api_payment_charge(payload: Dict[str, Any]) -> Dict[str, Any]:
     plan_name = plan_data.get('display_name') or plan
 
     # Build callback URLs
-    sale_callback_url = ''  # IPN — PayMe will POST to this
-    sale_return_url = ''    # Redirect after payment (not used in hosted fields flow)
+    base_url = str(request.base_url).rstrip('/')  # e.g. https://schoolpoints.co.il
+    sale_callback_url = f'{base_url}/api/payment/webhook/payme'
+    sale_return_url = f'{base_url}/web/payment/success?email={urllib.parse.quote(email)}'
 
     result = _payme_generate_sale(
         buyer_key=buyer_key,
