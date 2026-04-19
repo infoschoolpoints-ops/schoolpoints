@@ -717,25 +717,6 @@ def public_web_shell(title: str, body_html: str, request: Request = None) -> str
           </div>
         </main>
       </div>
-    <div id="idle-modal" style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,0.5);align-items:center;justify-content:center;">
-      <div style="background:#fff;border-radius:16px;padding:28px 32px;max-width:360px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,0.25);">
-        <div style="font-size:18px;font-weight:700;margin-bottom:8px;">האם אתה עדיין כאן?</div>
-        <div style="font-size:14px;color:#666;margin-bottom:16px;">המערכת תתנתק בעוד <span id="idle-countdown">30</span> שניות</div>
-        <button onclick="window._idleReset()" style="padding:10px 28px;background:#2563eb;color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer;">המשך עבודה</button>
-      </div>
-    </div>
-    <script>
-    (function(){{
-      var IDLE=270000,WARN=30000,t1,t2,modal=document.getElementById('idle-modal'),span=document.getElementById('idle-countdown'),ci;
-      if(!modal)return;
-      function logout(){{var p=location.pathname;window.location.href=p.startsWith('/admin')?'/admin/logout':'/web/logout';}}
-      function showWarn(){{modal.style.display='flex';var s=WARN/1000;span.textContent=s;ci=setInterval(function(){{s--;span.textContent=s;if(s<=0){{clearInterval(ci);logout();}}}},1000);}}
-      function reset(){{modal.style.display='none';if(ci)clearInterval(ci);clearTimeout(t1);clearTimeout(t2);t1=setTimeout(showWarn,IDLE);t2=setTimeout(logout,IDLE+WARN);}}
-      window._idleReset=reset;
-      ['mousemove','keydown','click','scroll','touchstart'].forEach(function(e){{document.addEventListener(e,reset,{{passive:true}});}});
-      reset();
-    }})();
-    </script>
     </body>
     </html>
     """
