@@ -119,6 +119,7 @@ def _payme_generate_sale(*, amount: float, product_name: str,
         payload['payer_last_name'] = parts[1] if len(parts) > 1 else ''
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     url = f"{cfg['api_url']}/generate-sale"
+    logger.info(f"[PAYME] calling url={url} test_mode={cfg['test_mode']} seller_id_prefix={cfg['seller_id'][:10]}")
     req = urllib.request.Request(url, data=data, headers={
         'Content-Type': 'application/json',
         'Accept': 'application/json',
