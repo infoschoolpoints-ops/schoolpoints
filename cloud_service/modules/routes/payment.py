@@ -68,26 +68,33 @@ def _get_plan_details(plan_key: str) -> Dict[str, Any]:
         except: pass
 
 
-def _payme_generate_sale(*, buyer_key: str, amount: float, product_name: str,
+def _payme_generate_sale(*, amount: float, product_name: str,
                           sale_callback_url: str, sale_return_url: str,
+                          buyer_key: str = '',
+                          payer_email: str = '',
                           seller_payme_id: str = '') -> Dict[str, Any]:
-    """Call PayMe generate-sale API to charge a tokenized card.
+    """Call PayMe generate-sale API.
     
-    Returns dict with payme_sale_id, payme_transaction_id on success.
+    Without buyer_key: returns sale_url for redirect to PayMe hosted payment page.
+    With buyer_key: charges a tokenized card directly.
+    Returns dict with sale_url or payme_sale_id on success.
     """
     if not PAYME_LIVE:
         return {'ok': False, 'error': 'PayMe not configured'}
 
     payload = {
         'seller_payme_id': seller_payme_id or PAYME_SELLER_ID,
-        'sale_price': amount,
+        'sale_price': int(amount * 100),  # PayMe expects agorot (cents)
         'currency': 'ILS',
         'product_name': product_name,
         'sale_callback_url': sale_callback_url,
         'sale_return_url': sale_return_url,
-        'buyer_key': buyer_key,
         'language': 'he',
     }
+    if buyer_key:
+        payload['buyer_key'] = buyer_key
+    if payer_email:
+        payload['payer_email'] = payer_email
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
     url = f'{PAYME_API_URL}/generate-sale'
     req = urllib.request.Request(url, data=data, headers={
@@ -160,149 +167,30 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
     safe_plan_name = html_mod.escape(plan_name)
 
     if PAYME_LIVE:
-        # --- PayMe Hosted Fields ---
-        test_mode_js = 'true' if PAYME_TEST_MODE else 'false'
+        # --- PayMe Redirect Flow: generate sale_url server-side, redirect user ---
+        base_url = str(request.base_url).rstrip('/')
+        sale_callback_url = f'{base_url}/api/payment/webhook/payme'
+        sale_return_url = f'{base_url}/web/payment/success?email={urllib.parse.quote(reg_email)}'
+        sale_result = _payme_generate_sale(
+            amount=float(total),
+            product_name=f'SchoolPoints - {plan_name}',
+            sale_callback_url=sale_callback_url,
+            sale_return_url=sale_return_url,
+            payer_email=reg_email,
+        )
+        if sale_result.get('ok') and sale_result.get('sale_url'):
+            return RedirectResponse(url=sale_result['sale_url'], status_code=302)
+        # Fallback: show error + retry button
+        err_msg = html_mod.escape(sale_result.get('error') or 'שגיאה ביצירת עסקת תשלום')
         body = f"""
-        <style>
-          .pay-wrap {{ max-width:480px; margin:30px auto; }}
-          .pay-card {{ background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.15); border-radius:16px; padding:28px; backdrop-filter:blur(10px); }}
-          .pay-summary {{ text-align:center; margin-bottom:24px; }}
-          .pay-summary h2 {{ margin:0 0 8px; font-size:22px; }}
-          .pay-total {{ font-size:28px; font-weight:800; color:#2ecc71; margin:12px 0; }}
-          .pay-field {{ margin-bottom:16px; }}
-          .pay-field label {{ display:block; font-size:13px; opacity:.8; margin-bottom:6px; }}
-          .pay-field-box {{ background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.2); border-radius:8px; padding:12px; min-height:42px; transition: border-color .2s; }}
-          .pay-field-box.focused {{ border-color:#667eea; }}
-          .pay-row {{ display:flex; gap:12px; }}
-          .pay-row .pay-field {{ flex:1; }}
-          #payBtn {{ width:100%; padding:14px; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; border:none; border-radius:10px; font-size:18px; font-weight:700; cursor:pointer; transition: opacity .2s; }}
-          #payBtn:disabled {{ opacity:.6; cursor:not-allowed; }}
-          #payMsg {{ text-align:center; margin-top:12px; font-size:14px; min-height:20px; }}
-          .pay-secure {{ text-align:center; font-size:12px; opacity:.5; margin-top:16px; }}
-        </style>
-        <div class="pay-wrap"><div class="pay-card">
-          <div class="pay-summary">
-            <h2>תשלום מאובטח</h2>
-            <div style="opacity:.7;">{safe_plan_name} — {safe_email}</div>
-            <div class="pay-total">{price_line}</div>
-          </div>
-          <div class="pay-field">
-            <label>מספר כרטיס</label>
-            <div class="pay-field-box" id="card-number-container"></div>
-          </div>
-          <div class="pay-row">
-            <div class="pay-field">
-              <label>תוקף</label>
-              <div class="pay-field-box" id="card-expiry-container"></div>
-            </div>
-            <div class="pay-field">
-              <label>CVV</label>
-              <div class="pay-field-box" id="card-cvc-container"></div>
-            </div>
-          </div>
-          <button id="payBtn" disabled>שלם ₪{total}</button>
-          <div id="payMsg"></div>
-          <div class="pay-secure">🔒 מאובטח ע"י PayMe — PCI Level 1</div>
-        </div></div>
-
-        <script src="https://cdn.paymeservice.com/hf/v1/paymeFields.js"></script>
-        <script>
-        (function() {{
-          var apiKey = '{html_mod.escape(PAYME_API_KEY)}';
-          var testMode = {test_mode_js};
-          var btn = document.getElementById('payBtn');
-          var msg = document.getElementById('payMsg');
-          var instance = null;
-
-          PayMe.create(apiKey, {{ testMode: testMode, language: 'he' }})
-            .then(function(inst) {{
-              instance = inst;
-              var fields = inst.hostedFields();
-              var cardNumber = fields.create('cardNumber');
-              var expiry = fields.create('cardExpiration');
-              var cvc = fields.create('cvc');
-
-              cardNumber.mount('#card-number-container');
-              expiry.mount('#card-expiry-container');
-              cvc.mount('#card-cvc-container');
-
-              // Focus styling
-              ['card-number-container','card-expiry-container','card-cvc-container'].forEach(function(id){{
-                var el = document.getElementById(id);
-                el.addEventListener('focus', function(){{ el.classList.add('focused'); }}, true);
-                el.addEventListener('blur', function(){{ el.classList.remove('focused'); }}, true);
-              }});
-
-              btn.disabled = false;
-            }})
-            .catch(function(err) {{
-              msg.textContent = 'שגיאה באתחול טופס התשלום: ' + (err.message || err);
-              msg.style.color = '#e74c3c';
-            }});
-
-          btn.addEventListener('click', function() {{
-            btn.disabled = true;
-            btn.textContent = 'מעבד תשלום...';
-            msg.textContent = '';
-            msg.style.color = '';
-
-            var saleData = {{
-              payerFirstName: 'Customer',
-              payerLastName: '',
-              payerEmail: '{safe_email}',
-              payerPhone: '',
-              total: {{
-                label: '{safe_plan_name}',
-                amount: {{
-                  currency: 'ILS',
-                  value: '{total}.00'
-                }}
-              }}
-            }};
-
-            instance.tokenize(saleData)
-              .then(function(result) {{
-                // Send token to our backend
-                return fetch('/api/payment/charge', {{
-                  method: 'POST',
-                  headers: {{ 'Content-Type': 'application/json' }},
-                  body: JSON.stringify({{
-                    buyer_key: result.token,
-                    email: '{safe_email}',
-                    plan: '{safe_plan}',
-                    amount: {total}
-                  }})
-                }});
-              }})
-              .then(function(resp) {{ return resp.json(); }})
-              .then(function(data) {{
-                if (data.ok) {{
-                  var url = '/web/payment/success?email={safe_email}';
-                  if (data.tenant_id) url += '&tenant_id=' + encodeURIComponent(data.tenant_id);
-                  window.location.href = url;
-                }} else {{
-                  msg.textContent = data.error || data.detail || 'שגיאה בתשלום';
-                  msg.style.color = '#e74c3c';
-                  btn.disabled = false;
-                  btn.textContent = 'שלם ₪{total}';
-                }}
-              }})
-              .catch(function(err) {{
-                var errMsg = '';
-                if (err.validationError) {{
-                  var errs = err.errors || {{}};
-                  errMsg = Object.values(errs).join(', ') || 'נא למלא את כל השדות';
-                }} else {{
-                  errMsg = err.message || err.error || 'שגיאה בתשלום';
-                }}
-                msg.textContent = errMsg;
-                msg.style.color = '#e74c3c';
-                btn.disabled = false;
-                btn.textContent = 'שלם ₪{total}';
-              }});
-          }});
-        }})();
-        </script>
+        <div style="max-width:500px;margin:40px auto;text-align:center;background:rgba(255,255,255,.06);padding:30px;border-radius:15px;border:1px solid rgba(255,255,255,.15);">
+          <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+          <h2>שגיאה ביצירת תשלום</h2>
+          <p style="color:#e74c3c;">{err_msg}</p>
+          <p style="opacity:.7;font-size:14px;">מסלול: {safe_plan_name} | סכום: ₪{total}</p>
+          <a href="/web/payment?reg_email={safe_email}&plan={safe_plan}" style="display:inline-block;padding:12px 28px;background:#667eea;color:#fff;border-radius:8px;text-decoration:none;margin-top:12px;">נסה שוב</a>
+          <br/><a href="/web/register" style="opacity:.5;font-size:13px;margin-top:12px;display:inline-block;">חזרה להרשמה</a>
+        </div>
         """
     else:
         # --- Mock payment (no PayMe credentials) ---
@@ -333,7 +221,7 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
           </script>
         </div>
         """
-    return public_web_shell("תשלום", body, request=request)
+    return public_web_shell('תשלום', body, request=request)
 
 
 @router.get('/web/payment/success', response_class=HTMLResponse)
