@@ -98,6 +98,12 @@ def web_messages(request: Request):
                   <label style="display:block;font-weight:600;margin-bottom:3px;font-size:13px;color:#34495e;">תבנית הודעת בר/בת מצווה</label>
                   <input id="ns-bar-template" placeholder="מזל טוב לבר/בת המצווה של {name}!" style="width:100%;padding:8px;border:1px solid #ccd0d5;border-radius:6px;box-sizing:border-box;">
                 </div>
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid #e0e0e0;">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#34495e;margin-bottom:8px;"><input type="checkbox" id="ns-bday-private-enabled" style="width:16px;height:16px;"> הצג הודעה אישית לתלמיד בסריקת כרטיס ביום הולדתו (בנוסף / במקום טיקר)</label>
+                  <label style="display:block;font-weight:600;margin-bottom:3px;font-size:13px;color:#34495e;">תבנית הודעה אישית (ביום הולדת)</label>
+                  <input id="ns-bday-private-template" placeholder="🎂 יום הולדת שמח {name}!" style="width:100%;padding:8px;border:1px solid #ccd0d5;border-radius:6px;box-sizing:border-box;">
+                  <div style="font-size:11px;color:#888;margin-top:3px;">משתנים: {name} {class} {suffix}</div>
+                </div>
                 <button class="green" onclick="saveNewsSettings()" style="margin-top:10px;">שמור הגדרות</button>
             </div>
             <div class="card" style="padding:15px;">
@@ -299,7 +305,7 @@ def web_messages(request: Request):
         }
 
         async function loadNewsSettings() {
-            const keys = ['news_show_weekday','news_show_hebrew_date','news_show_parsha','news_show_holidays','news_show_birthdays','birthday_message_template','birthday_bar_mitzvah_template'];
+            const keys = ['news_show_weekday','news_show_hebrew_date','news_show_parsha','news_show_holidays','news_show_birthdays','birthday_message_template','birthday_bar_mitzvah_template','birthday_private_message_enabled','birthday_private_message_template'];
             for (const k of keys) {
                 try {
                     const r = await fetch('/api/settings/get/' + k);
@@ -307,6 +313,8 @@ def web_messages(request: Request):
                     const v = d.value;
                     if (k === 'birthday_message_template') { document.getElementById('ns-bday-template').value = v || ''; continue; }
                     if (k === 'birthday_bar_mitzvah_template') { document.getElementById('ns-bar-template').value = v || ''; continue; }
+                    if (k === 'birthday_private_message_template') { document.getElementById('ns-bday-private-template').value = v || ''; continue; }
+                    if (k === 'birthday_private_message_enabled') { document.getElementById('ns-bday-private-enabled').checked = (v === '1' || v === 'true' || v === true); continue; }
                     const map = {news_show_weekday:'ns-weekday',news_show_hebrew_date:'ns-hebrew-date',news_show_parsha:'ns-parsha',news_show_holidays:'ns-holidays',news_show_birthdays:'ns-birthdays'};
                     if (map[k]) document.getElementById(map[k]).checked = (v === '1' || v === 'true' || v === true);
                 } catch(e) {}
@@ -321,6 +329,8 @@ def web_messages(request: Request):
                 ['news_show_birthdays', document.getElementById('ns-birthdays').checked ? '1' : '0'],
                 ['birthday_message_template', document.getElementById('ns-bday-template').value],
                 ['birthday_bar_mitzvah_template', document.getElementById('ns-bar-template').value],
+                ['birthday_private_message_enabled', document.getElementById('ns-bday-private-enabled').checked ? '1' : '0'],
+                ['birthday_private_message_template', document.getElementById('ns-bday-private-template').value],
             ];
             for (const [k, v] of pairs) {
                 await fetch('/api/settings/save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({key: k, value: v})});

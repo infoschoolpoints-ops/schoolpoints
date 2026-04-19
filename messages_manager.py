@@ -526,8 +526,8 @@ class MessagesManager:
 
         def _open_birthday_settings_dialog():
             dlg = tk.Toplevel(tab.winfo_toplevel())
-            dlg.title("הגדרות ימי הולדת בטיקר")
-            dlg.geometry("620x420")
+            dlg.title("הגדרות ימי הולדת")
+            dlg.geometry("620x540")
             dlg.configure(bg='#ecf0f1')
             dlg.transient(tab.winfo_toplevel())
             dlg.grab_set()
@@ -586,6 +586,37 @@ class MessagesManager:
                 tk.Button(tok_frame2, text=label, command=lambda t=token: _ins_token_bar(t),
                           font=('Arial', 9), bg='#bdc3c7', fg='black', padx=8, pady=2).pack(side=tk.RIGHT, padx=3)
 
+            # --- הודעה אישית בעת סריקה ---
+            sep = tk.Frame(body, bg='#bdc3c7', height=1)
+            sep.pack(fill=tk.X, pady=(10, 8))
+            tk.Label(body, text=fix_rtl_text("הודעה אישית לתלמיד בסריקת כרטיס ביום הולדתו:"), font=('Arial', 10, 'bold'), bg='#ecf0f1', anchor='e').pack(anchor='e')
+
+            row_priv = tk.Frame(body, bg='#ecf0f1')
+            row_priv.pack(fill=tk.X, pady=(4, 2))
+            bday_priv_var = tk.BooleanVar(value=str(self.db.get_setting('birthday_private_message_enabled', '0')) == '1')
+            tk.Checkbutton(row_priv, text=fix_rtl_text("הפעל הודעה אישית (בנוסף / במקום טיקר)"), variable=bday_priv_var,
+                           font=('Arial', 10), bg='#ecf0f1', anchor='e').pack(side=tk.RIGHT)
+
+            tk.Label(body, text=fix_rtl_text("תבנית הודעה אישית:"), font=('Arial', 10), bg='#ecf0f1', anchor='e').pack(anchor='e', pady=(6, 2))
+            bday_priv_tmpl_var = tk.StringVar(value=str(self.db.get_setting('birthday_private_message_template', '') or '').strip())
+            bday_priv_entry = tk.Entry(body, textvariable=bday_priv_tmpl_var, font=('Arial', 10), width=60, justify='right')
+            bday_priv_entry.pack(fill=tk.X, pady=(0, 2))
+
+            tok_frame3 = tk.Frame(body, bg='#ecf0f1')
+            tok_frame3.pack(anchor='e', pady=(2, 6))
+            tk.Label(tok_frame3, text="הוסף:", font=('Arial', 9, 'bold'), bg='#ecf0f1').pack(side=tk.RIGHT, padx=(0, 6))
+
+            def _ins_token_priv(token):
+                try:
+                    bday_priv_entry.focus_set()
+                    bday_priv_entry.insert(tk.INSERT, token)
+                except Exception:
+                    bday_priv_tmpl_var.set(str(bday_priv_tmpl_var.get() or '') + token)
+
+            for label, token in [("שם", "{name}"), ("כיתה", "{class}"), ("תו/תה", "{suffix}")]:
+                tk.Button(tok_frame3, text=label, command=lambda t=token: _ins_token_priv(t),
+                          font=('Arial', 9), bg='#bdc3c7', fg='black', padx=8, pady=2).pack(side=tk.RIGHT, padx=3)
+
             # כפתורי שמירה/סגירה
             btn_frame = tk.Frame(dlg, bg='#ecf0f1')
             btn_frame.pack(fill=tk.X, padx=20, pady=15)
@@ -594,6 +625,8 @@ class MessagesManager:
                 try:
                     self.db.set_setting('birthday_message_template', bday_tmpl_var.get().strip())
                     self.db.set_setting('birthday_bar_mitzvah_template', bar_tmpl_var.get().strip())
+                    self.db.set_setting('birthday_private_message_enabled', '1' if bday_priv_var.get() else '0')
+                    self.db.set_setting('birthday_private_message_template', bday_priv_tmpl_var.get().strip())
                 except Exception:
                     pass
                 dlg.destroy()

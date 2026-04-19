@@ -3134,6 +3134,46 @@ class PublicStation:
         if student and student.get('private_message'):
             private_text = fix_rtl_text(normalize_ui_icons(f"💌 {student['private_message']}"))
 
+        # 3b. הודעת יום הולדת אישית (אם מופעל ויש יום הולדת היום)
+        try:
+            bday_private_enabled = str(self.db.get_setting('birthday_private_message_enabled', '0')) == '1'
+            if bday_private_enabled and student and jewish_calendar is not None and getattr(jewish_calendar, 'is_available', lambda: False)():
+                heb_parts = jewish_calendar.get_today_hebrew_date_parts()
+                if heb_parts:
+                    s_day = student.get('hebrew_birth_day')
+                    s_month = student.get('hebrew_birth_month')
+                    if s_day and s_month and int(s_day) == int(heb_parts['day']) and int(s_month) == int(heb_parts['month']):
+                        tmpl = str(self.db.get_setting('birthday_private_message_template', '') or '').strip()
+                        if not tmpl:
+                            tmpl = '🎂 יום הולדת שמח {name}!'
+                        fname = str(student.get('first_name') or '').strip()
+                        lname = str(student.get('last_name') or '').strip()
+                        cls = str(student.get('class_name') or '').strip()
+                        gender = str(student.get('gender') or '').strip().upper()
+                        name = f"{fname} {lname}".strip() or fname or lname
+                        birth_year = int(student.get('hebrew_birth_year') or 0)
+                        current_year = int(heb_parts.get('year') or 0)
+                        # בר/בת מצווה
+                        is_bar = birth_year > 0 and current_year > 0 and gender == 'M' and (current_year - birth_year) == 13
+                        is_bat = birth_year > 0 and current_year > 0 and gender == 'F' and (current_year - birth_year) == 12
+                        if is_bar:
+                            bar_tmpl = str(self.db.get_setting('birthday_bar_mitzvah_template', '') or '').strip()
+                            bday_msg = (bar_tmpl or '🎉 מזל טוב {name} לרגל בר המצווה!').replace('{name}', name).replace('{class}', cls).replace('{bar_bat}', 'בר המצווה שלו')
+                        elif is_bat:
+                            bar_tmpl = str(self.db.get_setting('birthday_bar_mitzvah_template', '') or '').strip()
+                            bday_msg = (bar_tmpl or '🎉 מזל טוב {name} לרגל בת המצווה!').replace('{name}', name).replace('{class}', cls).replace('{bar_bat}', 'בת המצווה שלה')
+                        else:
+                            suffix = 'תו' if gender == 'M' else ('תה' if gender == 'F' else 'תו')
+                            bday_msg = tmpl.replace('{name}', name).replace('{class}', cls).replace('{suffix}', suffix)
+                        bday_msg = fix_rtl_text(normalize_ui_icons(bday_msg))
+                        # שלב עם הודעה פרטית קיימת (אם יש)
+                        if private_text:
+                            private_text = bday_msg + "\n" + private_text
+                        else:
+                            private_text = bday_msg
+        except Exception:
+            pass
+
         # הצגת ההודעות – התנהגות שונה עבור template1 מול שאר המצבים
         if getattr(self, 'background_template', None) == 'template1':
             # ב-template1 נשמור רשימה באורך 4 עם חריצים קבועים:
