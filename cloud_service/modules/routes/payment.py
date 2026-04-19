@@ -34,15 +34,29 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # PayMe configuration (from environment variables)
 # ---------------------------------------------------------------------------
+def _payme_config():
+    """Read PayMe config dynamically so env var changes take effect without redeploy."""
+    seller_id = os.environ.get('PAYME_SELLER_ID', '').strip()
+    api_key = os.environ.get('PAYME_API_KEY', '').strip() or seller_id
+    test_mode = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
+    api_url = 'https://preprod.paymeservice.com/api' if test_mode else 'https://ng.payme.io/api'
+    return {
+        'seller_id': seller_id,
+        'api_key': api_key,
+        'test_mode': test_mode,
+        'api_url': api_url,
+        'form_ready': bool(api_key),
+        'charge_ready': bool(seller_id and api_key),
+    }
+
+# Module-level aliases (evaluated at import — kept for backward compat)
 PAYME_SELLER_ID = os.environ.get('PAYME_SELLER_ID', '').strip()
-# PayMe Israel uses a single NPL... code as both seller_payme_id and the JS SDK apiKey.
-# PAYME_API_KEY falls back to PAYME_SELLER_ID so only one env var is required.
 PAYME_API_KEY = os.environ.get('PAYME_API_KEY', '').strip() or PAYME_SELLER_ID
 PAYME_TEST_MODE = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
 PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://ng.payme.io/api'
-PAYME_FORM_READY = bool(PAYME_API_KEY)          # enough to show hosted fields form
-PAYME_CHARGE_READY = bool(PAYME_SELLER_ID and PAYME_API_KEY)  # enough to actually charge
-PAYME_LIVE = PAYME_FORM_READY                   # show real form when API key exists
+PAYME_FORM_READY = bool(PAYME_API_KEY)
+PAYME_CHARGE_READY = bool(PAYME_SELLER_ID and PAYME_API_KEY)
+PAYME_LIVE = PAYME_FORM_READY
 
 
 def _get_plan_details(plan_key: str) -> Dict[str, Any]:
@@ -80,11 +94,12 @@ def _payme_generate_sale(*, amount: float, product_name: str,
     With buyer_key: charges a tokenized card directly.
     Returns dict with sale_url or payme_sale_id on success.
     """
-    if not PAYME_LIVE:
+    cfg = _payme_config()
+    if not cfg['form_ready']:
         return {'ok': False, 'error': 'PayMe not configured'}
 
     payload = {
-        'seller_payme_id': seller_payme_id or PAYME_SELLER_ID,
+        'seller_payme_id': seller_payme_id or cfg['seller_id'],
         'sale_price': int(amount * 100),  # PayMe expects agorot
         'currency': 'ILS',
         'product_name': product_name,
@@ -103,7 +118,7 @@ def _payme_generate_sale(*, amount: float, product_name: str,
         payload['payer_first_name'] = parts[0]
         payload['payer_last_name'] = parts[1] if len(parts) > 1 else ''
     data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-    url = f'{PAYME_API_URL}/generate-sale'
+    url = f"{cfg['api_url']}/generate-sale"
     req = urllib.request.Request(url, data=data, headers={
         'Content-Type': 'application/json',
         'Accept': 'application/json',
@@ -178,7 +193,8 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
     safe_plan = html_mod.escape(plan)
     safe_plan_name = html_mod.escape(plan_name)
 
-    if PAYME_LIVE:
+    cfg = _payme_config()
+    if cfg['form_ready']:
         # --- PayMe Redirect Flow: generate sale_url server-side, redirect user ---
         base_url = str(request.base_url).rstrip('/')
         sale_callback_url = f'{base_url}/api/payment/webhook/payme'
