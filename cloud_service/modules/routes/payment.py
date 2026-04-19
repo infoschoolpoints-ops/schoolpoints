@@ -35,7 +35,9 @@ router = APIRouter()
 # PayMe configuration (from environment variables)
 # ---------------------------------------------------------------------------
 PAYME_SELLER_ID = os.environ.get('PAYME_SELLER_ID', '').strip()
-PAYME_API_KEY = os.environ.get('PAYME_API_KEY', '').strip()
+# PayMe Israel uses a single NPL... code as both seller_payme_id and the JS SDK apiKey.
+# PAYME_API_KEY falls back to PAYME_SELLER_ID so only one env var is required.
+PAYME_API_KEY = os.environ.get('PAYME_API_KEY', '').strip() or PAYME_SELLER_ID
 PAYME_TEST_MODE = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
 PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://ng.payme.io/api'
 PAYME_FORM_READY = bool(PAYME_API_KEY)          # enough to show hosted fields form
