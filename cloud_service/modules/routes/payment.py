@@ -39,7 +39,7 @@ def _payme_config():
     seller_id = os.environ.get('PAYME_SELLER_ID', '').strip()
     api_key = os.environ.get('PAYME_API_KEY', '').strip() or seller_id
     test_mode = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
-    api_url = 'https://preprod.paymeservice.com/api' if test_mode else 'https://ng.payme.io/api'
+    api_url = 'https://preprod.paymeservice.com/api' if test_mode else 'https://paymeservice.com/api'
     return {
         'seller_id': seller_id,
         'api_key': api_key,
@@ -53,7 +53,7 @@ def _payme_config():
 PAYME_SELLER_ID = os.environ.get('PAYME_SELLER_ID', '').strip()
 PAYME_API_KEY = os.environ.get('PAYME_API_KEY', '').strip() or PAYME_SELLER_ID
 PAYME_TEST_MODE = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
-PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://ng.payme.io/api'
+PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://paymeservice.com/api'
 PAYME_FORM_READY = bool(PAYME_API_KEY)
 PAYME_CHARGE_READY = bool(PAYME_SELLER_ID and PAYME_API_KEY)
 PAYME_LIVE = PAYME_FORM_READY
