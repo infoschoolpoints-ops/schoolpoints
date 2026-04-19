@@ -39,7 +39,7 @@ def _payme_config():
     seller_id = os.environ.get('PAYME_SELLER_ID', '').strip()
     api_key = os.environ.get('PAYME_API_KEY', '').strip() or seller_id
     test_mode = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
-    api_url = 'https://preprod.paymeservice.com/api' if test_mode else 'https://paymeservice.com/api'
+    api_url = 'https://preprod.paymeservice.com/api' if test_mode else 'https://payme.io/api'
     return {
         'seller_id': seller_id,
         'api_key': api_key,
@@ -53,7 +53,7 @@ def _payme_config():
 PAYME_SELLER_ID = os.environ.get('PAYME_SELLER_ID', '').strip()
 PAYME_API_KEY = os.environ.get('PAYME_API_KEY', '').strip() or PAYME_SELLER_ID
 PAYME_TEST_MODE = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
-PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://paymeservice.com/api'
+PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://payme.io/api'
 PAYME_FORM_READY = bool(PAYME_API_KEY)
 PAYME_CHARGE_READY = bool(PAYME_SELLER_ID and PAYME_API_KEY)
 PAYME_LIVE = PAYME_FORM_READY
@@ -124,19 +124,24 @@ def _payme_generate_sale(*, amount: float, product_name: str,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
     })
+    http_status = None
     try:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
+                http_status = resp.status
                 body = resp.read().decode('utf-8', errors='ignore')
         except urllib.error.HTTPError as http_err:
+            http_status = http_err.code
             body = http_err.read().decode('utf-8', errors='ignore')
             logger.error(f"[PAYME] HTTP {http_err.code}: {body[:500]}")
+        logger.info(f"[PAYME] HTTP {http_status} body={body[:500]!r}")
+        if not body.strip():
+            return {'ok': False, 'error': f"[HTTP {http_status}] empty response from {url}"}
         result = json.loads(body)
-        logger.info(f"[PAYME] generate-sale response: {body[:500]}")
         if result.get('status_code') == 0 or result.get('payme_status') == 'success':
             return {'ok': True, **result}
         err = result.get('status_error_details') or result.get('payme_status') or body[:300]
-        return {'ok': False, 'error': err, **result}
+        return {'ok': False, 'error': f"[HTTP {http_status}] {err}", **result}
     except Exception as e:
         logger.error(f"[PAYME] generate-sale error: {e}")
         return {'ok': False, 'error': f"[url={url}] {e}"}
