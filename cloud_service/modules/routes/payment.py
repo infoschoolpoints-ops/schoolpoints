@@ -39,7 +39,10 @@ def _payme_config():
     seller_id = os.environ.get('PAYME_SELLER_ID', '').strip()
     api_key = os.environ.get('PAYME_API_KEY', '').strip() or seller_id
     test_mode = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
-    api_url = 'https://preprod.paymeservice.com/api' if test_mode else 'https://paymeservice.com/api'
+    # PayMe Israel: preprod for sandbox, paymeservice.com for production.
+    # The prod endpoint redirects POST to payme.io (international) — PayMe provides
+    # a direct prod URL upon account approval. Until then, both use preprod for testing.
+    api_url = 'https://preprod.paymeservice.com/api'
     return {
         'seller_id': seller_id,
         'api_key': api_key,
