@@ -262,6 +262,63 @@ class ToggleSwitch(tk.Frame):
             except Exception:
                 pass
 
+def _sync_license_from_cloud_settings(db_path: str, base_dir: str, tenant_id: str = '') -> bool:
+    """קורא _cloud_license מטבלת settings במסד הנתונים המקומי (שכבר הורד מהענן),
+    מייבא אותו מקומית (רושם את המחשב הנוכחי), ושומר את הגרסה המעודכנת בחזרה ב-settings
+    כדי שהסנכרון הבא יעדכן את הענן עם המחשב החדש."""
+    import sqlite3 as _sqlite3, json as _json
+    try:
+        from license_manager import import_license_from_cloud, export_license_for_cloud
+    except Exception:
+        return False
+    try:
+        conn = _sqlite3.connect(db_path, timeout=10)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM settings WHERE key='_cloud_license' LIMIT 1")
+            row = cur.fetchone()
+            if not row or not row[0]:
+                print("[LICENSE-SYNC] no _cloud_license in settings, skipping")
+                return False
+            cloud_lic = _json.loads(str(row[0]))
+        finally:
+            conn.close()
+
+        if not isinstance(cloud_lic, dict):
+            return False
+        lic_type = str(cloud_lic.get('license_type') or 'trial').strip().lower()
+        if lic_type == 'trial':
+            print("[LICENSE-SYNC] cloud license is trial, skipping")
+            return False
+
+        print(f"[LICENSE-SYNC] importing cloud license type={lic_type}")
+        ok = import_license_from_cloud(base_dir, dict(cloud_lic))
+        if ok:
+            # כתוב את הגרסה המעודכנת (עם המחשב הנוכחי) חזרה ל-settings
+            try:
+                from license_manager import export_license_for_cloud as _exp
+                updated_lic = _exp(base_dir)
+                if isinstance(updated_lic, dict):
+                    conn2 = _sqlite3.connect(db_path, timeout=10)
+                    try:
+                        cur2 = conn2.cursor()
+                        cur2.execute(
+                            "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('_cloud_license', ?, CURRENT_TIMESTAMP)",
+                            (_json.dumps(updated_lic, ensure_ascii=False),)
+                        )
+                        conn2.commit()
+                        print(f"[LICENSE-SYNC] wrote updated license back to settings (machines={len(updated_lic.get('machines') or [])})")
+                    finally:
+                        conn2.close()
+            except Exception as exc:
+                print(f"[LICENSE-SYNC] write-back warning: {exc}")
+        print(f"[LICENSE-SYNC] import result: {ok}")
+        return ok
+    except Exception as exc:
+        print(f"[LICENSE-SYNC] error: {exc}")
+        return False
+
+
 class AdminStation:
     def __init__(self, root, license_manager=None):
         self.root = root
@@ -439,6 +496,33 @@ class AdminStation:
             self.license_manager = LicenseManager(self.base_dir, "admin")
         except Exception as e:
             print(f"[ADMIN] Error in _init_license_manager: {e}")
+        # אם מצב ענן ויש רשיון שאינו trial — שמור אותו ב-settings לסנכרון לענן
+        try:
+            lm = getattr(self, 'license_manager', None)
+            if lm is None:
+                return
+            lic_type = str(getattr(lm, 'license_type', 'trial') or 'trial').strip().lower()
+            if lic_type == 'trial':
+                return
+            cfg = getattr(self, 'config', None) or {}
+            if not (str(cfg.get('deployment_mode') or '').strip() in ('cloud', 'hybrid') or
+                    str(cfg.get('sync_tenant_id') or '').strip()):
+                return
+            db = getattr(self, 'db', None)
+            if not db:
+                return
+            import json as _json
+            from license_manager import export_license_for_cloud as _exp
+            lic_data = _exp(self.base_dir)
+            if not isinstance(lic_data, dict):
+                return
+            new_str = _json.dumps(lic_data, sort_keys=True, ensure_ascii=False)
+            existing_str = str(db.get_setting('_cloud_license') or '')
+            if existing_str.strip() != new_str.strip():
+                db.set_setting('_cloud_license', new_str)
+                print(f"[LICENSE-SYNC] pushed local license to settings for cloud (type={lic_type})")
+        except Exception as exc:
+            print(f"[LICENSE-SYNC] _init push warning: {exc}")
 
     def _init_database(self):
         """אתחול מסד נתונים"""
@@ -737,6 +821,93 @@ class AdminStation:
             print(f"[ADMIN] Failed to start local sync server: {e}")
             pass
 
+    def _update_cloud_sync_indicator(self) -> None:
+        """מעדכן את האינדיקטור בכותרת עם מצב הסנכרון עם הענן."""
+        try:
+            lbl = getattr(self, '_cloud_sync_lbl', None)
+            if lbl is None:
+                return
+            cfg = self.load_app_config() or {}
+            mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
+            if mode not in ('hybrid', 'cloud'):
+                lbl.configure(text='', fg='#2ecc71')
+                try:
+                    self.root.after(30000, self._update_cloud_sync_indicator)
+                except Exception:
+                    pass
+                return
+            # מצב ענן — בדוק מתי הסנכרון האחרון
+            last_ts = getattr(self, '_cloud_last_sync_ts', None)
+            is_syncing = getattr(self, '_cloud_syncing', False)
+            if is_syncing:
+                lbl.configure(text='🔄 מסתנכרן עם הענן...', fg='#f39c12')
+            elif last_ts is None:
+                lbl.configure(text='☁ ענן: ממתין לסנכרון ראשון', fg='#f39c12')
+            else:
+                import time as _t
+                elapsed = int(_t.time() - last_ts)
+                if elapsed < 90:
+                    lbl.configure(text='✓ ענן: מסונכרן', fg='#2ecc71')
+                elif elapsed < 600:
+                    lbl.configure(text=f'☁ ענן: לפני {elapsed // 60} דק׳  (לחץ לסנכרן)', fg='#bdc3c7')
+                else:
+                    mins = elapsed // 60
+                    lbl.configure(text=f'⚠ ענן: לא סונכרן {mins} דק׳  (לחץ לסנכרן)', fg='#e67e22')
+        except Exception:
+            pass
+        try:
+            self.root.after(15000, self._update_cloud_sync_indicator)
+        except Exception:
+            pass
+
+    def _manual_cloud_sync(self) -> None:
+        """סנכרון ענן ידני מהאינדיקטור."""
+        try:
+            cfg = self.load_app_config() or {}
+            mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
+            if mode not in ('hybrid', 'cloud'):
+                return
+        except Exception:
+            return
+
+        if getattr(self, '_cloud_syncing', False):
+            return
+
+        import threading, time as _t
+        import sync_agent
+
+        def _run():
+            try:
+                self._cloud_syncing = True
+                try:
+                    lbl = getattr(self, '_cloud_sync_lbl', None)
+                    if lbl:
+                        self.root.after(0, lambda: lbl.configure(text='🔄 מסתנכרן...', fg='#f39c12'))
+                except Exception:
+                    pass
+                cfg2 = self.load_app_config() or {}
+                push_url = str(cfg2.get('sync_push_url') or '').strip()
+                api_key = str(cfg2.get('sync_api_key') or '').strip()
+                tenant_id = str(cfg2.get('sync_tenant_id') or '').strip()
+                station_id = str(cfg2.get('sync_station_id') or '').strip()
+                if push_url and api_key and tenant_id:
+                    db_path = getattr(self.db, 'db_path', None)
+                    if db_path:
+                        try:
+                            sync_agent.run_once(db_path, push_url, api_key=api_key,
+                                                tenant_id=tenant_id, station_id=station_id)
+                        except Exception:
+                            pass
+                        self._cloud_last_sync_ts = _t.time()
+            finally:
+                self._cloud_syncing = False
+                try:
+                    self.root.after(0, self._update_cloud_sync_indicator)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def _sync_pull_on_startup(self) -> None:
         """שאיבת נתונים חדשים מהשרת מיד בעליית התוכנה — כדי שהטבלה תציג נתונים עדכניים"""
         try:
@@ -817,6 +988,11 @@ class AdminStation:
                     try:
                         from database import Database as _DB
                         _DB.invalidate_card_cache()
+                    except Exception:
+                        pass
+                    self._cloud_last_sync_ts = time.time()
+                    try:
+                        self.root.after(0, self._update_cloud_sync_indicator)
                     except Exception:
                         pass
                 else:
@@ -1515,6 +1691,15 @@ class AdminStation:
             anchor='w'
         )
         self.license_header_label.pack(side=tk.LEFT, padx=10, pady=(0, 2))
+
+        # אינדיקטור סנכרון ענן — מוצג רק אם deployment_mode=hybrid/cloud
+        self._cloud_sync_lbl = tk.Label(
+            sub_header, text='', font=('Arial', 9),
+            bg='#2c3e50', fg='#2ecc71', anchor='e', cursor='hand2'
+        )
+        self._cloud_sync_lbl.pack(side=tk.RIGHT, padx=10, pady=(0, 2))
+        self._cloud_sync_lbl.bind('<Button-1>', lambda e: self._manual_cloud_sync())
+        self._update_cloud_sync_indicator()
         
         # פאנל כפתורים עליון - קומפקטי יותר
         button_frame = tk.Frame(self.root, bg='#f0f0f0', pady=5)
@@ -9635,7 +9820,19 @@ class AdminStation:
             if isinstance(local_cfg, dict):
                 shared_folder = local_cfg.get('shared_folder') or local_cfg.get('network_root')
 
-            if shared_folder and os.path.isdir(shared_folder):
+            def _is_dir_with_timeout(path, timeout=3.0):
+                result = [False]
+                def _check():
+                    try:
+                        result[0] = os.path.isdir(path)
+                    except Exception:
+                        result[0] = False
+                t = threading.Thread(target=_check, daemon=True)
+                t.start()
+                t.join(timeout)
+                return result[0]
+
+            if shared_folder and _is_dir_with_timeout(shared_folder):
                 shared_config_path = os.path.join(shared_folder, 'config.json')
                 shared_cfg = None
 
@@ -9695,7 +9892,7 @@ class AdminStation:
             if isinstance(local_cfg, dict):
                 shared_folder = local_cfg.get('shared_folder') or local_cfg.get('network_root')
 
-            if shared_folder and os.path.isdir(shared_folder):
+            if shared_folder and AdminStation._isdir_safe(shared_folder):
                 shared_config_path = os.path.join(shared_folder, 'config.json')
                 try:
                     os.makedirs(shared_folder, exist_ok=True)
@@ -9741,7 +9938,7 @@ class AdminStation:
             if isinstance(local_cfg, dict):
                 shared_folder = local_cfg.get('shared_folder') or local_cfg.get('network_root')
 
-            if shared_folder and os.path.isdir(shared_folder):
+            if shared_folder and AdminStation._isdir_safe(shared_folder):
                 shared_config_path = os.path.join(shared_folder, 'config.json')
                 shared_cfg = None
 
@@ -9806,7 +10003,7 @@ class AdminStation:
             if isinstance(local_cfg, dict):
                 shared_folder = local_cfg.get('shared_folder') or local_cfg.get('network_root')
 
-            if shared_folder and os.path.isdir(shared_folder):
+            if shared_folder and AdminStation._isdir_safe(shared_folder):
                 shared_config_path = os.path.join(shared_folder, 'config.json')
                 try:
                     os.makedirs(shared_folder, exist_ok=True)
@@ -9889,11 +10086,666 @@ class AdminStation:
             return False
         return result[0]
 
+    def _do_cloud_initial_sync(self, tenant_id: str, api_key: str, push_url: str,
+                               set_status=None, parent_win=None) -> None:
+        """
+        ביצוע סנכרון ראשוני מול הענן (pull/push snapshot לפי מצב הנתונים).
+        set_status: callable(str) לעדכון UI, או None.
+        parent_win: חלון הורה לdialog התנגשות, או None.
+        """
+        import threading, socket as _socket
+        try:
+            import urllib.request, urllib.parse, json
+        except Exception:
+            return
+
+        def _status(msg: str) -> None:
+            try:
+                if callable(set_status):
+                    set_status(msg)
+            except Exception:
+                pass
+
+        def _verify(tid, key, purl):
+            try:
+                import urllib.error
+            except Exception:
+                return False, 'חסרה תמיכה ברשת', {}
+            base = purl
+            if base.endswith('/sync/push'):
+                base = base[:-len('/sync/push')]
+            url = base.rstrip('/') + '/sync/status?tenant_id=' + urllib.parse.quote(tid)
+            req = urllib.request.Request(url, headers={'Accept': 'application/json', 'api-key': key})
+            try:
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
+                if isinstance(data, dict) and data.get('ok'):
+                    return True, '✓', data
+                return False, 'השרת לא אישר', {}
+            except Exception as e:
+                return False, str(e), {}
+
+        def _run():
+            tid = str(tenant_id or '').strip()
+            key = str(api_key or '').strip()
+            purl = str(push_url or '').strip()
+            print(f"[CLOUD-SYNC] start: tid={tid}, key={'***' if key else '(empty)'}, push_url={purl}")
+            if not (tid and key and purl):
+                _status('חסרים פרטי חיבור לסנכרון.')
+                return
+
+            _status('בודק חיבור לענן...')
+            ok, msg, cloud_info = _verify(tid, key, purl)
+            print(f"[CLOUD-SYNC] verify ok={ok}, msg={msg}")
+            if not ok:
+                _status(f"שגיאת חיבור: {msg}")
+                return
+
+            # --- הבטח שה-DB מאותחל (wizard רץ לפני init_database) ---
+            _db_obj = getattr(self, 'db', None)
+            if _db_obj is None:
+                try:
+                    print('[CLOUD-SYNC] self.db not ready — initializing DB now')
+                    self._init_database_immediate()
+                    _db_obj = getattr(self, 'db', None)
+                except Exception as _dbi_err:
+                    print(f'[CLOUD-SYNC] DB init failed: {_dbi_err}')
+            # fallback path if DB still not available
+            if _db_obj:
+                _db_path = _db_obj.db_path
+            else:
+                _user_root = (
+                    os.environ.get('LOCALAPPDATA') or
+                    os.environ.get('PROGRAMDATA') or
+                    self.base_dir
+                )
+                _db_path = os.path.join(_user_root, 'SchoolPoints', 'school_points.db')
+                try:
+                    os.makedirs(os.path.dirname(_db_path), exist_ok=True)
+                except Exception:
+                    pass
+                print(f'[CLOUD-SYNC] using fallback db_path={_db_path}')
+
+            local_teachers = 0
+            local_students = 0
+            try:
+                import sqlite3 as _sqlite3_cs
+                _c = _sqlite3_cs.connect(_db_path, timeout=5)
+                try:
+                    try:
+                        local_teachers = int(_c.execute('SELECT COUNT(*) FROM teachers').fetchone()[0] or 0)
+                    except Exception:
+                        pass
+                    try:
+                        local_students = int(_c.execute('SELECT COUNT(*) FROM students').fetchone()[0] or 0)
+                    except Exception:
+                        pass
+                finally:
+                    _c.close()
+            except Exception:
+                pass
+
+            cloud_teachers = int(cloud_info.get('teachers_count') or 0)
+            cloud_students = int(cloud_info.get('students_count') or 0)
+            print(f"[CLOUD-SYNC] local: {local_teachers}T/{local_students}S, cloud: {cloud_teachers}T/{cloud_students}S")
+
+            forced_action = ''
+            if (local_teachers > 0 or local_students > 0) and (cloud_teachers > 0 or cloud_students > 0):
+                try:
+                    conflict_msg = (
+                        "נמצאו נתונים גם במחשב וגם בענן.\n\n"
+                        f"מחשב: {local_teachers} מורים, {local_students} תלמידים\n"
+                        f"ענן: {cloud_teachers} מורים, {cloud_students} תלמידים\n\n"
+                        "כן = לדרוס את הענן (להעלות נתונים מהמחשב)\n"
+                        "לא = לדרוס את המחשב (להוריד נתונים מהענן)\n"
+                        "ביטול = עצירה ללא שינוי"
+                    )
+                    choice = messagebox.askyesnocancel(
+                        'התנגשות נתונים',
+                        fix_rtl_text(conflict_msg),
+                        parent=parent_win or self.root
+                    )
+                except Exception:
+                    choice = None
+                if choice is None:
+                    _status('בוטל ע"י המשתמש.')
+                    return
+                forced_action = 'push' if choice else 'pull'
+
+            if forced_action == 'push':
+                should_push = True
+                should_pull = False
+            elif forced_action == 'pull':
+                should_push = False
+                should_pull = True
+            else:
+                should_push = (cloud_teachers == 0 and cloud_students == 0 and (local_teachers > 0 or local_students > 0))
+                should_pull = (local_teachers == 0 and local_students == 0 and (cloud_teachers > 0 or cloud_students > 0))
+
+            try:
+                import sync_agent
+            except Exception:
+                _status('חסר מודול סנכרון (sync_agent).')
+                return
+
+            snapshot_url = purl
+            if snapshot_url.endswith('/sync/push'):
+                snapshot_url = snapshot_url[:-len('/sync/push')] + '/sync/snapshot'
+            else:
+                snapshot_url = snapshot_url.rstrip('/') + '/sync/snapshot'
+
+            if should_push:
+                _status('שולח נתונים מלאים לענן...')
+                try:
+                    conn = sync_agent._connect(_db_path)
+                    try:
+                        snap = sync_agent.build_snapshot(conn)
+                    finally:
+                        conn.close()
+                except Exception:
+                    snap = {}
+                push_ok = False
+                try:
+                    push_ok = bool(sync_agent.push_snapshot2(snapshot_url, snap, api_key=key, tenant_id=tid, station_id=_socket.gethostname()))
+                except Exception:
+                    pass
+                if not push_ok:
+                    try:
+                        push_ok = bool(sync_agent.push_snapshot(snapshot_url, snap, api_key=key, tenant_id=tid, station_id=_socket.gethostname()))
+                    except Exception:
+                        pass
+                _status('הנתונים נשלחו לענן בהצלחה.' if push_ok else 'שליחת הנתונים נכשלה.')
+                return
+
+            print(f"[CLOUD-SYNC] should_push={should_push}, should_pull={should_pull}")
+
+            if should_pull or (local_teachers == 0 and local_students == 0):
+                _status('טוען נתונים מלאים מהענן...')
+                print(f"[CLOUD-SYNC] pull_snapshot from {snapshot_url} tenant_id={tid}")
+                try:
+                    resp = sync_agent.pull_snapshot(snapshot_url, api_key=key, tenant_id=tid)
+                except Exception as exc:
+                    print(f"[CLOUD-SYNC] pull_snapshot exception: {exc}")
+                    resp = None
+                if isinstance(resp, dict) and resp.get('ok'):
+                    snap_tables = resp.get('snapshot', {})
+                    snap_summary = {k: len(v) for k, v in snap_tables.items() if isinstance(v, list)} if isinstance(snap_tables, dict) else {}
+                    print(f"[CLOUD-SYNC] snapshot received: {snap_summary}")
+                    try:
+                        conn = sync_agent._connect(_db_path)
+                        try:
+                            sync_agent._ensure_sync_state(conn)
+                            applied = sync_agent.apply_snapshot(conn, resp)
+                            print(f"[CLOUD-SYNC] apply_snapshot result: {applied}")
+                            last_id = resp.get('last_event_id') or resp.get('last_change_id')
+                            if last_id is not None:
+                                sync_agent._set_sync_state(conn, 'pull_since_id', str(last_id))
+                            # סמן שה-bootstrap כבר בוצע — יימנע דחיפת DB ריק לענן
+                            sync_agent._set_sync_state(conn, 'bootstrap_snapshot_done', '1')
+                            sync_agent._set_sync_state(conn, 'last_synced_tenant_id', tid)
+                        finally:
+                            conn.close()
+                        total_rows = sum(snap_summary.values()) if snap_summary else 0
+                        _status(f'✓ הנתונים הוטענו מהענן ({total_rows} רשומות). מעדכן רשיון...')
+                        # ייבוא רשיון מהענן מתוך טבלת settings
+                        _sync_license_from_cloud_settings(_db_path, self.base_dir, tid)
+                        _status(f'✓ הנתונים והרשיון הוטענו מהענן בהצלחה ({total_rows} רשומות).')
+                        return
+                    except Exception as exc:
+                        print(f"[CLOUD-SYNC] apply_snapshot exception: {exc}")
+                        import traceback; traceback.print_exc()
+                else:
+                    print(f"[CLOUD-SYNC] pull_snapshot returned: {type(resp)} ok={resp.get('ok') if isinstance(resp, dict) else 'N/A'}")
+                _status('טעינת snapshot נכשלה. מנסה סנכרון רגיל...')
+
+            _status('מבצע סנכרון רגיל...')
+            try:
+                pull_url = sync_agent._pull_url_from_push(purl, {})
+            except Exception:
+                pull_url = ''
+            print(f"[CLOUD-SYNC] regular sync: pull_url={pull_url}")
+            pull_ok = False
+            if pull_url:
+                try:
+                    conn = sync_agent._connect(self.db.db_path)
+                    try:
+                        sync_agent._ensure_sync_state(conn)
+                        since_id_s = sync_agent._get_sync_state(conn, 'pull_since_id', '0')
+                        since_id = int(str(since_id_s or '0').strip() or '0')
+                        resp = sync_agent.pull_changes(pull_url, api_key=key, tenant_id=tid, since_id=since_id)
+                        if isinstance(resp, dict) and resp.get('ok'):
+                            items = resp.get('items') or []
+                            if isinstance(items, list):
+                                sync_agent.apply_pull_events(conn, items)
+                            next_id = int(resp.get('next_since_id') or since_id)
+                            if next_id != since_id:
+                                sync_agent._set_sync_state(conn, 'pull_since_id', str(next_id))
+                            pull_ok = True
+                            print(f"[CLOUD-SYNC] pull_changes OK items={len(items)}")
+                        else:
+                            print(f"[CLOUD-SYNC] pull_changes failed: {resp}")
+                    finally:
+                        conn.close()
+                except Exception as exc:
+                    print(f"[CLOUD-SYNC] pull_changes exception: {exc}")
+                    pull_ok = False
+            push_ok = False
+            try:
+                push_ok = bool(sync_agent.run_once(self.db.db_path, purl, api_key=key, tenant_id=tid, station_id=_socket.gethostname()))
+            except Exception as exc:
+                print(f"[CLOUD-SYNC] push exception: {exc}")
+            print(f"[CLOUD-SYNC] regular sync done: pull_ok={pull_ok}, push_ok={push_ok}")
+            if pull_ok or push_ok:
+                _status('✓ סנכרון רגיל הסתיים בהצלחה.')
+            else:
+                _status('סנכרון רגיל נכשל. בדוק יומן.')
+
+        import threading
+        done_event = threading.Event()
+        _orig_status = set_status
+        def _wrapped_run():
+            try:
+                _run()
+            finally:
+                done_event.set()
+        t = threading.Thread(target=_wrapped_run, daemon=True)
+        t.start()
+        return done_event  # caller can .wait() if needed
+
+    def _open_cloud_pairing_wizard(self) -> bool:
+        """
+        Dialog חיבור ענן בהתקנה ראשונה.
+        Flow:
+          1. POST /api/device/pair/start  → {code, verify_url}
+          2. פתיחת דפדפן ל-verify_url (המשתמש מתחבר ולוחץ אישור)
+          3. Polling GET /api/device/pair/poll?code=... עד status='ready'
+          4. שמירת tenant_id/api_key/push_url + סנכרון ראשוני
+        מחזיר True אם הצליח, False אם בוטל/נכשל.
+        """
+        import threading, time, webbrowser, queue as _queue
+        try:
+            import urllib.request, urllib.parse, json
+        except Exception:
+            return False
+
+        connected = {'ok': False}
+        poll_active = {'running': True}
+        pair_info = {'code': '', 'verify_url': ''}
+        _ui_q = _queue.Queue()
+
+        def _base_url() -> str:
+            try:
+                cfg0 = self.load_app_config() or {}
+                b = str(cfg0.get('cloud_base_url') or '').strip().rstrip('/')
+            except Exception:
+                b = ''
+            return b or 'https://schoolpoints.co.il'
+
+        def _save_pending(code, verify_url):
+            try:
+                cfg0 = self.load_app_config() or {}
+                cfg0['_pending_pair_code'] = code
+                cfg0['_pending_pair_verify_url'] = verify_url
+                self.save_app_config(cfg0)
+            except Exception:
+                pass
+
+        def _clear_pending():
+            try:
+                cfg0 = self.load_app_config() or {}
+                cfg0.pop('_pending_pair_code', None)
+                cfg0.pop('_pending_pair_verify_url', None)
+                self.save_app_config(cfg0)
+            except Exception:
+                pass
+
+        def _get_pending():
+            try:
+                cfg0 = self.load_app_config() or {}
+                c = str(cfg0.get('_pending_pair_code') or '').strip()
+                v = str(cfg0.get('_pending_pair_verify_url') or '').strip()
+                return (c, v) if c and v else (None, None)
+            except Exception:
+                return (None, None)
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("חיבור לחשבון ענן")
+        dlg.configure(bg='#2c3e50')
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
+        try:
+            dlg.geometry("540x400")
+        except Exception:
+            pass
+
+        # --- thread-safe UI update pump ---
+        def _safe_ui(func):
+            """שולח UI update ל-queue — thread-safe."""
+            _ui_q.put(func)
+
+        def _pump_ui_queue():
+            """נקרא כל 80ms ב-main thread — מבצע את כל ה-UI updates שהצטברו."""
+            try:
+                for _ in range(20):
+                    fn = _ui_q.get_nowait()
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+            except _queue.Empty:
+                pass
+            except Exception:
+                pass
+            try:
+                dlg.after(80, _pump_ui_queue)
+            except Exception:
+                pass
+
+        dlg.after(80, _pump_ui_queue)
+        # --- end pump ---
+
+        tk.Label(dlg, text="🌐  חיבור לחשבון ענן", font=('Arial', 15, 'bold'),
+                 bg='#2c3e50', fg='#ecf0f1').pack(pady=(18, 4))
+        tk.Label(dlg,
+                 text="לחץ 'התחבר לענן', היכנס לחשבון הענן בדפדפן ואשר את חיבור העמדה.\n"
+                      "התוכנה תסונכרן אוטומטית עם כל הנתונים שבענן.",
+                 font=('Arial', 10), bg='#2c3e50', fg='#bdc3c7',
+                 justify='center', wraplength=460).pack(pady=(0, 6))
+
+        code_frame = tk.Frame(dlg, bg='#1a252f', bd=0, relief='flat')
+        code_frame.pack(fill='x', padx=40, pady=(0, 6))
+        code_lbl = tk.Label(code_frame, text="", font=('Courier New', 22, 'bold'),
+                            bg='#1a252f', fg='#f39c12', pady=6)
+        code_lbl.pack()
+        code_hint = tk.Label(code_frame, text="", font=('Arial', 9),
+                             bg='#1a252f', fg='#7f8c8d')
+        code_hint.pack(pady=(0, 4))
+
+        status_lbl = tk.Label(dlg, text="לחץ על הכפתור הכחול להתחלה", font=('Arial', 10),
+                              bg='#2c3e50', fg='#bdc3c7', wraplength=460, justify='center')
+        status_lbl.pack(pady=(0, 10))
+
+        btn_frame = tk.Frame(dlg, bg='#2c3e50')
+        btn_frame.pack()
+
+        open_btn_ref = [None]
+        reopen_btn_ref = [None]
+
+        def _show_code_ui(code, verify_url):
+            _safe_ui(lambda: code_lbl.configure(text=code))
+            _safe_ui(lambda: code_hint.configure(text="הקוד שיש לאשר בדפדפן"))
+            _safe_ui(lambda: status_lbl.configure(
+                text="הדפדפן נפתח. היכנס לחשבון הענן ואשר את חיבור העמדה.\nממתין לאישור...", fg='#f39c12'))
+            _safe_ui(lambda: reopen_btn_ref[0].configure(state='normal') if reopen_btn_ref[0] else None)
+
+        def _start_pairing():
+            try:
+                open_btn_ref[0].configure(state='disabled')
+            except Exception:
+                pass
+            status_lbl.configure(text="יוצר קוד חיבור...", fg='#f39c12')
+            dlg.update_idletasks()
+
+            def _do_start():
+                base = _base_url()
+                start_url = base.rstrip('/') + '/api/device/pair/start'
+                try:
+                    req = urllib.request.Request(
+                        start_url, data=b'{}',
+                        headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                        method='POST'
+                    )
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
+                    if not (isinstance(data, dict) and data.get('ok')):
+                        raise ValueError(str(data))
+                    code = str(data.get('code') or '').strip()
+                    verify_url = str(data.get('verify_url') or '').strip()
+                    if not code or not verify_url:
+                        raise ValueError('תגובה חסרה מהשרת')
+                    pair_info['code'] = code
+                    pair_info['verify_url'] = verify_url
+                    _save_pending(code, verify_url)
+                    _show_code_ui(code, verify_url)
+                    webbrowser.open_new_tab(verify_url)
+                    threading.Thread(target=_poll, args=(code,), daemon=True).start()
+                except Exception as e:
+                    _safe_ui(lambda: status_lbl.configure(text=f"שגיאה: {e}", fg='#e74c3c'))
+                    _safe_ui(lambda: open_btn_ref[0].configure(state='normal'))
+
+            threading.Thread(target=_do_start, daemon=True).start()
+
+        def _reopen_browser():
+            url = pair_info.get('verify_url') or ''
+            if url:
+                webbrowser.open_new_tab(url)
+
+        open_btn = tk.Button(btn_frame, text="🌐  התחבר לענן", font=('Arial', 11, 'bold'),
+                             bg='#2980b9', fg='white', relief='flat', padx=20, pady=8,
+                             command=_start_pairing, cursor='hand2')
+        open_btn.pack(side=tk.LEFT, padx=6)
+        open_btn_ref[0] = open_btn
+
+        reopen_btn = tk.Button(btn_frame, text="↻  פתח דף אישור שוב", font=('Arial', 10),
+                               bg='#16a085', fg='white', relief='flat', padx=14, pady=8,
+                               command=_reopen_browser, cursor='hand2', state='disabled')
+        reopen_btn.pack(side=tk.LEFT, padx=6)
+        reopen_btn_ref[0] = reopen_btn
+
+        # בדוק אם יש קוד ממתין מהפעלה קודמת
+        pending_code, pending_verify = _get_pending()
+        if pending_code and pending_verify:
+            pair_info['code'] = pending_code
+            pair_info['verify_url'] = pending_verify
+            _show_code_ui(pending_code, pending_verify)
+            open_btn.configure(state='disabled')
+            threading.Thread(target=_poll, args=(pending_code,), daemon=True).start()
+
+        def _cancel():
+            poll_active['running'] = False
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+        tk.Button(btn_frame, text="ביטול", font=('Arial', 10),
+                  bg='#7f8c8d', fg='white', relief='flat', padx=14, pady=8,
+                  command=_cancel).pack(side=tk.LEFT, padx=8)
+
+        def _poll(code: str):
+            base = _base_url()
+            poll_url = base.rstrip('/') + '/api/device/pair/poll?code=' + urllib.parse.quote(code)
+            for _ in range(150):
+                if not poll_active['running']:
+                    return
+                try:
+                    with urllib.request.urlopen(poll_url, timeout=8) as resp:
+                        data = json.loads(resp.read().decode('utf-8', errors='ignore') or '{}')
+                    if isinstance(data, dict) and data.get('ok'):
+                        st = str(data.get('status') or '').strip()
+                        if st == 'ready':
+                            tenant_id = str(data.get('tenant_id') or '').strip()
+                            api_key = str(data.get('api_key') or '').strip()
+                            push_url = str(data.get('push_url') or '').strip()
+                            if tenant_id and api_key and push_url:
+                                try:
+                                    cfg1 = self.load_app_config() or {}
+                                    cfg1['sync_tenant_id'] = tenant_id
+                                    cfg1['sync_api_key'] = api_key
+                                    cfg1['sync_push_url'] = push_url
+                                    cfg1['deployment_mode'] = 'hybrid'
+                                    self.save_app_config(cfg1)
+                                except Exception:
+                                    pass
+                                connected['ok'] = True
+                                poll_active['running'] = False
+                                _clear_pending()
+                                _safe_ui(lambda: code_lbl.configure(text=''))
+                                _safe_ui(lambda: code_hint.configure(text=''))
+                                _safe_ui(lambda: status_lbl.configure(
+                                    text="✓ החיבור הושלם! טוען נתונים מהענן...", fg='#2ecc71'))
+                                def _ui_status(msg):
+                                    _safe_ui(lambda m=msg: status_lbl.configure(text=m))
+                                done_ev = self._do_cloud_initial_sync(
+                                    tenant_id, api_key, push_url,
+                                    set_status=_ui_status, parent_win=dlg
+                                )
+                                if done_ev is not None:
+                                    done_ev.wait(timeout=120)
+                                _safe_ui(lambda: status_lbl.configure(
+                                    text="✓ הסנכרון הושלם. החלון ייסגר...", fg='#2ecc71'))
+                                # החזר את חלון התוכנה לפוקוס
+                                try:
+                                    _safe_ui(lambda: dlg.lift())
+                                    _safe_ui(lambda: dlg.focus_force())
+                                    _safe_ui(lambda: self.root.lift())
+                                except Exception:
+                                    pass
+                                time.sleep(2.5)
+                                _safe_ui(lambda: _cancel())
+                                return
+                        elif st == 'consumed':
+                            _clear_pending()
+                            _safe_ui(lambda: code_lbl.configure(text=''))
+                            _safe_ui(lambda: code_hint.configure(text=''))
+                            _safe_ui(lambda: status_lbl.configure(
+                                text="קוד זה כבר נוצל. לחץ 'התחבר לענן' לניסיון חדש.", fg='#e74c3c'))
+                            _safe_ui(lambda: open_btn_ref[0].configure(state='normal'))
+                            _safe_ui(lambda: reopen_btn_ref[0].configure(state='disabled'))
+                            return
+                except Exception:
+                    pass
+                time.sleep(2)
+            if poll_active['running']:
+                _clear_pending()
+                _safe_ui(lambda: status_lbl.configure(
+                    text="פג הזמן. לחץ 'התחבר לענן' לניסיון חדש.", fg='#e74c3c'))
+                _safe_ui(lambda: open_btn_ref[0].configure(state='normal'))
+                _safe_ui(lambda: reopen_btn_ref[0].configure(state='disabled'))
+
+        self.root.wait_window(dlg)
+        poll_active['running'] = False
+
+        return connected['ok']
+
+    def _open_deployment_wizard(self, cfg: dict) -> str:
+        """
+        wizard בחירת סוג התקנה ראשוני.
+        מחזיר: 'local', 'hybrid', 'cloud' — או '' אם המשתמש ביטל.
+        נקרא רק כשאין deployment_mode שמור עדיין.
+        """
+        result = {'mode': ''}
+        try:
+            dlg = tk.Toplevel(self.root)
+            dlg.title("ברוכים הבאים — בחר סוג התקנה")
+            dlg.configure(bg='#2c3e50')
+            dlg.resizable(False, False)
+            dlg.overrideredirect(False)
+            dlg.grab_set()
+            dlg.lift()
+            dlg.focus_force()
+            try:
+                dlg.geometry("660x420")
+            except Exception:
+                pass
+
+            tk.Label(
+                dlg,
+                text="ברוכים הבאים למערכת ניקוד בית ספרית",
+                font=('Arial', 16, 'bold'),
+                bg='#2c3e50', fg='#ecf0f1'
+            ).pack(pady=(28, 4))
+            tk.Label(
+                dlg,
+                text="כיצד תרצה להתחבר למסד הנתונים?",
+                font=('Arial', 12),
+                bg='#2c3e50', fg='#bdc3c7'
+            ).pack(pady=(0, 22))
+
+            cards_frame = tk.Frame(dlg, bg='#2c3e50')
+            cards_frame.pack(padx=30, fill=tk.X)
+
+            def _make_card(parent, title, subtitle, color, cmd):
+                card = tk.Frame(parent, bg=color, bd=0, relief='flat', cursor='hand2')
+                card.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=10, ipady=14)
+                tk.Label(card, text=title, font=('Arial', 13, 'bold'), bg=color, fg='white').pack(pady=(14, 4))
+                tk.Label(card, text=subtitle, font=('Arial', 9), bg=color, fg='#ecf0f1',
+                         wraplength=220, justify='center').pack(padx=10, pady=(0, 10))
+                tk.Button(card, text="בחר →", font=('Arial', 10, 'bold'),
+                          bg='white', fg=color, relief='flat', padx=18, pady=6,
+                          command=cmd, cursor='hand2').pack(pady=(6, 14))
+                card.bind('<Button-1>', lambda _e: cmd())
+                return card
+
+            def _choose_local():
+                result['mode'] = 'local'
+                dlg.destroy()
+
+            def _choose_cloud():
+                result['mode'] = 'hybrid'
+                dlg.destroy()
+
+            _make_card(
+                cards_frame,
+                "🏫  רשת מקומית",
+                "הנתונים שמורים בתיקייה משותפת ברשת הבית-ספרית.\nמתאים להתקנה ללא אינטרנט.",
+                '#27ae60', _choose_local
+            )
+            _make_card(
+                cards_frame,
+                "🌐  מקוון / היברידי",
+                "חיבור לחשבון ענן קיים.\nסנכרון אוטומטי לכל העמדות דרך האינטרנט.",
+                '#2980b9', _choose_cloud
+            )
+
+            tk.Label(dlg, text="ניתן לשנות את הבחירה בהגדרות המערכת בכל עת.",
+                     font=('Arial', 8), bg='#2c3e50', fg='#7f8c8d').pack(pady=(18, 0))
+
+            tk.Button(dlg, text="ביטול", font=('Arial', 9), bg='#7f8c8d', fg='white',
+                      relief='flat', padx=14, pady=4,
+                      command=dlg.destroy).pack(pady=(6, 0))
+
+            self.root.wait_window(dlg)
+        except Exception:
+            pass
+
+        return result['mode']
+
     def ensure_initial_setup(self):
         try:
             cfg = self.load_app_config() or {}
         except Exception:
             cfg = {}
+
+        # wizard סוג התקנה — רק בפעם הראשונה (כשאין deployment_mode ואין shared_folder)
+        try:
+            existing_mode = str((cfg or {}).get('deployment_mode') or '').strip().lower()
+            existing_shared = (cfg or {}).get('shared_folder') or (cfg or {}).get('network_root')
+            if not existing_mode and not existing_shared:
+                chosen = self._open_deployment_wizard(cfg)
+                if not chosen:
+                    return False
+                cfg['deployment_mode'] = chosen
+                try:
+                    self.save_app_config(cfg)
+                except Exception:
+                    pass
+                if chosen in ('hybrid', 'cloud'):
+                    connected = self._open_cloud_pairing_wizard()
+                    if not connected:
+                        # ביטל — נקה את deployment_mode שנשמר כדי שה-wizard יופיע שוב
+                        try:
+                            cfg2 = self.load_app_config() or {}
+                            cfg2.pop('deployment_mode', None)
+                            self.save_app_config(cfg2)
+                        except Exception:
+                            pass
+                        return False
+                    return True
+        except Exception:
+            pass
 
         # איתור נתיב ה-DB הקיים לפני שינוי ההגדרות (לצורך העתקה לתיקיית הרשת)
         current_db_path = None

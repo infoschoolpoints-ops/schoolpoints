@@ -2471,30 +2471,35 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 except Exception as _snap_err:
                     print(f"[BOOTSTRAP] Tenant change snapshot error: {_snap_err}")
             elif tenant_id and api_key and snapshot_url and not last_synced_tenant:
-                # First time: record tenant_id AND push full snapshot so cloud has everything
-                print(f"[BOOTSTRAP] First run — pushing full snapshot to cloud for tenant {tenant_id}")
-                try:
-                    # Ensure config.json settings (anti_spam, quiet_mode, etc.) are in DB before snapshot
+                # First time: only push if local DB has real data.
+                # If local DB is empty (new machine pairing), skip push — the pull below will download data.
+                if _is_db_empty_for_bootstrap(conn0):
+                    print(f"[BOOTSTRAP] First run — local DB empty (new machine), skipping push to avoid overwriting cloud data")
+                    _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
+                else:
+                    # Primary machine with data: push full snapshot so cloud has everything
+                    print(f"[BOOTSTRAP] First run — pushing full snapshot to cloud for tenant {tenant_id}")
                     try:
-                        _push_config_to_db_settings(str(db_path), base_dir)
-                        _push_color_settings_to_db(str(db_path), base_dir)
-                    except Exception as _cbe:
-                        print(f"[BOOTSTRAP] Config bridge pre-push: {_cbe}")
-                    snap = build_snapshot(conn0)
-                    _snap_ok = False
-                    try:
-                        _snap_ok = push_snapshot2(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
-                    except Exception:
+                        try:
+                            _push_config_to_db_settings(str(db_path), base_dir)
+                            _push_color_settings_to_db(str(db_path), base_dir)
+                        except Exception as _cbe:
+                            print(f"[BOOTSTRAP] Config bridge pre-push: {_cbe}")
+                        snap = build_snapshot(conn0)
                         _snap_ok = False
-                    if not _snap_ok:
-                        _snap_ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
-                    if _snap_ok:
-                        print("[BOOTSTRAP] First-run full snapshot pushed OK")
-                    else:
-                        print("[BOOTSTRAP] First-run snapshot push failed — will retry via periodic push")
-                except Exception as _fre:
-                    print(f"[BOOTSTRAP] First-run snapshot error: {_fre}")
-                _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
+                        try:
+                            _snap_ok = push_snapshot2(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                        except Exception:
+                            _snap_ok = False
+                        if not _snap_ok:
+                            _snap_ok = push_snapshot(snapshot_url, snap, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+                        if _snap_ok:
+                            print("[BOOTSTRAP] First-run full snapshot pushed OK")
+                        else:
+                            print("[BOOTSTRAP] First-run snapshot push failed — will retry via periodic push")
+                    except Exception as _fre:
+                        print(f"[BOOTSTRAP] First-run snapshot error: {_fre}")
+                    _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
 
             done = str(_get_sync_state(conn0, 'bootstrap_snapshot_done', '0') or '0').strip()
             should_run = force_bootstrap or (done != '1')
