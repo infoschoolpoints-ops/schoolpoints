@@ -784,6 +784,56 @@ def _format_system_code(machine_id: str) -> str:
     return "-".join(groups)
 
 
+def export_license_for_cloud(base_dir: str) -> Optional[Dict[str, Any]]:
+    """מייצא את נתוני הרשיון המקומי כ-dict לצורך אחסון בענן.
+    מחזיר None אם אין רשיון בר-תוקף (trial לא נספר)."""
+    try:
+        lic, _ = _load_or_create_license(base_dir)
+        if not isinstance(lic, dict):
+            return None
+        lic_type = str(lic.get('license_type') or 'trial').strip().lower()
+        if lic_type == 'trial':
+            return None  # לא מסנכרנים trial
+        return dict(lic)
+    except Exception:
+        return None
+
+
+def import_license_from_cloud(base_dir: str, cloud_lic: Dict[str, Any]) -> bool:
+    """מייבא רשיון מהענן, רושם את המחשב הנוכחי, ושומר מקומית.
+    מחזיר True אם הרשיון יובא בהצלחה, False אחרת.
+    אם המחשב כבר רשום — לא סופר פעמיים."""
+    try:
+        if not isinstance(cloud_lic, dict):
+            return False
+        lic_type = str(cloud_lic.get('license_type') or 'trial').strip().lower()
+        if lic_type == 'trial':
+            return False
+
+        machine_id = _get_machine_id()
+        machines = set(str(m) for m in (cloud_lic.get('machines') or []))
+        if OLD_MACHINE_ID in machines:
+            machines.discard(OLD_MACHINE_ID)
+        max_stations = int(cloud_lic.get('max_stations') or BASIC_MAX_STATIONS)
+
+        if machine_id not in machines:
+            if len(machines) >= max_stations:
+                _lic_debug(f"import_from_cloud: machine limit reached ({len(machines)}/{max_stations})")
+                return False
+            machines.add(machine_id)
+
+        cloud_lic['machines'] = sorted(machines)
+
+        license_dir = _get_license_dir(base_dir)
+        license_path = os.path.join(license_dir, LICENSE_FILE_NAME)
+        ok = _save_license(cloud_lic, license_path)
+        _lic_debug(f"import_from_cloud: saved={ok}, machines={len(machines)}/{max_stations}")
+        return ok
+    except Exception as exc:
+        _lic_debug(f"import_from_cloud error: {exc}")
+        return False
+
+
 class LicenseManager:
     """ניהול רישוי אופליין למערכת SchoolPoints."""
 

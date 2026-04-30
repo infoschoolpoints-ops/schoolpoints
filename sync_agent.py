@@ -476,8 +476,7 @@ def _do_pull(url: str, timeout_s: int, api_key: str = '') -> Dict[str, Any] | No
         if api_key:
             req.add_header('api-key', str(api_key))
             req.add_header('x-api-key', str(api_key))
-        # הגדרת timeout דינמי: 3 שניות בסיסי + תוספת לפי מספר עמדות
-        actual_timeout = max(3, min(timeout_s, 10))  # בין 3-10 שניות
+        actual_timeout = max(3, timeout_s)
         # Set socket-level timeout for TCP connect (Windows default is ~60s)
         _old_sock = socket.getdefaulttimeout()
         try:
@@ -507,10 +506,26 @@ def pull_snapshot(snapshot_url: str, *, api_key: str = '', tenant_id: str = '') 
     if not snapshot_url:
         return None
 
+    # הוספת tenant_id ו-api_key כ-query parameters
+    def _add_params(u: str, include_key: bool = False) -> str:
+        params = []
+        if tenant_id:
+            params.append('tenant_id=' + urllib.parse.quote(str(tenant_id)))
+        if include_key and api_key:
+            params.append('api_key=' + urllib.parse.quote(str(api_key)))
+        if not params:
+            return u
+        sep = '&' if '?' in u else '?'
+        return u + sep + '&'.join(params)
+
+    # backward-compat alias
+    def _add_tid(u: str) -> str:
+        return _add_params(u, include_key=False)
+
     url2 = _snapshot2_url_from_snapshot(snapshot_url)
     if url2:
         try:
-            data2 = _do_pull(url2, timeout_s=60, api_key=api_key)
+            data2 = _do_pull(_add_params(url2, include_key=True), timeout_s=60, api_key=api_key)
             if isinstance(data2, dict) and data2.get('ok'):
                 return data2
         except urllib.error.HTTPError as exc:
@@ -524,7 +539,7 @@ def pull_snapshot(snapshot_url: str, *, api_key: str = '', tenant_id: str = '') 
             print(f"[SNAPSHOT2-PULL] Request error: {exc}")
 
     try:
-        return _do_pull(snapshot_url, timeout_s=25, api_key=api_key)
+        return _do_pull(_add_tid(snapshot_url), timeout_s=30, api_key=api_key)
     except urllib.error.HTTPError as exc:
         try:
             body = exc.read().decode('utf-8', errors='ignore')

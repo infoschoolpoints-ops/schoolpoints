@@ -1811,24 +1811,28 @@ def web_signin_submit(
     if nxt in ('/web/login', '/web/signin'):
         nxt = '/web/teacher-login'
 
-    # If no admin teacher exists yet, bootstrap first admin.
+    # If next destination is device pairing, skip bootstrap and go straight there.
+    is_device_pair = '/web/device/pair' in nxt
+
+    # If no admin teacher exists yet, bootstrap first admin (unless going to pair).
     need_bootstrap = False
-    try:
-        tconn = _tenant_school_db(tenant_id)
+    if not is_device_pair:
         try:
-            _ensure_teacher_columns(tconn)
-            cur = tconn.cursor()
-            cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers'))
-            row = cur.fetchone()
-            cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
-            need_bootstrap = (cnt <= 0)
-        finally:
+            tconn = _tenant_school_db(tenant_id)
             try:
-                tconn.close()
-            except Exception:
-                pass
-    except Exception:
-        need_bootstrap = True
+                _ensure_teacher_columns(tconn)
+                cur = tconn.cursor()
+                cur.execute(_sql_placeholder('SELECT COUNT(*) FROM teachers'))
+                row = cur.fetchone()
+                cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
+                need_bootstrap = (cnt <= 0)
+            finally:
+                try:
+                    tconn.close()
+                except Exception:
+                    pass
+        except Exception:
+            need_bootstrap = True
 
     resp = RedirectResponse(
         url=(f"/web/bootstrap-choice?next={urllib.parse.quote(nxt, safe='')}") if need_bootstrap else nxt,
@@ -6960,7 +6964,7 @@ def sync_snapshot2(payload: Snapshot2Payload, request: Request, api_key: str = H
 def sync_snapshot2_get(
     request: Request,
     tenant_id: str = Query(default=''),
-    api_key: str = Header(default=''),
+    api_key: str = Query(default=''),
 ) -> Dict[str, Any]:
     tenant_id = str(tenant_id or '').strip()
     if not tenant_id:
