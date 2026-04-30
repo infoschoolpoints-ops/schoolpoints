@@ -822,37 +822,37 @@ class AdminStation:
             pass
 
     def _update_cloud_sync_indicator(self) -> None:
-        """מעדכן את האינדיקטור בכותרת עם מצב הסנכרון עם הענן."""
+        """מעדכן את כפתור הסינכרון עם מצב הסנכרון עם הענן (hybrid/cloud)."""
         try:
-            lbl = getattr(self, '_cloud_sync_lbl', None)
-            if lbl is None:
-                return
+            btn = getattr(self, '_sync_btn', None)
             cfg = self.load_app_config() or {}
             mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
             if mode not in ('hybrid', 'cloud'):
-                lbl.configure(text='', fg='#2ecc71')
+                # מצב מקומי — כפתור Excel רגיל
+                if btn:
+                    btn.configure(text='🔄 סינכרון', bg='#9b59b6')
                 try:
                     self.root.after(30000, self._update_cloud_sync_indicator)
                 except Exception:
                     pass
                 return
-            # מצב ענן — בדוק מתי הסנכרון האחרון
+            # מצב ענן — עדכן צבע וטקסט לפי מצב סנכרון
             last_ts = getattr(self, '_cloud_last_sync_ts', None)
             is_syncing = getattr(self, '_cloud_syncing', False)
-            if is_syncing:
-                lbl.configure(text='🔄 מסתנכרן עם הענן...', fg='#f39c12')
-            elif last_ts is None:
-                lbl.configure(text='☁ ענן: ממתין לסנכרון ראשון', fg='#f39c12')
-            else:
-                import time as _t
-                elapsed = int(_t.time() - last_ts)
-                if elapsed < 90:
-                    lbl.configure(text='✓ ענן: מסונכרן', fg='#2ecc71')
-                elif elapsed < 600:
-                    lbl.configure(text=f'☁ ענן: לפני {elapsed // 60} דק׳  (לחץ לסנכרן)', fg='#bdc3c7')
+            if btn:
+                if is_syncing:
+                    btn.configure(text='🔄 מסתנכרן...', bg='#e67e22')
+                elif last_ts is None:
+                    btn.configure(text='☁ סינכרון', bg='#95a5a6')
                 else:
-                    mins = elapsed // 60
-                    lbl.configure(text=f'⚠ ענן: לא סונכרן {mins} דק׳  (לחץ לסנכרן)', fg='#e67e22')
+                    import time as _t
+                    elapsed = int(_t.time() - last_ts)
+                    if elapsed < 90:
+                        btn.configure(text='✓ מסונכרן', bg='#27ae60')
+                    elif elapsed < 600:
+                        btn.configure(text=f'☁ סנכרון ({elapsed // 60}ד׳)', bg='#95a5a6')
+                    else:
+                        btn.configure(text=f'⚠ לא מסונכרן', bg='#e74c3c')
         except Exception:
             pass
         try:
@@ -1691,14 +1691,7 @@ class AdminStation:
             anchor='w'
         )
         self.license_header_label.pack(side=tk.LEFT, padx=10, pady=(0, 2))
-
-        # אינדיקטור סנכרון ענן — מוצג רק אם deployment_mode=hybrid/cloud
-        self._cloud_sync_lbl = tk.Label(
-            sub_header, text='', font=('Arial', 9),
-            bg='#2c3e50', fg='#2ecc71', anchor='e', cursor='hand2'
-        )
-        self._cloud_sync_lbl.pack(side=tk.RIGHT, padx=10, pady=(0, 2))
-        self._cloud_sync_lbl.bind('<Button-1>', lambda e: self._manual_cloud_sync())
+        self._cloud_sync_lbl = None  # כבר לא בשורת כותרת — נמוזג לכפתור הסינכרון
         self._update_cloud_sync_indicator()
         
         # פאנל כפתורים עליון - קומפקטי יותר
@@ -1787,11 +1780,17 @@ class AdminStation:
             )
             export_btn.pack(side=tk.RIGHT, padx=3)
         
-            # כפתור סינכרון - לכולם! (גיבוי חשוב)
-            sync_btn = tk.Button(
+            # כפתור סינכרון — משמש גם כאינדיקטור ענן במצב hybrid/cloud
+            def _sync_btn_click():
+                cfg_ = self.load_app_config() or {}
+                if str(cfg_.get('deployment_mode') or '').strip() in ('hybrid', 'cloud'):
+                    self._manual_cloud_sync()
+                else:
+                    self.sync_to_excel()
+            self._sync_btn = tk.Button(
                 button_frame,
                 text="🔄 סינכרון",
-                command=self.sync_to_excel,
+                command=_sync_btn_click,
                 font=('Arial', 9),
                 bg='#9b59b6',
                 fg='white',
@@ -1799,7 +1798,8 @@ class AdminStation:
                 pady=4,
                 cursor='hand2'
             )
-            sync_btn.pack(side=tk.RIGHT, padx=3)
+            self._sync_btn.pack(side=tk.RIGHT, padx=3)
+            self._update_cloud_sync_indicator()  # עדכן כפתור מיד לפי מצב ענן
         
         refresh_btn = tk.Button(
             button_frame,
@@ -5025,6 +5025,8 @@ class AdminStation:
             grid_frame.columnconfigure(ncols + 1, weight=0)
 
         _rebuild_grid()
+        # גלול לצד ימין כדי שעמודת התלמידים תהיה גלויה מיד
+        outer.after(50, lambda: canvas.xview_moveto(1.0))
 
         # ─── כפתורי שמירה ───
         btn_row = tk.Frame(parent, bg='#ecf0f1')
@@ -10651,9 +10653,16 @@ class AdminStation:
         open_btn_ref = [None]
         reopen_btn_ref = [None]
 
+        url_lbl = tk.Label(code_frame, text="", font=('Arial', 8),
+                           bg='#1a252f', fg='#5dade2', cursor='hand2')
+        url_lbl.pack(pady=(0, 2))
+        url_lbl.bind('<Button-1>', lambda e: webbrowser.open_new_tab(pair_info.get('verify_url') or ''))
+
         def _show_code_ui(code, verify_url):
             _safe_ui(lambda: code_lbl.configure(text=code))
             _safe_ui(lambda: code_hint.configure(text="הקוד שיש לאשר בדפדפן"))
+            short = (verify_url[:60] + '…') if len(verify_url) > 63 else verify_url
+            _safe_ui(lambda s=short: url_lbl.configure(text=s))
             _safe_ui(lambda: status_lbl.configure(
                 text="הדפדפן נפתח. היכנס לחשבון הענן ואשר את חיבור העמדה.\nממתין לאישור...", fg='#f39c12'))
             _safe_ui(lambda: reopen_btn_ref[0].configure(state='normal') if reopen_btn_ref[0] else None)
@@ -10774,13 +10783,30 @@ class AdminStation:
                                     done_ev.wait(timeout=120)
                                 _safe_ui(lambda: status_lbl.configure(
                                     text="✓ הסנכרון הושלם. החלון ייסגר...", fg='#2ecc71'))
-                                # החזר את חלון התוכנה לפוקוס
-                                try:
-                                    _safe_ui(lambda: dlg.lift())
-                                    _safe_ui(lambda: dlg.focus_force())
-                                    _safe_ui(lambda: self.root.lift())
-                                except Exception:
-                                    pass
+                                # החזר את חלון התוכנה לקדמה (Windows + Tk)
+                                def _force_foreground():
+                                    try:
+                                        import ctypes
+                                        hwnd = ctypes.windll.user32.GetForegroundWindow()
+                                        try:
+                                            ctypes.windll.user32.ShowWindow(int(self.root.wm_frame(), 16), 9)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            ctypes.windll.user32.SetForegroundWindow(
+                                                int(self.root.wm_frame(), 16))
+                                        except Exception:
+                                            pass
+                                    except Exception:
+                                        pass
+                                    try:
+                                        dlg.lift()
+                                        dlg.focus_force()
+                                        self.root.lift()
+                                        self.root.focus_force()
+                                    except Exception:
+                                        pass
+                                _safe_ui(_force_foreground)
                                 time.sleep(2.5)
                                 _safe_ui(lambda: _cancel())
                                 return

@@ -417,35 +417,45 @@ def _replace_rows_local(conn: sqlite3.Connection, table: str, rows: List[Dict[st
     cols = _table_columns(conn, table)
     if not cols:
         return 0
-    cur = conn.cursor()
-    cur.execute(f"DELETE FROM {table}")
-    if not rows:
-        return 0
 
     allowed = set(cols)
-    # don't attempt to write timestamps that might have defaults
     allowed.discard('created_at')
     allowed.discard('updated_at')
 
     insert_cols: List[str] = []
-    for k in (rows[0] or {}).keys():
-        if k in allowed:
-            insert_cols.append(k)
+    if rows:
+        for k in (rows[0] or {}).keys():
+            if k in allowed:
+                insert_cols.append(k)
     if not insert_cols:
         for k in cols:
             if k in allowed:
                 insert_cols.append(k)
-    if not insert_cols:
-        return 0
 
-    placeholders = ','.join(['?'] * len(insert_cols))
-    sql = f"INSERT INTO {table} ({','.join(insert_cols)}) VALUES ({placeholders})"
-    values = []
-    for r in rows:
-        r = r or {}
-        values.append([r.get(c) for c in insert_cols])
-    cur.executemany(sql, values)
-    return int(len(values))
+    # savepoint: DELETE + INSERT are atomic — if INSERT fails, DELETE is undone too
+    sp = f"_sp_{table}"
+    cur = conn.cursor()
+    cur.execute(f"SAVEPOINT {sp}")
+    try:
+        cur.execute(f"DELETE FROM {table}")
+        if rows and insert_cols:
+            placeholders = ','.join(['?'] * len(insert_cols))
+            sql = f"INSERT INTO {table} ({','.join(insert_cols)}) VALUES ({placeholders})"
+            values = [[(r or {}).get(c) for c in insert_cols] for r in rows]
+            cur.executemany(sql, values)
+        cur.execute(f"RELEASE {sp}")
+        return int(len(rows)) if rows and insert_cols else 0
+    except Exception as _e:
+        try:
+            cur.execute(f"ROLLBACK TO {sp}")
+            cur.execute(f"RELEASE {sp}")
+        except Exception:
+            pass
+        try:
+            print(f"[SNAPSHOT] _replace_rows_local error table={table}: {_e}")
+        except Exception:
+            pass
+        return 0
 
 
 def _snapshot_url_from_push(push_url: str, cfg: Dict[str, Any]) -> str:
@@ -629,18 +639,17 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
             tables = list(tables) + sorted(set(extra_tables))
     except Exception:
         pass
+    # בטל sync triggers לפני apply — מונע כשלונות trigger ויצירת change_log מיותר
+    _disable_sync_triggers(conn)
     applied: Dict[str, int] = {}
     cur = conn.cursor()
     cur.execute('BEGIN IMMEDIATE')
     try:
         for t in tables:
-            try:
-                rows = snap.get(t) if isinstance(snap, dict) else None
-                if not isinstance(rows, list):
-                    rows = []
-                applied[t] = _replace_rows_local(conn, t, rows)
-            except Exception:
-                applied[t] = 0
+            rows = snap.get(t) if isinstance(snap, dict) else None
+            if not isinstance(rows, list):
+                rows = []
+            applied[t] = _replace_rows_local(conn, t, rows)
         
         # Update pull cursor if present (server-side event cursor)
         last_id = snapshot.get('last_event_id')
@@ -660,6 +669,8 @@ def apply_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> Dict[s
         except Exception:
             pass
         raise
+    finally:
+        _enable_sync_triggers(conn)
     return {'ok': True, 'tables': applied}
 
 

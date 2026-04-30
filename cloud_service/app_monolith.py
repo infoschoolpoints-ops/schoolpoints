@@ -1590,7 +1590,13 @@ def web_device_pair_submit(request: Request, code: str = Form(default='')) -> st
         except Exception:
             pass
 
-    body = "<h2>חיבור עמדה</h2><p>אושר. אפשר לחזור לתוכנה המקומית.</p><div class='actionbar'><a class='green' href='/web/admin'>המשך</a></div>"
+    body = """
+    <h2>חיבור עמדה</h2>
+    <p style='font-size:16px;font-weight:800;color:#27ae60;'>✓ החיבור אושר!</p>
+    <p style='color:#637381;'>התוכנה תזהה את האישור באופן אוטומטי ותיסגר תוך כמה שניות.</p>
+    <div class='actionbar'><a class='green' href='/web/admin'>לוח הבקרה</a></div>
+    <script>setTimeout(function(){{window.close();}}, 3500);</script>
+    """
     return _basic_web_shell('חיבור עמדה', body, request=request)
 
 
@@ -1863,7 +1869,8 @@ def web_bootstrap_choice(request: Request, next: str = Query(default='/web/admin
             row = cur.fetchone()
             cnt = int((row.get('COUNT(*)') if isinstance(row, dict) else row[0]) or 0)
             if cnt > 0:
-                return RedirectResponse(url='/web/teacher-login', status_code=302)
+                tl_nxt = urllib.parse.quote(nxt, safe='')
+                return RedirectResponse(url=f'/web/teacher-login?next={tl_nxt}', status_code=302)
         finally:
             try:
                 tconn.close()
