@@ -504,7 +504,7 @@ class AdminStation:
             lic_type = str(getattr(lm, 'license_type', 'trial') or 'trial').strip().lower()
             if lic_type == 'trial':
                 return
-            cfg = getattr(self, 'config', None) or {}
+            cfg = getattr(self, 'app_config', None) or self.load_app_config() or {}
             if not (str(cfg.get('deployment_mode') or '').strip() in ('cloud', 'hybrid') or
                     str(cfg.get('sync_tenant_id') or '').strip()):
                 return
@@ -4603,14 +4603,19 @@ class AdminStation:
         """בונה את ממשק שני המצבים בחלון תיקון מרוכז."""
         by_date_frame = tk.Frame(content_frame, bg='#ecf0f1')
         by_student_frame = tk.Frame(content_frame, bg='#ecf0f1')
+        by_table_frame = tk.Frame(content_frame, bg='#ecf0f1')
 
         def _show_mode(*_a):
             by_date_frame.pack_forget()
             by_student_frame.pack_forget()
-            if mode_var.get() == 'by_date':
+            by_table_frame.pack_forget()
+            m = mode_var.get()
+            if m == 'by_date':
                 by_date_frame.pack(fill=tk.BOTH, expand=True)
-            else:
+            elif m == 'by_student':
                 by_student_frame.pack(fill=tk.BOTH, expand=True)
+            else:
+                by_table_frame.pack(fill=tk.BOTH, expand=True)
 
         tk.Radiobutton(mode_frame, text=fix_rtl_text('לפי תאריך'), variable=mode_var,
                        value='by_date', command=_show_mode, font=('Arial', 10),
@@ -4618,11 +4623,16 @@ class AdminStation:
         tk.Radiobutton(mode_frame, text=fix_rtl_text('לפי תלמיד'), variable=mode_var,
                        value='by_student', command=_show_mode, font=('Arial', 10),
                        bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
+        tk.Radiobutton(mode_frame, text=fix_rtl_text('📊 טבלה'), variable=mode_var,
+                       value='by_table', command=_show_mode, font=('Arial', 10),
+                       bg='#ecf0f1').pack(side=tk.RIGHT, padx=8)
 
         self._bulk_fix_build_by_date(dlg, by_date_frame, status_var,
                                      student_names, sorted_names, all_classes)
         self._bulk_fix_build_by_student(dlg, by_student_frame, status_var,
                                         student_names, sorted_names)
+        self._bulk_fix_build_by_table(dlg, by_table_frame, status_var,
+                                      student_names, sorted_names)
         _show_mode()
 
     def _bulk_fix_build_by_date(self, dlg, parent, status_var,
@@ -4879,6 +4889,174 @@ class AdminStation:
                 messagebox.showinfo('תוצאות', result, parent=dlg)
 
         tk.Button(btn_row, text='💾 שמור תיקופים', command=_save,
+                  font=('Arial', 11, 'bold'), bg='#27ae60', fg='white',
+                  padx=20, pady=6, cursor='hand2').pack(side=tk.RIGHT, padx=6)
+        tk.Button(btn_row, text='ביטול', command=dlg.destroy,
+                  font=('Arial', 10), bg='#95a5a6', fg='white',
+                  padx=14, pady=6, cursor='hand2').pack(side=tk.LEFT, padx=6)
+
+    def _bulk_fix_build_by_table(self, dlg, parent, status_var, student_names, sorted_names):
+        """מצב 'טבלה': תלמידים בעמודה ימנית, עמודות תאריך בכותרות, תאים = שעה."""
+        TODAY = datetime.now().strftime('%Y-%m-%d')
+
+        # --- מבנה הנתונים ---
+        col_dates = [tk.StringVar(value=TODAY)]   # תאריך לכל עמודה
+        # time_vars[row_idx][col_idx] = StringVar
+        time_vars = [[tk.StringVar(value='') for _ in col_dates] for _ in sorted_names]
+
+        # --- גלילה דו-כיוונית ---
+        outer = tk.Frame(parent, bg='#ecf0f1')
+        outer.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(outer, bg='white', highlightthickness=0)
+        vbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        hbar = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
+        canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        vbar.pack(side=tk.LEFT, fill=tk.Y)
+        hbar.pack(side=tk.BOTTOM, fill=tk.X)
+        canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        grid_frame = tk.Frame(canvas, bg='white')
+        _cw = canvas.create_window((0, 0), window=grid_frame, anchor='nw')
+        grid_frame.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
+        canvas.bind('<Configure>', lambda e, c=_cw: canvas.itemconfig(c, height=max(e.height, grid_frame.winfo_reqheight())))
+
+        def _mw(e):
+            canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
+        canvas.bind_all('<MouseWheel>', _mw)
+
+        STUDENT_COL_W = 22
+        TIME_COL_W = 8
+
+        def _rebuild_grid():
+            for w in grid_frame.winfo_children():
+                w.destroy()
+
+            ncols = len(col_dates)
+
+            def _pick_date_for_col(ci):
+                pd_ = tk.Toplevel(dlg)
+                pd_.title('בחר תאריך'); pd_.transient(dlg); pd_.grab_set(); pd_.resizable(False, False)
+                pf_ = tk.Frame(pd_, padx=12, pady=10); pf_.pack()
+                try:
+                    parts = str(col_dates[ci].get()).split('-')
+                    yy0, mm0, dd0 = int(parts[0]), int(parts[1]), int(parts[2])
+                except Exception:
+                    n = datetime.now(); yy0, mm0, dd0 = n.year, n.month, n.day
+                y_v = tk.StringVar(value=str(yy0)); m_v = tk.StringVar(value=f"{mm0:02d}"); d_v = tk.StringVar(value=f"{dd0:02d}")
+                rw = tk.Frame(pf_); rw.pack()
+                ttk.Combobox(rw, textvariable=d_v, values=[f"{d:02d}" for d in range(1, 32)], state='readonly', width=4).pack(side=tk.RIGHT, padx=4)
+                ttk.Combobox(rw, textvariable=m_v, values=[f"{m:02d}" for m in range(1, 13)], state='readonly', width=4).pack(side=tk.RIGHT, padx=4)
+                ttk.Combobox(rw, textvariable=y_v, values=[str(y) for y in range(yy0 - 2, yy0 + 3)], state='readonly', width=6).pack(side=tk.RIGHT, padx=4)
+                def _ok_date(ci_=ci):
+                    try:
+                        dt = datetime.strptime(f"{y_v.get()}-{m_v.get()}-{d_v.get()}", '%Y-%m-%d')
+                        col_dates[ci_].set(dt.strftime('%Y-%m-%d'))
+                    except Exception:
+                        pass
+                    pd_.destroy()
+                    _rebuild_grid()
+                bf_ = tk.Frame(pf_); bf_.pack(pady=(10, 0))
+                tk.Button(bf_, text='אישור', width=8, command=_ok_date).pack(side=tk.LEFT, padx=4)
+                tk.Button(bf_, text='ביטול', width=8, command=pd_.destroy).pack(side=tk.RIGHT, padx=4)
+
+            def _add_col():
+                new_date = col_dates[-1].get() if col_dates else TODAY
+                try:
+                    from datetime import timedelta as _td
+                    nxt = (datetime.strptime(new_date, '%Y-%m-%d') + _td(days=1)).strftime('%Y-%m-%d')
+                except Exception:
+                    nxt = TODAY
+                col_dates.append(tk.StringVar(value=nxt))
+                for rv in time_vars:
+                    rv.append(tk.StringVar(value=''))
+                _rebuild_grid()
+
+            def _del_col(ci):
+                if len(col_dates) <= 1:
+                    return
+                col_dates.pop(ci)
+                for rv in time_vars:
+                    rv.pop(ci)
+                _rebuild_grid()
+
+            # ─── כותרת שורה 0: עמודת שם + עמודות תאריך + כפתור הוסף ───
+            hdr_bg = '#2c3e50'
+            hdr_fg = 'white'
+            # תלמיד - כותרת ימין
+            tk.Label(grid_frame, text='תלמיד', font=('Arial', 9, 'bold'),
+                     bg=hdr_bg, fg=hdr_fg, width=STUDENT_COL_W, anchor='e',
+                     relief='flat', bd=0, padx=4).grid(row=0, column=ncols + 1, sticky='nsew', padx=1, pady=1)
+
+            for ci in range(ncols):
+                col_ci = ncols - ci  # RTL: ראשונה מימין
+                hdr_cell = tk.Frame(grid_frame, bg=hdr_bg)
+                hdr_cell.grid(row=0, column=col_ci, sticky='nsew', padx=1, pady=1)
+                date_lbl = tk.Label(hdr_cell, textvariable=col_dates[ci],
+                                    font=('Arial', 9, 'bold'), bg=hdr_bg, fg=hdr_fg,
+                                    width=TIME_COL_W, cursor='hand2', anchor='center')
+                date_lbl.pack(side=tk.TOP, fill=tk.X)
+                date_lbl.bind('<Button-1>', lambda e, i=ci: _pick_date_for_col(i))
+                if ncols > 1:
+                    tk.Button(hdr_cell, text='✕', font=('Arial', 7), bg='#c0392b', fg='white',
+                              relief='flat', padx=2, pady=0, cursor='hand2',
+                              command=lambda i=ci: _del_col(i)).pack(side=tk.BOTTOM)
+
+            # כפתור הוסף עמודה בשמאל
+            tk.Button(grid_frame, text='+', font=('Arial', 11, 'bold'),
+                      bg='#27ae60', fg='white', relief='flat', padx=6, cursor='hand2',
+                      command=_add_col).grid(row=0, column=0, padx=2, pady=1, sticky='nsew')
+
+            # ─── שורות תלמידים ───
+            for ri, name in enumerate(sorted_names):
+                row_bg = '#ffffff' if ri % 2 == 0 else '#f8f9fa'
+                # שם תלמיד - עמודה ימנית
+                tk.Label(grid_frame, text=name, font=('Arial', 9),
+                         bg=row_bg, anchor='e', width=STUDENT_COL_W,
+                         relief='flat', padx=4).grid(row=ri + 1, column=ncols + 1, sticky='nsew', padx=1, pady=1)
+                for ci in range(ncols):
+                    col_ci = ncols - ci
+                    ent = tk.Entry(grid_frame, textvariable=time_vars[ri][ci],
+                                   font=('Arial', 9), width=TIME_COL_W, justify='center',
+                                   bg=row_bg, relief='flat', bd=1)
+                    ent.grid(row=ri + 1, column=col_ci, sticky='nsew', padx=1, pady=1)
+
+            grid_frame.columnconfigure(0, weight=0)
+            for ci in range(1, ncols + 1):
+                grid_frame.columnconfigure(ci, weight=1)
+            grid_frame.columnconfigure(ncols + 1, weight=0)
+
+        _rebuild_grid()
+
+        # ─── כפתורי שמירה ───
+        btn_row = tk.Frame(parent, bg='#ecf0f1')
+        btn_row.pack(fill=tk.X, pady=(4, 0))
+
+        def _save_table():
+            ok_count = 0
+            err_list = []
+            for ri, name in enumerate(sorted_names):
+                student = student_names[name]
+                for ci, date_var in enumerate(col_dates):
+                    time_str = str(time_vars[ri][ci].get() or '').strip()
+                    if not time_str:
+                        continue
+                    if ':' not in time_str:
+                        time_str = time_str[:2] + ':' + time_str[2:] if len(time_str) == 4 else time_str
+                    date_str = date_var.get()
+                    ok, msg = self._bulk_fix_apply_single(student, date_str, time_str)
+                    if ok:
+                        ok_count += 1
+                    else:
+                        err_list.append(f"{name} {date_str}: {msg}")
+            if ok_count == 0 and not err_list:
+                status_var.set('אין נתונים למילוי — הזן שעות בתאים')
+                return
+            status_var.set(f'✓ נשמרו {ok_count} תיקופים' + (f' | שגיאות: {len(err_list)}' if err_list else ''))
+            if err_list:
+                messagebox.showwarning('שגיאות', '\n'.join(err_list[:10]), parent=dlg)
+            else:
+                self.load_students(keep_selection=True)
+
+        tk.Button(btn_row, text='💾 שמור תיקופים', command=_save_table,
                   font=('Arial', 11, 'bold'), bg='#27ae60', fg='white',
                   padx=20, pady=6, cursor='hand2').pack(side=tk.RIGHT, padx=6)
         tk.Button(btn_row, text='ביטול', command=dlg.destroy,
@@ -10784,7 +10962,9 @@ class AdminStation:
             except Exception:
                 pass
 
-        if not (shared and self._isdir_safe(shared)):
+        # במצב hybrid/cloud אין תיקייה משותפת — דלג על כל ה-dialog
+        _is_cloud_mode = str(existing_mode or '').strip().lower() in ('hybrid', 'cloud')
+        if not _is_cloud_mode and not (shared and self._isdir_safe(shared)):
             try:
                 if _loading_win:
                     _loading_win.withdraw()

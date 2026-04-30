@@ -33,7 +33,7 @@ except ImportError:
 
 
 DEFAULT_PUSH_URL = ""
-DEFAULT_BATCH_SIZE = 200
+DEFAULT_BATCH_SIZE = 50
 DEFAULT_PULL_LIMIT = 500
 
 
@@ -1317,8 +1317,7 @@ def push_changes(push_url: str, changes: List[Dict[str, Any]], *, api_key: str =
         }
     )
     try:
-        # Set shorter timeout for push operations
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             _ = resp.read()
         return True
     except urllib.error.HTTPError as exc:
@@ -1326,14 +1325,10 @@ def push_changes(push_url: str, changes: List[Dict[str, Any]], *, api_key: str =
             body = exc.read().decode('utf-8', errors='ignore')
         except Exception:
             body = ''
-        # Only log non-timeout errors
-        if "timeout" not in str(exc).lower():
-            print(f"[SYNC] HTTP {exc.code}: {body}")
+        print(f"[SYNC] HTTP {exc.code}: {body}")
         return False
     except Exception as e:
-        # Only log non-timeout errors
-        if "timeout" not in str(e).lower():
-            print(f"[SYNC] Push error: {e}")
+        print(f"[SYNC] Push error: {e}")
         return False
 
 
@@ -2517,8 +2512,35 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                     else:
                         print('[BOOTSTRAP] Snapshot pull failed')
                 else:
-                    print('[BOOTSTRAP] Skipped (local DB not empty)')
-                    _set_sync_state(conn0, 'bootstrap_snapshot_done', '1')
+                    # בדוק אם טבלאות config חשובות ריקות (נוצרו לפני הסנכרון, לא בchange_log)
+                    _config_empty = False
+                    try:
+                        for _ct in ('threshold_messages', 'news_items', 'time_bonus_schedules', 'static_messages'):
+                            try:
+                                _n = int(conn0.execute(f'SELECT COUNT(*) FROM {_ct}').fetchone()[0] or 0)
+                                if _n == 0:
+                                    _config_empty = True
+                                    break
+                            except Exception:
+                                _config_empty = True
+                                break
+                    except Exception:
+                        _config_empty = False
+                    if _config_empty:
+                        print('[BOOTSTRAP] Config tables empty — pulling full snapshot to restore them...')
+                        resp = pull_snapshot(snapshot_url, api_key=api_key, tenant_id=tenant_id)
+                        if isinstance(resp, dict) and resp.get('ok'):
+                            try:
+                                res = apply_snapshot(conn0, resp)
+                                print(f"[BOOTSTRAP] Config restore snapshot applied: {res.get('tables',{})}")
+                                _set_sync_state(conn0, 'bootstrap_snapshot_done', '1')
+                            except Exception as e:
+                                print(f"[BOOTSTRAP] Config restore failed: {e}")
+                        else:
+                            print('[BOOTSTRAP] Config restore snapshot pull failed')
+                    else:
+                        print('[BOOTSTRAP] Skipped (local DB not empty)')
+                        _set_sync_state(conn0, 'bootstrap_snapshot_done', '1')
         finally:
             conn0.close()
     except Exception:

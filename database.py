@@ -8512,23 +8512,31 @@ class Database:
             return False
     
     def search_students(self, search_term: str) -> List[Dict[str, Any]]:
-        """חיפוש תלמידים לפי שם או ת"ז"""
+        """חיפוש תלמידים — תומך בריבוי מילים: כל מילה חייבת להתאים לפחות לשדה אחד.
+        לדוגמה: 'בוע גלו 859' ימצא 'בועז בוזגלו' עם כרטיס 0007628592."""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
-        search_pattern = f"%{search_term}%"
-        cursor.execute('''
-            SELECT * FROM students 
-            WHERE last_name LIKE ? 
-               OR first_name LIKE ? 
-               OR id_number LIKE ?
-               OR card_number LIKE ?
-            ORDER BY (serial_number IS NULL OR serial_number = 0), serial_number, last_name, first_name
-        ''', (search_pattern, search_pattern, search_pattern, search_pattern))
-        
+        tokens = [t.strip() for t in str(search_term or '').split() if t.strip()]
+        if not tokens:
+            conn.close()
+            return []
+        # בניית WHERE: כל token חייב לפגוע בלפחות אחד מהשדות
+        where_parts = []
+        params = []
+        for tok in tokens:
+            p = f"%{tok}%"
+            where_parts.append(
+                "(last_name LIKE ? OR first_name LIKE ? OR class_name LIKE ? OR card_number LIKE ? OR id_number LIKE ?)"
+            )
+            params.extend([p, p, p, p, p])
+        sql = (
+            "SELECT * FROM students WHERE "
+            + " AND ".join(where_parts)
+            + " ORDER BY (serial_number IS NULL OR serial_number = 0), serial_number, last_name, first_name"
+        )
+        cursor.execute(sql, params)
         rows = cursor.fetchall()
         conn.close()
-        
         return [dict(row) for row in rows]
     
     def clear_all_students(self):

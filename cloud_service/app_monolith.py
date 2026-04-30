@@ -1725,12 +1725,12 @@ def web_logout() -> Response:
 def web_signin(request: Request):
     tenant_id = _web_tenant_from_cookie(request)
     teacher_id = _web_teacher_from_cookie(request)
-    if tenant_id and teacher_id:
-        return RedirectResponse(url='/web/admin', status_code=302)
-    if tenant_id:
-        return RedirectResponse(url='/web/teacher-login', status_code=302)
-
     nxt = _web_next_from_request(request, '/web/teacher-login')
+    if tenant_id and teacher_id:
+        return RedirectResponse(url=nxt if nxt != '/web/teacher-login' else '/web/admin', status_code=302)
+    if tenant_id:
+        tl_url = f'/web/teacher-login?next={urllib.parse.quote(nxt, safe="")}' if nxt else '/web/teacher-login'
+        return RedirectResponse(url=tl_url, status_code=302)
     body = f"""
     <h2>כניסת מוסד</h2>
     <div style=\"color:#637381; margin-top:-6px;\">יש להזין קוד מוסד וסיסמת מוסד.</div>
