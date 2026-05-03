@@ -1322,8 +1322,13 @@ class MessagesManager:
                  font=('Arial', 12), padx=30, pady=10).pack(pady=10)
 
     def add_ads(self):
+        self._open_ads_edit_dialog(ads_item=None)  # None = create new
+
+    def _open_ads_edit_dialog(self, ads_item):
+        """חלון הוספה/עריכת פרסומת עם שלושה מצבים: טקסט / טקסט+תמונה / תמונה בלבד."""
+        is_edit = ads_item is not None
         dialog = tk.Toplevel(self.root)
-        dialog.title("הוספת פרסומת")
+        dialog.title("עריכת פרסומת" if is_edit else "הוספת פרסומת")
         try:
             sw = int(dialog.winfo_screenwidth() or 1200)
             sh = int(dialog.winfo_screenheight() or 800)
@@ -1339,27 +1344,56 @@ class MessagesManager:
             pass
         dialog.configure(bg='#ecf0f1')
         dialog.resizable(True, True)
-        
-        tk.Label(dialog, text="טקסט פרסומת:", font=('Arial', 12), bg='#ecf0f1').pack(pady=10)
+
+        # ─── בחירת מצב ───
+        current_text = ''
+        current_img_rel = ''
+        if is_edit:
+            current_text = str(ads_item.get('text') or '').strip()
+            current_img_rel = str(ads_item.get('image_path') or '').strip()
+
+        if is_edit:
+            if current_img_rel and not current_text:
+                init_mode = 'image_only'
+            elif current_img_rel and current_text:
+                init_mode = 'text_image'
+            else:
+                init_mode = 'text'
+        else:
+            init_mode = 'text'
+
+        mode_var = tk.StringVar(value=init_mode)
+
+        mode_frame = tk.LabelFrame(dialog, text='סוג פרסומת', font=('Arial', 10, 'bold'), bg='#ecf0f1')
+        mode_frame.pack(fill=tk.X, padx=20, pady=(10, 4))
+        for lbl, val in [('טקסט בלבד', 'text'), ('טקסט + תמונה', 'text_image'), ('תמונה בלבד', 'image_only')]:
+            tk.Radiobutton(mode_frame, text=fix_rtl_text(lbl), variable=mode_var, value=val,
+                           bg='#ecf0f1', font=('Arial', 10), command=lambda: _apply_mode()).pack(side=tk.RIGHT, padx=10, pady=4)
+
+        # ─── מסגרת טקסט ───
+        text_lbl = tk.Label(dialog, text="טקסט פרסומת:", font=('Arial', 12), bg='#ecf0f1')
+        text_lbl.pack(pady=(6, 2))
         text_frame = tk.Frame(dialog, bg='#ecf0f1')
-        text_frame.pack(padx=20, pady=10)
+        text_frame.pack(padx=20, pady=(0, 6))
         text = tk.Text(text_frame, height=5, width=50, font=('Arial', 12), wrap=tk.WORD)
         text.config(insertwidth=2)
         scrollbar = tk.Scrollbar(text_frame, command=text.yview)
         text.config(yscrollcommand=scrollbar.set)
         text.pack(side=tk.LEFT)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
+        if is_edit and current_text:
+            text.insert('1.0', current_text)
         self.setup_text_edit_menu(text)
 
+        # ─── מסגרת תמונה ───
         image_var = tk.StringVar(value='')
-
-        img_frame = tk.Frame(dialog, bg='#ecf0f1')
-        img_frame.pack(fill=tk.X, padx=20, pady=(0, 5))
-
-        tk.Label(img_frame, text=fix_rtl_text('תמונה (אופציונלי):'), font=('Arial', 10), bg='#ecf0f1').pack(side=tk.RIGHT, padx=5)
-
-        img_label = tk.Label(img_frame, text="", font=('Arial', 9), bg='#ecf0f1', fg='#34495e', anchor='e', justify='right')
+        img_outer = tk.Frame(dialog, bg='#ecf0f1')
+        img_outer.pack(fill=tk.X, padx=20, pady=(0, 5))
+        img_frame = tk.Frame(img_outer, bg='#ecf0f1')
+        img_frame.pack(fill=tk.X)
+        tk.Label(img_frame, text=fix_rtl_text('תמונה:'), font=('Arial', 10), bg='#ecf0f1').pack(side=tk.RIGHT, padx=5)
+        img_label = tk.Label(img_frame, text=current_img_rel if is_edit else '', font=('Arial', 9),
+                             bg='#ecf0f1', fg='#34495e', anchor='e', justify='right')
         img_label.pack(side=tk.RIGHT, padx=5, fill=tk.X, expand=True)
 
         def _choose_img():
@@ -1378,17 +1412,44 @@ class MessagesManager:
                     img_label.config(text=p)
 
         def _clear_img():
+            nonlocal current_img_rel
             image_var.set('')
+            current_img_rel = ''
             img_label.config(text='')
 
         tk.Button(img_frame, text="בחר", command=_choose_img, font=('Arial', 9), bg='#bdc3c7', fg='#2c3e50', padx=8, pady=2).pack(side=tk.LEFT, padx=4)
         tk.Button(img_frame, text="נקה", command=_clear_img, font=('Arial', 9), bg='#95a5a6', fg='white', padx=8, pady=2).pack(side=tk.LEFT, padx=4)
 
+        def _apply_mode():
+            m = mode_var.get()
+            if m == 'image_only':
+                text_lbl.pack_forget()
+                text_frame.pack_forget()
+                img_outer.pack(fill=tk.X, padx=20, pady=(0, 5))
+            elif m == 'text_image':
+                text_lbl.pack(pady=(6, 2))
+                text_frame.pack(padx=20, pady=(0, 6))
+                img_outer.pack(fill=tk.X, padx=20, pady=(0, 5))
+            else:  # text only
+                text_lbl.pack(pady=(6, 2))
+                text_frame.pack(padx=20, pady=(0, 6))
+                img_outer.pack_forget()
+
+        _apply_mode()  # הפעל בהתאם לברירת המחדל
+
+        # ─── תזמון ───
         dates_frame = tk.LabelFrame(dialog, text='תזמון פרסומת (אופציונלי)', font=('Arial', 11, 'bold'), bg='#ecf0f1')
-        dates_frame.pack(padx=20, pady=10, fill=tk.X)
+        dates_frame.pack(padx=20, pady=6, fill=tk.X)
 
         tk.Label(dates_frame, text=fix_rtl_text('תאריך התחלה (DD.MM.YYYY):'), font=('Arial', 10), bg='#ecf0f1').pack(anchor='e', padx=10, pady=(10, 5))
         start_date_var = tk.StringVar()
+        if is_edit and ads_item.get('start_date'):
+            try:
+                pts = str(ads_item['start_date']).split('-')
+                if len(pts) == 3:
+                    start_date_var.set(f"{pts[2]}.{pts[1]}.{pts[0]}")
+            except Exception:
+                pass
         start_ent = tk.Entry(dates_frame, textvariable=start_date_var, font=('Arial', 11), justify='right', width=20)
         start_ent.pack(anchor='e', padx=10)
         try:
@@ -1398,58 +1459,75 @@ class MessagesManager:
 
         tk.Label(dates_frame, text=fix_rtl_text('תאריך סיום (DD.MM.YYYY):'), font=('Arial', 10), bg='#ecf0f1').pack(anchor='e', padx=10, pady=(10, 5))
         end_date_var = tk.StringVar()
+        if is_edit and ads_item.get('end_date'):
+            try:
+                pts = str(ads_item['end_date']).split('-')
+                if len(pts) == 3:
+                    end_date_var.set(f"{pts[2]}.{pts[1]}.{pts[0]}")
+            except Exception:
+                pass
         end_ent = tk.Entry(dates_frame, textvariable=end_date_var, font=('Arial', 11), justify='right', width=20)
         end_ent.pack(anchor='e', padx=10, pady=(0, 10))
         try:
             end_ent.bind('<Button-1>', lambda _e: _open_date_picker_ddmmyyyy(dialog, end_date_var))
         except Exception:
             pass
-
         tk.Label(dates_frame, text=fix_rtl_text('השאר ריק לפרסומת קבועה ללא תאריך תפוגה'), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').pack(anchor='e', padx=10, pady=(0, 10))
 
+        def _parse_date(s, field_name):
+            s = (s or '').strip()
+            if not s:
+                return None, None
+            try:
+                pts = s.split('.')
+                if len(pts) == 3:
+                    return f"{pts[2]}-{pts[1].zfill(2)}-{pts[0].zfill(2)}", None
+            except Exception:
+                pass
+            return None, f'תאריך {field_name} לא תקין. השתמש בפורמט DD.MM.YYYY'
+
         def save():
-            msg = _strip_image_icon_prefix(text.get('1.0', 'end-1c').strip())
-            if not msg:
+            m = mode_var.get()
+            msg = _strip_image_icon_prefix(text.get('1.0', 'end-1c').strip()) if m != 'image_only' else ''
+            if m != 'image_only' and not msg:
                 messagebox.showwarning('אזהרה', 'יש להזין טקסט פרסומת')
                 return
 
-            start_date = None
-            end_date = None
+            start_date, err = _parse_date(start_date_var.get(), 'התחלה')
+            if err:
+                messagebox.showerror('שגיאה', err)
+                return
+            end_date, err = _parse_date(end_date_var.get(), 'סיום')
+            if err:
+                messagebox.showerror('שגיאה', err)
+                return
 
-            start_str = start_date_var.get().strip()
-            if start_str:
-                try:
-                    parts = start_str.split('.')
-                    if len(parts) == 3:
-                        start_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-                except Exception:
-                    messagebox.showerror('שגיאה', 'תאריך התחלה לא תקין. השתמש בפורמט DD.MM.YYYY')
-                    return
-
-            end_str = end_date_var.get().strip()
-            if end_str:
-                try:
-                    parts = end_str.split('.')
-                    if len(parts) == 3:
-                        end_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-                except Exception:
-                    messagebox.showerror('שגיאה', 'תאריך סיום לא תקין. השתמש בפורמט DD.MM.YYYY')
-                    return
-
-            img_rel = ''
+            img_rel = current_img_rel if is_edit else ''
             try:
                 src_img = str(image_var.get() or '').strip()
             except Exception:
                 src_img = ''
             if src_img:
-                img_rel = self._persist_ads_image(src_img)
-                if not img_rel:
-                    messagebox.showwarning('אזהרה', 'לא ניתן לשמור את התמונה בתיקייה המשותפת. הפרסומת תישמר ללא תמונה.')
+                new_rel = self._persist_ads_image(src_img)
+                if new_rel:
+                    img_rel = new_rel
+                else:
+                    messagebox.showwarning('אזהרה', 'לא ניתן לשמור את התמונה. הפרסומת תישמר ללא תמונה חדשה.')
+
+            if m == 'image_only' and not img_rel:
+                messagebox.showwarning('אזהרה', 'יש לבחור תמונה לפרסומת')
+                return
 
             try:
-                self.messages_db.add_ads_item(msg, start_date, end_date, img_rel or None)
+                if is_edit:
+                    self.messages_db.update_ads_item(int(ads_item['id']), msg, start_date, end_date, img_rel or None)
+                else:
+                    self.messages_db.add_ads_item(msg, start_date, end_date, img_rel or None)
             except TypeError:
-                self.messages_db.add_ads_item(msg, start_date, end_date)
+                if is_edit:
+                    self.messages_db.update_ads_item(int(ads_item['id']), msg, start_date, end_date)
+                else:
+                    self.messages_db.add_ads_item(msg, start_date, end_date)
             self.load_ads_items()
             dialog.destroy()
 
@@ -1477,189 +1555,13 @@ class MessagesManager:
         if not selection:
             messagebox.showwarning("אזהרה", "יש לבחור פרסומת")
             return
-
         ads_id = int(selection[0])
-        current_display = self.ads_tree.item(ads_id)['values'][0]
-        current = _strip_image_icon_prefix(strip_rtl_marks(current_display))
-
         all_ads = self.messages_db.get_all_ads_items()
         current_ads = next((a for a in all_ads if int(a.get('id', 0) or 0) == ads_id), None)
-
-        dialog = tk.Toplevel(self.root)
-        dialog.title("עריכת פרסומת")
-        try:
-            sw = int(dialog.winfo_screenwidth() or 1200)
-            sh = int(dialog.winfo_screenheight() or 800)
-        except Exception:
-            sw = 1200
-            sh = 800
-        w0 = min(760, max(620, sw - 120))
-        h0 = min(740, max(560, sh - 140))
-        dialog.geometry(f"{w0}x{h0}")
-        try:
-            dialog.minsize(560, 520)
-        except Exception:
-            pass
-        dialog.configure(bg='#ecf0f1')
-        dialog.resizable(True, True)
-
-        tk.Label(dialog, text="טקסט פרסומת:", font=('Arial', 12), bg='#ecf0f1').pack(pady=10)
-        text_frame = tk.Frame(dialog, bg='#ecf0f1')
-        text_frame.pack(padx=20, pady=10)
-        text = tk.Text(text_frame, height=5, width=50, font=('Arial', 12), wrap=tk.WORD)
-        text.config(insertwidth=2)
-        text.insert('1.0', current)
-        scrollbar = tk.Scrollbar(text_frame, command=text.yview)
-        text.config(yscrollcommand=scrollbar.set)
-        text.pack(side=tk.LEFT)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.setup_text_edit_menu(text)
-
-        image_var = tk.StringVar(value='')
-        current_img_rel = ''
-        try:
-            current_img_rel = str((current_ads or {}).get('image_path') or '').strip()
-        except Exception:
-            current_img_rel = ''
-
-        img_frame = tk.Frame(dialog, bg='#ecf0f1')
-        img_frame.pack(fill=tk.X, padx=20, pady=(0, 5))
-
-        tk.Label(img_frame, text=fix_rtl_text('תמונה (אופציונלי):'), font=('Arial', 10), bg='#ecf0f1').pack(side=tk.RIGHT, padx=5)
-
-        img_label = tk.Label(img_frame, text="", font=('Arial', 9), bg='#ecf0f1', fg='#34495e', anchor='e', justify='right')
-        img_label.pack(side=tk.RIGHT, padx=5, fill=tk.X, expand=True)
-        if current_img_rel:
-            img_label.config(text=str(current_img_rel))
-
-        def _choose_img():
-            try:
-                p = filedialog.askopenfilename(
-                    title='בחר תמונה לפרסומת',
-                    filetypes=[('Images', '*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp'), ('All files', '*.*')]
-                )
-            except Exception:
-                p = ''
-            if p:
-                image_var.set(p)
-                try:
-                    img_label.config(text=os.path.basename(p))
-                except Exception:
-                    img_label.config(text=p)
-
-        def _clear_img():
-            nonlocal current_img_rel
-            image_var.set('')
-            current_img_rel = ''
-            img_label.config(text='')
-
-        tk.Button(img_frame, text="בחר", command=_choose_img, font=('Arial', 9), bg='#bdc3c7', fg='#2c3e50', padx=8, pady=2).pack(side=tk.LEFT, padx=4)
-        tk.Button(img_frame, text="נקה", command=_clear_img, font=('Arial', 9), bg='#95a5a6', fg='white', padx=8, pady=2).pack(side=tk.LEFT, padx=4)
-
-        dates_frame = tk.LabelFrame(dialog, text='תזמון פרסומת (אופציונלי)', font=('Arial', 11, 'bold'), bg='#ecf0f1')
-        dates_frame.pack(padx=20, pady=10, fill=tk.X)
-
-        tk.Label(dates_frame, text=fix_rtl_text('תאריך התחלה (DD.MM.YYYY):'), font=('Arial', 10), bg='#ecf0f1').pack(anchor='e', padx=10, pady=(10, 5))
-        start_date_var = tk.StringVar()
-        if current_ads and current_ads.get('start_date'):
-            try:
-                parts = str(current_ads.get('start_date') or '').split('-')
-                if len(parts) == 3:
-                    start_date_var.set(f"{parts[2]}.{parts[1]}.{parts[0]}")
-            except Exception:
-                pass
-        start_ent = tk.Entry(dates_frame, textvariable=start_date_var, font=('Arial', 11), justify='right', width=20)
-        start_ent.pack(anchor='e', padx=10)
-        try:
-            start_ent.bind('<Button-1>', lambda _e: _open_date_picker_ddmmyyyy(dialog, start_date_var))
-        except Exception:
-            pass
-
-        tk.Label(dates_frame, text=fix_rtl_text('תאריך סיום (DD.MM.YYYY):'), font=('Arial', 10), bg='#ecf0f1').pack(anchor='e', padx=10, pady=(10, 5))
-        end_date_var = tk.StringVar()
-        if current_ads and current_ads.get('end_date'):
-            try:
-                parts = str(current_ads.get('end_date') or '').split('-')
-                if len(parts) == 3:
-                    end_date_var.set(f"{parts[2]}.{parts[1]}.{parts[0]}")
-            except Exception:
-                pass
-        end_ent = tk.Entry(dates_frame, textvariable=end_date_var, font=('Arial', 11), justify='right', width=20)
-        end_ent.pack(anchor='e', padx=10, pady=(0, 10))
-        try:
-            end_ent.bind('<Button-1>', lambda _e: _open_date_picker_ddmmyyyy(dialog, end_date_var))
-        except Exception:
-            pass
-
-        tk.Label(dates_frame, text=fix_rtl_text('השאר ריק לפרסומת קבועה ללא תאריך תפוגה'), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').pack(anchor='e', padx=10, pady=(0, 10))
-
-        def save():
-            msg = _strip_image_icon_prefix(text.get('1.0', 'end-1c').strip())
-            if not msg:
-                messagebox.showwarning('אזהרה', 'יש להזין טקסט פרסומת')
-                return
-
-            start_date = None
-            end_date = None
-
-            start_str = start_date_var.get().strip()
-            if start_str:
-                try:
-                    parts = start_str.split('.')
-                    if len(parts) == 3:
-                        start_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-                except Exception:
-                    messagebox.showerror('שגיאה', 'תאריך התחלה לא תקין. השתמש בפורמט DD.MM.YYYY')
-                    return
-
-            end_str = end_date_var.get().strip()
-            if end_str:
-                try:
-                    parts = end_str.split('.')
-                    if len(parts) == 3:
-                        end_date = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
-                except Exception:
-                    messagebox.showerror('שגיאה', 'תאריך סיום לא תקין. השתמש בפורמט DD.MM.YYYY')
-                    return
-
-            img_rel = current_img_rel
-            try:
-                src_img = str(image_var.get() or '').strip()
-            except Exception:
-                src_img = ''
-            if src_img:
-                new_rel = self._persist_ads_image(src_img)
-                if new_rel:
-                    img_rel = new_rel
-                else:
-                    messagebox.showwarning('אזהרה', 'לא ניתן לשמור את התמונה בתיקייה המשותפת. נשמרה התמונה הקודמת (אם הייתה).')
-
-            try:
-                self.messages_db.update_ads_item(ads_id, msg, start_date, end_date, img_rel or None)
-            except TypeError:
-                self.messages_db.update_ads_item(ads_id, msg, start_date, end_date)
-            self.load_ads_items()
-            dialog.destroy()
-
-        btn_bar = tk.Frame(dialog, bg='#ecf0f1')
-        btn_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
-        tk.Button(btn_bar, text="💾 שמור", command=save, bg='#27ae60', fg='white',
-                 font=('Arial', 12), padx=30, pady=10).pack(pady=0)
-
-        try:
-            dialog.update_idletasks()
-            sw2 = int(dialog.winfo_screenwidth() or 1200)
-            sh2 = int(dialog.winfo_screenheight() or 800)
-            max_w = max(620, sw2 - 120)
-            max_h = max(560, sh2 - 140)
-            req_w = int(dialog.winfo_reqwidth() or 620)
-            req_h = int(dialog.winfo_reqheight() or 560)
-            w = min(max_w, max(620, req_w))
-            h = min(max_h, max(560, req_h))
-            dialog.geometry(f"{w}x{h}")
-        except Exception:
-            pass
+        if not current_ads:
+            messagebox.showwarning("אזהרה", "לא נמצאה הפרסומת")
+            return
+        self._open_ads_edit_dialog(ads_item=current_ads)
 
     def delete_ads(self):
         selection = self.ads_tree.selection() if hasattr(self, 'ads_tree') else ()

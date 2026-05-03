@@ -4484,8 +4484,21 @@ class AdminStation:
         except Exception:
             pass
 
-        tk.Label(dlg, text=fix_rtl_text('תיקון תיקוף מרוכז'), font=('Arial', 14, 'bold'),
-                 bg='#ecf0f1', fg='#2c3e50').pack(pady=(10, 4))
+        title_row = tk.Frame(dlg, bg='#ecf0f1')
+        title_row.pack(fill=tk.X, padx=10, pady=(6, 0))
+        tk.Label(title_row, text=fix_rtl_text('תיקון תיקוף מרוכז'), font=('Arial', 14, 'bold'),
+                 bg='#ecf0f1', fg='#2c3e50').pack(side=tk.RIGHT, expand=True)
+        def _toggle_zoom():
+            try:
+                dlg.state('zoomed' if dlg.state() != 'zoomed' else 'normal')
+            except Exception:
+                try:
+                    dlg.attributes('-fullscreen', not dlg.attributes('-fullscreen'))
+                except Exception:
+                    pass
+        tk.Button(title_row, text='⛶ הגדל', font=('Arial', 9), bg='#7f8c8d', fg='white',
+                  relief='flat', padx=8, pady=3, cursor='hand2',
+                  command=_toggle_zoom).pack(side=tk.LEFT, padx=4)
         mode_var = tk.StringVar(value='by_date')
         mode_frame = tk.Frame(dlg, bg='#ecf0f1')
         mode_frame.pack(fill=tk.X, padx=14, pady=(0, 6))
@@ -4911,13 +4924,34 @@ class AdminStation:
         vbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
         hbar = ttk.Scrollbar(outer, orient=tk.HORIZONTAL, command=canvas.xview)
         canvas.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
-        vbar.pack(side=tk.LEFT, fill=tk.Y)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)   # סרגל אנכי לימין
         hbar.pack(side=tk.BOTTOM, fill=tk.X)
-        canvas.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        grid_frame = tk.Frame(canvas, bg='white')
-        _cw = canvas.create_window((0, 0), window=grid_frame, anchor='nw')
-        grid_frame.bind('<Configure>', lambda e: canvas.configure(scrollregion=canvas.bbox('all')))
-        canvas.bind('<Configure>', lambda e, c=_cw: canvas.itemconfig(c, height=max(e.height, grid_frame.winfo_reqheight())))
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # RTL: עוגן הגריד מחובר לצד ימין של ה-canvas
+        grid_frame = tk.Frame(canvas, bg='#bdc3c7')  # רקע בין תאים = פסי הפרדה
+        _cw = canvas.create_window((0, 0), window=grid_frame, anchor='ne')
+
+        def _pin_grid_right(cw_width=None):
+            try:
+                cw = int(cw_width if cw_width is not None else canvas.winfo_width())
+                if cw > 1:
+                    canvas.coords(_cw, cw, 0)
+            except Exception:
+                pass
+
+        def _on_grid_configure(e):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+            _pin_grid_right()
+
+        def _on_canvas_configure(e):
+            try:
+                canvas.itemconfig(_cw, height=max(e.height, grid_frame.winfo_reqheight()))
+            except Exception:
+                pass
+            _pin_grid_right(e.width)
+
+        grid_frame.bind('<Configure>', _on_grid_configure)
+        canvas.bind('<Configure>', _on_canvas_configure)
 
         def _mw(e):
             canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
@@ -5025,8 +5059,8 @@ class AdminStation:
             grid_frame.columnconfigure(ncols + 1, weight=0)
 
         _rebuild_grid()
-        # גלול לצד ימין כדי שעמודת התלמידים תהיה גלויה מיד
-        outer.after(50, lambda: canvas.xview_moveto(1.0))
+        # עדכן מיקום הגריד אחרי בנייה ראשונית
+        outer.after(30, _pin_grid_right)
 
         # ─── כפתורי שמירה ───
         btn_row = tk.Frame(parent, bg='#ecf0f1')
