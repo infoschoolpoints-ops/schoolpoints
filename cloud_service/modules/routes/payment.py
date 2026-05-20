@@ -42,7 +42,7 @@ def _payme_config():
     # PayMe Israel: preprod for sandbox, paymeservice.com for production.
     # The prod endpoint redirects POST to payme.io (international) — PayMe provides
     # a direct prod URL upon account approval. Until then, both use preprod for testing.
-    api_url = 'https://preprod.paymeservice.com/api'
+    api_url = 'https://preprod.paymeservice.com/api' if test_mode else 'https://ng.paymeservice.com/api'
     return {
         'seller_id': seller_id,
         'api_key': api_key,
@@ -56,7 +56,7 @@ def _payme_config():
 PAYME_SELLER_ID = os.environ.get('PAYME_SELLER_ID', '').strip()
 PAYME_API_KEY = os.environ.get('PAYME_API_KEY', '').strip() or PAYME_SELLER_ID
 PAYME_TEST_MODE = os.environ.get('PAYME_TEST_MODE', '1').strip() == '1'
-PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://paymeservice.com/api'
+PAYME_API_URL = 'https://preprod.paymeservice.com/api' if PAYME_TEST_MODE else 'https://ng.paymeservice.com/api'
 PAYME_FORM_READY = bool(PAYME_API_KEY)
 PAYME_CHARGE_READY = bool(PAYME_SELLER_ID and PAYME_API_KEY)
 PAYME_LIVE = PAYME_FORM_READY
@@ -193,7 +193,7 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
     safe_plan_name = html_mod.escape(plan_name)
 
     cfg = _payme_config()
-    if cfg['form_ready']:
+    if cfg['charge_ready']:
         # --- PayMe Redirect Flow: generate sale_url server-side, redirect user ---
         base_url = str(request.base_url).rstrip('/')
         sale_callback_url = f'{base_url}/api/payment/webhook/payme'
