@@ -640,6 +640,13 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
             'ads_items': payload.ads_items or [],
             'student_messages': payload.student_messages or [],
         }
+        # Merge full snapshot dict if present (contains settings, time_bonus_schedules, etc.)
+        if isinstance(payload.snapshot, dict) and payload.snapshot:
+            for tbl, rows in payload.snapshot.items():
+                if isinstance(rows, list) and tbl not in snap:
+                    snap[tbl] = rows
+                elif isinstance(rows, list) and tbl in snap and not snap[tbl]:
+                    snap[tbl] = rows
         applied_counts = apply_full_snapshot_sqlite(tconn, snap)
     finally:
         try: tconn.close()
@@ -649,6 +656,7 @@ def sync_snapshot(payload: SnapshotPayload, request: Request, api_key: str = Hea
         'ok': True,
         'tenant_id': payload.tenant_id,
         'station_id': payload.station_id,
+        'applied': applied_counts,
         'teachers': int(applied_counts.get('teachers') or 0),
         'students': int(applied_counts.get('students') or 0),
         'static_messages': int(applied_counts.get('static_messages') or 0),

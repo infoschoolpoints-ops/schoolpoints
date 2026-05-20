@@ -208,6 +208,18 @@ def web_home() -> str:
         </div>
 
         """ + _HOME_CARDS + """
+
+    <div style="max-width:900px;margin:40px auto 10px;position:relative;z-index:5;padding:0 16px;">
+      <a href="/web/callback" style="text-decoration:none;display:block;">
+        <div style="background:linear-gradient(135deg,#f7971e 0%,#ffd200 100%);border-radius:22px;padding:36px 40px;text-align:center;box-shadow:0 12px 40px rgba(247,151,30,.35);transition:transform .25s,box-shadow .25s;" onmouseover="this.style.transform='translateY(-4px)';this.style.boxShadow='0 20px 54px rgba(247,151,30,.5)'" onmouseout="this.style.transform='';this.style.boxShadow='0 12px 40px rgba(247,151,30,.35)'">
+          <div style="font-size:42px;margin-bottom:10px;">📞</div>
+          <div style="font-size:30px;font-weight:900;color:#1a1a2e;margin-bottom:8px;">דווקא מעניין אותי! תחזרו אלי</div>
+          <div style="font-size:17px;color:#2d2d2d;opacity:.85;max-width:560px;margin:0 auto;">מלאו פרטים קצרים ונחזור אליכם עם הצעה מותאמת לבית ספרכם</div>
+          <div style="margin-top:18px;display:inline-block;background:#1a1a2e;color:#ffd200;font-weight:800;font-size:16px;padding:11px 34px;border-radius:10px;letter-spacing:.3px;">מלאו טופס פנייה &rsaquo;</div>
+        </div>
+      </a>
+    </div>
+
     </div>
     """
     return public_web_shell('תוכנת הנקודות', body)

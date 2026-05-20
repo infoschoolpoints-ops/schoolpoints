@@ -1324,6 +1324,25 @@ class CashierStation:
         except Exception:
             pass
 
+    @staticmethod
+    def _isdir_safe(path, timeout_sec=3):
+        """Check os.path.isdir with a timeout to avoid SMB hangs on unreachable UNC paths."""
+        if not path:
+            return False
+        if not str(path).startswith('\\\\'):
+            return os.path.isdir(path)
+        import threading
+        result = [False]
+        def _check():
+            try:
+                result[0] = os.path.isdir(path)
+            except Exception:
+                result[0] = False
+        t = threading.Thread(target=_check, daemon=True)
+        t.start()
+        t.join(timeout=timeout_sec)
+        return result[0]
+
     def _get_config_file_path(self) -> str:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         for env_name in ("LOCALAPPDATA", "APPDATA", "PROGRAMDATA"):
@@ -1370,7 +1389,7 @@ class CashierStation:
         except Exception:
             shared_folder = None
 
-        if shared_folder and os.path.isdir(shared_folder):
+        if shared_folder and CashierStation._isdir_safe(shared_folder):
             shared_cfg_path = os.path.join(shared_folder, 'config.json')
             if os.path.exists(shared_cfg_path):
                 try:
@@ -1415,7 +1434,7 @@ class CashierStation:
                 shared_folder = None
                 if isinstance(cfg, dict):
                     shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
-                if shared_folder and os.path.isdir(shared_folder):
+                if shared_folder and CashierStation._isdir_safe(shared_folder):
                     shared_cfg_path = os.path.join(shared_folder, 'config.json')
                     try:
                         os.makedirs(shared_folder, exist_ok=True)
@@ -1437,6 +1456,69 @@ class CashierStation:
         except Exception:
             return False
 
+    def _open_deployment_wizard(self, cfg: dict) -> str:
+        """
+        wizard בחירת סוג התקנה לעמדת קופה — רק בהתקנה ראשונה.
+        מחזיר: 'local', 'hybrid' — או '' אם ביטל.
+        """
+        result = {'mode': ''}
+        try:
+            dlg = tk.Toplevel(self.root)
+            dlg.title("ברוכים הבאים — בחר סוג התקנה")
+            dlg.configure(bg='#2c3e50')
+            dlg.resizable(False, False)
+            dlg.grab_set()
+            dlg.lift()
+            dlg.focus_force()
+            try:
+                dlg.geometry("620x380")
+            except Exception:
+                pass
+
+            tk.Label(dlg, text="ברוכים הבאים לעמדת הקופה",
+                     font=('Arial', 15, 'bold'), bg='#2c3e50', fg='#ecf0f1').pack(pady=(24, 4))
+            tk.Label(dlg, text="כיצד עמדת הקופה מחוברת למסד הנתונים?",
+                     font=('Arial', 11), bg='#2c3e50', fg='#bdc3c7').pack(pady=(0, 16))
+
+            cards = tk.Frame(dlg, bg='#2c3e50')
+            cards.pack(padx=28, fill=tk.X)
+
+            def _card(parent, title, subtitle, color, cmd):
+                c = tk.Frame(parent, bg=color, cursor='hand2')
+                c.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=8, ipady=8)
+                tk.Label(c, text=title, font=('Arial', 11, 'bold'), bg=color, fg='white').pack(pady=(10, 3))
+                tk.Label(c, text=subtitle, font=('Arial', 9), bg=color, fg='#ecf0f1',
+                         wraplength=200, justify='center').pack(padx=6, pady=(0, 6))
+                tk.Button(c, text="בחר →", font=('Arial', 9, 'bold'),
+                          bg='white', fg=color, relief='flat', padx=12, pady=4,
+                          command=cmd, cursor='hand2').pack(pady=(4, 10))
+                c.bind('<Button-1>', lambda _e: cmd())
+
+            def _local():
+                result['mode'] = 'local'
+                dlg.destroy()
+
+            def _cloud():
+                result['mode'] = 'hybrid'
+                dlg.destroy()
+
+            _card(cards, "🏫  רשת מקומית",
+                  "תיקייה משותפת ברשת.\nברוב ההתקנות.",
+                  '#27ae60', _local)
+            _card(cards, "🌐  מקוון / היברידי",
+                  "חשבון ענן פעיל.\nסנכרון אוטומטי.",
+                  '#2980b9', _cloud)
+
+            tk.Label(dlg, text="ניתן לשנות בהגדרות המערכת.",
+                     font=('Arial', 8), bg='#2c3e50', fg='#7f8c8d').pack(pady=(12, 0))
+            tk.Button(dlg, text="ביטול", font=('Arial', 9), bg='#7f8c8d', fg='white',
+                      relief='flat', padx=10, pady=3, command=dlg.destroy).pack(pady=(4, 0))
+
+            self.root.wait_window(dlg)
+        except Exception:
+            pass
+        return result['mode']
+
     def ensure_shared_folder_config(self) -> bool:
         """First-run: ensure shared folder exists. Returns False if user cancels."""
         try:
@@ -1450,7 +1532,27 @@ class CashierStation:
             shared = None
             if isinstance(cfg, dict):
                 shared = cfg.get('shared_folder') or cfg.get('network_root')
-            if shared and os.path.isdir(shared):
+
+            # wizard סוג התקנה — רק בפעם הראשונה (אין mode ואין shared_folder)
+            if not mode and not shared:
+                chosen = self._open_deployment_wizard(cfg)
+                if not chosen:
+                    return False
+                cfg['deployment_mode'] = chosen
+                try:
+                    self._save_app_config(cfg)
+                except Exception:
+                    pass
+                if chosen in ('hybrid', 'cloud'):
+                    return True
+                try:
+                    mode = chosen
+                except Exception:
+                    pass
+
+            if mode in ('cloud', 'cloud_only', 'online', 'hybrid'):
+                return True
+            if shared and CashierStation._isdir_safe(shared):
                 return True
             return self._open_shared_folder_dialog(cfg)
         except Exception:
@@ -1542,7 +1644,7 @@ class CashierStation:
             shared_folder = None
             if isinstance(cfg, dict):
                 shared_folder = cfg.get('shared_folder') or cfg.get('network_root')
-            if shared_folder and os.path.isdir(shared_folder):
+            if shared_folder and CashierStation._isdir_safe(shared_folder):
                 master_file = os.path.join(shared_folder, 'master_card.txt')
                 if os.path.exists(master_file):
                     with open(master_file, 'r', encoding='utf-8') as f:

@@ -109,6 +109,85 @@ def api_settings_save(request: Request, payload: GenericSettingPayload) -> Dict[
         except: pass
 
 
+@router.get('/api/public-closures')
+def api_public_closures_list(request: Request) -> Dict[str, Any]:
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+    conn = tenant_db_connection(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, title, subtitle, start_at, end_at, repeat_weekly, '
+            'weekly_start_day, weekly_start_time, weekly_end_day, weekly_end_time, '
+            'image_path_portrait, image_path_landscape, enabled '
+            'FROM public_closures ORDER BY enabled DESC, start_at ASC'
+        )
+        rows = cur.fetchall() or []
+        items = []
+        for r in rows:
+            rr = dict(r) if isinstance(r, dict) else {k: r[k] for k in r.keys()}
+            items.append({
+                'id': rr.get('id'),
+                'title': rr.get('title') or '',
+                'subtitle': rr.get('subtitle') or '',
+                'start_at': rr.get('start_at') or '',
+                'end_at': rr.get('end_at') or '',
+                'repeat_weekly': int(rr.get('repeat_weekly') or 0),
+                'weekly_start_day': rr.get('weekly_start_day') or '',
+                'weekly_start_time': rr.get('weekly_start_time') or '',
+                'weekly_end_day': rr.get('weekly_end_day') or '',
+                'weekly_end_time': rr.get('weekly_end_time') or '',
+                'image_path_portrait': rr.get('image_path_portrait') or '',
+                'image_path_landscape': rr.get('image_path_landscape') or '',
+                'enabled': int(rr.get('enabled') or 0),
+            })
+        return {'items': items}
+    except Exception:
+        return {'items': []}
+    finally:
+        try: conn.close()
+        except: pass
+
+
+@router.get('/api/sync-diagnostic')
+def api_sync_diagnostic(request: Request) -> Dict[str, Any]:
+    guard = web_require_admin_teacher(request)
+    if guard: raise HTTPException(status_code=401)
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='missing tenant')
+    conn = tenant_db_connection(tenant_id)
+    try:
+        cur = conn.cursor()
+        diag: Dict[str, Any] = {'tenant_id': tenant_id}
+        for table in ['settings', 'time_bonus_schedules', 'public_closures', 'students', 'teachers']:
+            try:
+                cur.execute(f'SELECT COUNT(*) FROM {table}')
+                row = cur.fetchone()
+                count = int((row[0] if not isinstance(row, dict) else list(row.values())[0]) or 0)
+                diag[table] = count
+            except Exception as e:
+                diag[table] = f'error: {e}'
+        for key in ['anti_spam_config', 'quiet_mode_config', 'holidays', 'system_settings']:
+            try:
+                cur.execute(sql_placeholder('SELECT value FROM settings WHERE key = ? LIMIT 1'), (key,))
+                row = cur.fetchone()
+                if row:
+                    raw = (row['value'] if isinstance(row, dict) else row[0]) or ''
+                    diag[f'setting:{key}'] = raw[:200] if raw else '(empty)'
+                else:
+                    diag[f'setting:{key}'] = '(not found)'
+            except Exception as e:
+                diag[f'setting:{key}'] = f'error: {e}'
+        return diag
+    finally:
+        try: conn.close()
+        except: pass
+
+
 @router.get('/api/time-bonus')
 def api_time_bonus_list(request: Request) -> Dict[str, Any]:
     guard = web_require_admin_teacher(request)
@@ -1254,14 +1333,35 @@ def web_holidays(request: Request):
 
     <script>
       let holidays = [];
+      let closures = [];
 
       async function loadHolidays() {
         try {
           const res = await fetch('/api/settings/get/holidays');
           const data = await res.json();
           holidays = Array.isArray(data.items) ? data.items : [];
-          renderHolidays();
+        } catch(e) { holidays = []; }
+        try {
+          const res2 = await fetch('/api/public-closures');
+          const data2 = await res2.json();
+          closures = Array.isArray(data2.items) ? data2.items : [];
+          for (const c of closures) {
+            const exists = holidays.some(h => h.name === c.title && h.start_date === (c.start_at||'').split('T')[0] && h._src === 'closure');
+            if (!exists) {
+              holidays.push({
+                name: c.title || '',
+                start_date: (c.start_at || '').split('T')[0].split(' ')[0],
+                end_date: (c.end_at || '').split('T')[0].split(' ')[0],
+                message: c.subtitle || '',
+                image_url: c.image_path_portrait || c.image_path_landscape || '',
+                block_scans: !!c.enabled,
+                _src: 'closure',
+                _closure_id: c.id
+              });
+            }
+          }
         } catch(e) {}
+        renderHolidays();
       }
 
       function renderHolidays() {
@@ -1271,13 +1371,13 @@ def web_holidays(request: Request):
             return;
         }
         tbody.innerHTML = holidays.map((h, idx) => `
-          <tr style="border-bottom:1px solid #eee; hover:background:#fdfdfd;">
-            <td style="padding:12px;">${esc(h.name)}</td>
+          <tr style="border-bottom:1px solid #eee;">
+            <td style="padding:12px;">${esc(h.name)}${h._src==='closure'?' <span style="font-size:11px;color:#3498db;background:#eaf2ff;padding:2px 6px;border-radius:4px;">מהתוכנה</span>':''}</td>
             <td style="padding:12px;">${formatDate(h.start_date)}</td>
             <td style="padding:12px;">${formatDate(h.end_date)}</td>
             <td style="padding:12px;">
-              <button onclick="editHoliday(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
-              <button onclick="deleteHoliday(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>
+              ${h._src!=='closure'?`<button onclick="editHoliday(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">✏️</button>
+              <button onclick="deleteHoliday(${idx})" style="background:none; border:none; cursor:pointer; font-size:16px;">🗑️</button>`:'<span style="font-size:11px;color:#888;">ניהול בתוכנה</span>'}
             </td>
           </tr>
         `).join('');
@@ -2536,3 +2636,68 @@ def web_personal(request: Request):
     </script>
     """
     return basic_web_shell("אזור אישי", html_content, request=request)
+
+
+@router.get('/web/sync-status', response_class=HTMLResponse)
+def web_sync_status(request: Request):
+    guard = web_require_admin_teacher(request)
+    if guard: return guard
+    html_content = """
+    <h2 style="margin-bottom:16px;">מצב סנכרון</h2>
+    <div class="card" style="padding:20px;">
+      <div id="diag-loading" style="color:#888;">טוען נתונים...</div>
+      <div id="diag-result" style="display:none;"></div>
+      <button class="blue" onclick="loadDiag()" style="margin-top:16px;">רענן</button>
+    </div>
+    <script>
+      async function loadDiag() {
+        document.getElementById('diag-loading').style.display = 'block';
+        document.getElementById('diag-result').style.display = 'none';
+        try {
+          const r = await fetch('/api/sync-diagnostic');
+          const d = await r.json();
+          let html = '<table style="width:100%;border-collapse:collapse;">';
+          html += '<tr style="background:#f5f7fa;"><th style="padding:10px;text-align:right;border-bottom:2px solid #ddd;">פריט</th><th style="padding:10px;text-align:right;border-bottom:2px solid #ddd;">מצב</th></tr>';
+          const labels = {
+            'tenant_id': 'מזהה מוסד',
+            'settings': 'טבלת הגדרות (settings)',
+            'time_bonus_schedules': 'בונוס זמנים (time_bonus_schedules)',
+            'public_closures': 'חגים וחופשות (public_closures)',
+            'students': 'תלמידים',
+            'teachers': 'מורים',
+            'setting:anti_spam_config': 'הגדרת אנטי-ספאם',
+            'setting:quiet_mode_config': 'הגדרת מצב שקט',
+            'setting:holidays': 'חגים (settings)',
+            'setting:system_settings': 'הגדרות מערכת'
+          };
+          for (const [k, v] of Object.entries(d)) {
+            const label = labels[k] || k;
+            let val = v;
+            let color = '#333';
+            if (typeof v === 'number') {
+              val = v + ' רשומות';
+              color = v > 0 ? '#27ae60' : '#e74c3c';
+            } else if (v === '(not found)' || v === '(empty)') {
+              color = '#e74c3c';
+              val = v === '(not found)' ? 'לא נמצא' : 'ריק';
+            } else if (typeof v === 'string' && v.startsWith('error:')) {
+              color = '#e74c3c';
+            } else if (typeof v === 'string' && v.length > 0 && v !== '(not found)' && v !== '(empty)') {
+              color = '#27ae60';
+              val = v.length > 80 ? v.substring(0, 80) + '...' : v;
+            }
+            html += '<tr style="border-bottom:1px solid #eee;"><td style="padding:10px;font-weight:600;">' + label + '</td><td style="padding:10px;color:' + color + ';">' + val + '</td></tr>';
+          }
+          html += '</table>';
+          document.getElementById('diag-result').innerHTML = html;
+          document.getElementById('diag-result').style.display = 'block';
+        } catch(e) {
+          document.getElementById('diag-result').innerHTML = '<div style="color:red;">שגיאה בטעינה: ' + e.message + '</div>';
+          document.getElementById('diag-result').style.display = 'block';
+        }
+        document.getElementById('diag-loading').style.display = 'none';
+      }
+      loadDiag();
+    </script>
+    """
+    return basic_web_shell("מצב סנכרון", html_content, request=request)

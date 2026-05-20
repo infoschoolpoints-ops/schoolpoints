@@ -11,8 +11,8 @@ AppVersion=1.1.0
 DefaultDirName={pf}\SchoolPoints
 DefaultGroupName=מערכת ניקוד בית ספרית
 OutputBaseFilename=SchoolPoints_Setup_v{#MyAppVersion}
-Compression=lzma
-SolidCompression=yes
+Compression=lzma2
+SolidCompression=no
 DisableProgramGroupPage=no
 ArchitecturesInstallIn64BitMode=x64
 
@@ -44,8 +44,8 @@ Source: "dist\SchoolPoints_Admin\*"; DestDir: "{app}\Admin"; Flags: ignoreversio
 ; קבצי עמדה ציבורית
 Source: "dist\SchoolPoints_Public\*"; DestDir: "{app}\Public"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: public
 
-; קבצי עמדת קופה
-Source: "dist\SchoolPoints_Cashier\*"; DestDir: "{app}\Cashier"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: cashier
+; קבצי עמדת קופה (ללא תיקיית סאונד — עמדת קופה אינה משתמשת בצלילים)
+Source: "dist\SchoolPoints_Cashier\*"; DestDir: "{app}\Cashier"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "\sounds\*"; Components: cashier
 
 ; קבצי הוראות HTML (חדש!)
 Source: "guide_admin.html"; DestDir: "{app}\Admin"; Flags: ignoreversion; Components: admin

@@ -24,6 +24,7 @@ class SnapshotPayload(BaseModel):
     news_items: List[Dict[str, Any]] = []
     ads_items: List[Dict[str, Any]] = []
     student_messages: List[Dict[str, Any]] = []
+    snapshot: Optional[Dict[str, Any]] = None
 
 class Snapshot2Payload(BaseModel):
     tenant_id: str

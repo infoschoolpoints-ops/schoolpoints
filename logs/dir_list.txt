@@ -1,0 +1,17 @@
+﻿C:\מיצד\SchoolPoints\backups
+C:\מיצד\SchoolPoints\build
+C:\מיצד\SchoolPoints\CashierPC
+C:\מיצד\SchoolPoints\cloud_service
+C:\מיצד\SchoolPoints\dist
+C:\מיצד\SchoolPoints\equipment_required_files
+C:\מיצד\SchoolPoints\icons
+C:\מיצד\SchoolPoints\logs
+C:\מיצד\SchoolPoints\Output
+C:\מיצד\SchoolPoints\sounds
+C:\מיצד\SchoolPoints\wheels
+C:\מיצד\SchoolPoints\_clean_install
+C:\מיצד\SchoolPoints\__pycache__
+C:\מיצד\SchoolPoints\גיבוי רובע
+C:\מיצד\SchoolPoints\נתונים ביתר
+C:\מיצד\SchoolPoints\תמונות
+C:\מיצד\SchoolPoints\‏‏תיקיה חדשה

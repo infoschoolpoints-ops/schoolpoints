@@ -86,6 +86,10 @@ def web_admin(request: Request):
           <div class="icon">📤</div>
           <div class="label">ייצוא / דוחות</div>
         </a>
+        <a href="/web/sync-status" class="tile gray">
+          <div class="icon">🔄</div>
+          <div class="label">מצב סנכרון</div>
+        </a>
         """
     
     # Personal Area & Guide (Everyone)

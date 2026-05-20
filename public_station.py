@@ -5105,7 +5105,20 @@ class PublicStation:
             if isinstance(local_cfg, dict):
                 shared_folder = local_cfg.get('shared_folder') or local_cfg.get('network_root')
 
-            if shared_folder and os.path.isdir(shared_folder):
+            def _is_dir_with_timeout(path, timeout=3.0):
+                """os.path.isdir on a UNC path can block indefinitely if network is down. Run with timeout."""
+                result = [False]
+                def _check():
+                    try:
+                        result[0] = os.path.isdir(path)
+                    except Exception:
+                        result[0] = False
+                t = threading.Thread(target=_check, daemon=True)
+                t.start()
+                t.join(timeout)
+                return result[0]
+
+            if shared_folder and _is_dir_with_timeout(shared_folder):
                 shared_config_path = os.path.join(shared_folder, 'config.json')
                 shared_cfg = None
 
@@ -5549,12 +5562,91 @@ class PublicStation:
         except Exception:
             return
 
+    def _open_deployment_wizard(self, cfg: dict) -> str:
+        """
+        wizard בחירת סוג התקנה ראשוני לעמדה הציבורית.
+        מחזיר: 'local', 'hybrid' — או '' אם ביטל.
+        נקרא רק בפעם הראשונה (אין deployment_mode ואין shared_folder).
+        """
+        result = {'mode': ''}
+        try:
+            dlg = tk.Toplevel(self.root)
+            dlg.title("ברוכים הבאים — בחר סוג התקנה")
+            dlg.configure(bg='#2c3e50')
+            dlg.resizable(False, False)
+            dlg.grab_set()
+            dlg.lift()
+            dlg.focus_force()
+            try:
+                dlg.geometry("660x400")
+            except Exception:
+                pass
+
+            tk.Label(dlg, text="ברוכים הבאים לעמדה הציבורית",
+                     font=('Arial', 16, 'bold'), bg='#2c3e50', fg='#ecf0f1').pack(pady=(28, 4))
+            tk.Label(dlg, text="כיצד העמדה הציבורית מחוברת למסד הנתונים?",
+                     font=('Arial', 11), bg='#2c3e50', fg='#bdc3c7').pack(pady=(0, 18))
+
+            cards = tk.Frame(dlg, bg='#2c3e50')
+            cards.pack(padx=30, fill=tk.X)
+
+            def _card(parent, title, subtitle, color, cmd):
+                c = tk.Frame(parent, bg=color, cursor='hand2')
+                c.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=10, ipady=10)
+                tk.Label(c, text=title, font=('Arial', 12, 'bold'), bg=color, fg='white').pack(pady=(12, 4))
+                tk.Label(c, text=subtitle, font=('Arial', 9), bg=color, fg='#ecf0f1',
+                         wraplength=210, justify='center').pack(padx=8, pady=(0, 8))
+                tk.Button(c, text="בחר →", font=('Arial', 10, 'bold'),
+                          bg='white', fg=color, relief='flat', padx=14, pady=5,
+                          command=cmd, cursor='hand2').pack(pady=(4, 12))
+                c.bind('<Button-1>', lambda _e: cmd())
+
+            def _local():
+                result['mode'] = 'local'
+                dlg.destroy()
+
+            def _cloud():
+                result['mode'] = 'hybrid'
+                dlg.destroy()
+
+            _card(cards, "🏫  רשת מקומית",
+                  "מחוברת לתיקייה משותפת ברשת הבית-ספרית.\nרגיל — ברוב ההתקנות.",
+                  '#27ae60', _local)
+            _card(cards, "🌐  מקוון / היברידי",
+                  "מחוברת לחשבון ענן.\nנדרש חשבון מקוון פעיל.",
+                  '#2980b9', _cloud)
+
+            tk.Label(dlg, text="ניתן לשנות בהגדרות המערכת בכל עת.",
+                     font=('Arial', 8), bg='#2c3e50', fg='#7f8c8d').pack(pady=(14, 0))
+            tk.Button(dlg, text="ביטול", font=('Arial', 9), bg='#7f8c8d', fg='white',
+                      relief='flat', padx=12, pady=3, command=dlg.destroy).pack(pady=(5, 0))
+
+            self.root.wait_window(dlg)
+        except Exception:
+            pass
+        return result['mode']
+
     def ensure_shared_folder_config(self) -> bool:
         """בדיקה/הגדרה של תיקיית רשת משותפת לפי קובץ ההגדרות החי."""
         try:
             cfg = self.load_app_config() or {}
             shared = cfg.get('shared_folder') or cfg.get('network_root')
             previously_configured = bool(shared)
+
+            # wizard סוג התקנה — רק בפעם הראשונה
+            existing_mode = str(cfg.get('deployment_mode') or '').strip().lower()
+            if not existing_mode and not shared:
+                chosen = self._open_deployment_wizard(cfg)
+                if not chosen:
+                    return False
+                cfg['deployment_mode'] = chosen
+                try:
+                    self.save_app_config(cfg)
+                except Exception:
+                    pass
+                if chosen in ('hybrid', 'cloud'):
+                    return True
+
             if shared and not _safe_isdir(shared):
                 try:
                     messagebox.showwarning(
