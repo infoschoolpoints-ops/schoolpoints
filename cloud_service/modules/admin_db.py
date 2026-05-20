@@ -18,6 +18,7 @@ _INST_COLS = [
     "license_expiry TEXT DEFAULT ''",
     "notes TEXT DEFAULT ''",
     "max_stations INTEGER DEFAULT 2",
+    "api_key TEXT DEFAULT ''",
 ]
 
 # (plan_key, display_name, price_monthly, description, features_json, max_stations, is_active, sort_order, duration_months, is_featured, is_visible)

@@ -5562,6 +5562,82 @@ class PublicStation:
         except Exception:
             return
 
+    def _open_cloud_credentials_dialog(self, cfg: dict) -> bool:
+        """Show a dialog to collect cloud sync credentials and write them into cfg. Returns True if saved."""
+        result = {'ok': False}
+        try:
+            dlg = tk.Toplevel(self.root)
+            dlg.title("הגדרות חיבור לענן")
+            dlg.configure(bg='#1e2a38')
+            dlg.resizable(False, False)
+            dlg.grab_set()
+            dlg.lift()
+            dlg.focus_force()
+            try:
+                dlg.geometry("560x420")
+            except Exception:
+                pass
+
+            def _lbl(parent, text, size=11, fg='#ecf0f1', bold=False):
+                font = ('Arial', size, 'bold') if bold else ('Arial', size)
+                tk.Label(parent, text=text, font=font, bg='#1e2a38', fg=fg).pack(anchor='e', padx=24, pady=(6, 0))
+
+            def _entry(parent, default='', show=None):
+                v = tk.StringVar(value=str(default or ''))
+                kw = {'textvariable': v, 'font': ('Arial', 11), 'width': 42, 'relief': 'flat', 'bd': 4}
+                if show:
+                    kw['show'] = show
+                e = tk.Entry(parent, **kw)
+                e.pack(anchor='e', padx=24, pady=(2, 0))
+                return v
+
+            tk.Label(dlg, text="חיבור לחשבון ענן SchoolPoints",
+                     font=('Arial', 14, 'bold'), bg='#1e2a38', fg='#3498db').pack(pady=(20, 4))
+            tk.Label(dlg, text="הזן את פרטי החשבון מהמייל שקיבלת בעת ההרשמה.",
+                     font=('Arial', 9), bg='#1e2a38', fg='#95a5a6').pack(pady=(0, 10))
+
+            _lbl(dlg, "מזהה מוסד (Tenant ID):", bold=True)
+            v_tid = _entry(dlg, cfg.get('sync_tenant_id') or '')
+
+            _lbl(dlg, "מפתח API:", bold=True)
+            v_api = _entry(dlg, cfg.get('sync_api_key') or '', show='*')
+
+            _lbl(dlg, "כתובת שרת (ברירת מחדל: מלא אוטומטית):", fg='#95a5a6')
+            v_url = _entry(dlg, cfg.get('sync_push_url') or 'https://schoolpoints.co.il/sync/push2')
+
+            def _save():
+                tid = v_tid.get().strip()
+                key = v_api.get().strip()
+                url = v_url.get().strip() or 'https://schoolpoints.co.il/sync/push2'
+                if not tid or not key:
+                    try:
+                        messagebox.showwarning("שדות חסרים", "יש למלא Tenant ID ומפתח API.", parent=dlg)
+                    except Exception:
+                        pass
+                    return
+                cfg['sync_tenant_id'] = tid
+                cfg['sync_api_key'] = key
+                cfg['sync_push_url'] = url
+                result['ok'] = True
+                dlg.destroy()
+
+            def _skip():
+                dlg.destroy()
+
+            btn_frame = tk.Frame(dlg, bg='#1e2a38')
+            btn_frame.pack(pady=20)
+            tk.Button(btn_frame, text="שמור וחבר", font=('Arial', 11, 'bold'),
+                      bg='#2980b9', fg='white', relief='flat', padx=20, pady=6,
+                      command=_save, cursor='hand2').pack(side=tk.RIGHT, padx=8)
+            tk.Button(btn_frame, text="דלג (הגדר מאוחר יותר)", font=('Arial', 9),
+                      bg='#7f8c8d', fg='white', relief='flat', padx=12, pady=4,
+                      command=_skip, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+
+            self.root.wait_window(dlg)
+        except Exception as e:
+            _debug_log(f'_open_cloud_credentials_dialog error: {e}')
+        return result['ok']
+
     def _open_deployment_wizard(self, cfg: dict) -> str:
         """
         wizard בחירת סוג התקנה ראשוני לעמדה הציבורית.
@@ -5645,6 +5721,11 @@ class PublicStation:
                 except Exception:
                     pass
                 if chosen in ('hybrid', 'cloud'):
+                    try:
+                        self._open_cloud_credentials_dialog(cfg)
+                        self.save_app_config(cfg)
+                    except Exception:
+                        pass
                     return True
 
             if shared and not _safe_isdir(shared):
@@ -7228,7 +7309,7 @@ class PublicStation:
 
         dialog = tk.Toplevel(self.root)
         dialog.title("תפריט מנהל - עמדת תצוגה")
-        dialog.geometry("420x240")
+        dialog.geometry("420x310")
         dialog.configure(bg='#ecf0f1')
         dialog.transient(self.root)
         dialog.grab_set()
@@ -7259,6 +7340,22 @@ class PublicStation:
             self._admin_menu_exit_deadline = None
             self.open_public_settings_dialog()
 
+        def open_cloud_settings():
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+            self._admin_menu_open = False
+            self._admin_menu_dialog = None
+            self._admin_menu_exit_deadline = None
+            try:
+                cfg = self.load_app_config() or {}
+                saved = self._open_cloud_credentials_dialog(cfg)
+                if saved:
+                    self.save_app_config(cfg)
+            except Exception:
+                pass
+
         def exit_station():
             try:
                 dialog.destroy()
@@ -7271,7 +7368,7 @@ class PublicStation:
 
         tk.Button(
             btn_frame,
-            text="⚙ שינוי הגדרות עמדה",
+            text="\u2699 \u05e9\u05d9\u05e0\u05d5\u05d9 \u05d4\u05d2\u05d3\u05e8\u05d5\u05ea \u05e2\u05de\u05d3\u05d4",
             command=open_settings,
             font=('Arial', 12),
             bg='#3498db',
@@ -7282,7 +7379,18 @@ class PublicStation:
 
         tk.Button(
             btn_frame,
-            text="🚪 יציאה מהעמדה",
+            text="\U0001f310 \u05d7\u05d9\u05d1\u05d5\u05e8 \u05dc\u05e2\u05e0\u05df (\u05e1\u05d9\u05e0\u05db\u05e8\u05d5\u05df)",
+            command=open_cloud_settings,
+            font=('Arial', 12),
+            bg='#27ae60',
+            fg='white',
+            padx=25,
+            pady=10
+        ).pack(pady=5, fill=tk.X)
+
+        tk.Button(
+            btn_frame,
+            text="\U0001f6aa \u05d9\u05e6\u05d9\u05d0\u05d4 \u05de\u05d4\u05e2\u05de\u05d3\u05d4",
             command=exit_station,
             font=('Arial', 12),
             bg='#e74c3c',
