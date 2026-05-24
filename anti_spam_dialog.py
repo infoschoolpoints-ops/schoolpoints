@@ -501,10 +501,18 @@ def open_anti_spam_dialog(parent, load_config_func, save_config_func, db=None):
             tree.selection_set(tree.get_children()[index+1])
     
     def save_all():
+        import json as _json
         config = load_config_func()
         config['anti_spam_enabled'] = enabled_var.get()
         config['anti_spam_rules'] = rules_list
         if save_config_func(config):
+            # סנכרון לטבלת settings ב-DB (לענן)
+            try:
+                if db and hasattr(db, 'set_setting'):
+                    _val = _json.dumps({'anti_spam_enabled': bool(enabled_var.get()), 'anti_spam_rules': rules_list}, ensure_ascii=False)
+                    db.set_setting('anti_spam_config', _val)
+            except Exception:
+                pass
             messagebox.showinfo("הצלחה", "ההגדרות נשמרו בהצלחה")
             dialog.destroy()
         else:

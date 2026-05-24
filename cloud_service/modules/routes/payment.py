@@ -146,11 +146,13 @@ def _record_payment(*, tenant_id: str, email: str, plan: str, amount: int,
     conn = get_db_connection()
     try:
         cur = conn.cursor()
+        notes_val = (plan or '') + (' | ' if plan else '') + (email or '')
+        if status and status != 'completed':
+            notes_val = f'{status} | {notes_val}'
         cur.execute(sql_placeholder(
             "INSERT INTO institution_payments (tenant_id, amount, payment_method, reference, notes, payment_date) "
             "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"),
-            (tenant_id or email, amount, method, reference,
-             json.dumps({'plan': plan, 'status': status, 'email': email, 'raw': raw_response[:1000]}, ensure_ascii=False)))
+            (tenant_id or email, amount, method, reference, notes_val.strip(' |')))
         conn.commit()
         # Get last id
         if USE_POSTGRES:
@@ -421,18 +423,19 @@ async def api_payment_webhook_payme(request: Request) -> Dict[str, Any]:
 
     logger.info(f"[PAYME-IPN] Received: {json.dumps(payload, ensure_ascii=False, default=str)[:500]}")
 
-    sale_status = str(payload.get('sale_status') or '').strip().lower()
+    sale_status = str(payload.get('sale_status') or payload.get('payme_status') or payload.get('status') or '').strip().lower()
     if sale_status not in ('completed', 'success', 'approved'):
         logger.info(f"[PAYME-IPN] Non-success status: {sale_status}")
         return {'ok': True, 'processed': False, 'detail': f'Status: {sale_status}'}
 
     email = str(payload.get('buyer_email') or payload.get('payer_email') or '').strip()
     sale_id = str(payload.get('sale_payme_id') or payload.get('payme_sale_id') or '').strip()
-    amount = payload.get('sale_paid_amount') or payload.get('amount') or 0
+    amount_raw = payload.get('sale_paid_amount') or payload.get('sale_total') or payload.get('price') or payload.get('amount') or 0
+    amount_shekels = int(round(int(float(amount_raw or 0)) / 100)) if int(float(amount_raw or 0)) >= 100 else int(float(amount_raw or 0))
 
     if email:
         _record_payment(
-            tenant_id='', email=email, plan='', amount=int(float(amount or 0)),
+            tenant_id='', email=email, plan='', amount=amount_shekels,
             method='payme_ipn', reference=sale_id, status='completed',
             raw_response=json.dumps(payload, ensure_ascii=False, default=str)[:2000],
         )

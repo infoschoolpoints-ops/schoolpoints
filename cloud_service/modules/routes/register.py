@@ -123,8 +123,9 @@ _REG_FORM_TEMPLATE = """
 <div class="fg"><label>טלפון</label><input name="phone" class="ri" placeholder="050-1234567" style="direction:ltr;text-align:left;"/></div>
 
 <div class="st">סיסמה</div>
-<div class="fg"><label>סיסמת ניהול *</label><input name="password" type="password" class="ri" required minlength="4" placeholder="לפחות 4 תווים"/></div>
-<div class="fg"><label>אימות סיסמה *</label><input name="password2" type="password" class="ri" required minlength="4" placeholder="הזן שוב"/></div>
+<div class="fg"><label>סיסמת ניהול *</label><div style="position:relative;"><input id="pw-r1" name="password" type="password" class="ri" required minlength="4" placeholder="לפחות 4 תווים" style="padding-left:38px;"/><button type="button" onclick="togglePwR('pw-r1',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר">👁</button></div></div>
+<div class="fg"><label>אימות סיסמה *</label><div style="position:relative;"><input id="pw-r2" name="password2" type="password" class="ri" required minlength="4" placeholder="הזן שוב" style="padding-left:38px;"/><button type="button" onclick="togglePwR('pw-r2',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר">👁</button></div></div>
+<script>function togglePwR(id,btn){var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';}</script>
 
 <div class="cb"><input type="checkbox" id="terms" name="terms" required><label for="terms">קראתי ואני מסכים/ה ל<a href="/web/terms" target="_blank">תנאי השימוש</a></label></div>
 <div id="regMsg"></div>
@@ -280,7 +281,7 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
                 except: pass
                 raise HTTPException(500, detail=f'DB creation failed: {e}')
             conn.commit()
-            _send_welcome_email(contact, email, inst_name, inst_code, plan)
+            _send_welcome_email(contact, email, inst_name, inst_code, plan, api_key)
             _notify_admin(inst_name, inst_code, contact, email, phone, plan)
             return {'ok': True, 'tenant_id': inst_code, 'plan': plan}
     except HTTPException:
@@ -308,21 +309,66 @@ def _notify_admin(inst_name, inst_code, contact, email, phone, plan):
     except Exception:
         pass
 
-def _send_welcome_email(contact, email, inst_name, inst_code, plan='basic'):
+def _send_welcome_email(contact, email, inst_name, inst_code, plan='basic', api_key=''):
     try:
-        pn = {'basic':'Basic','extended':'Extended','unlimited':'Unlimited'}.get(plan, plan)
-        b = '<div dir="rtl" style="font-family:Arial;line-height:1.8;color:#333;">'
-        b += '<h2 style="color:#2ecc71;">\u05d1\u05e8\u05d5\u05db\u05d9\u05dd \u05d4\u05d1\u05d0\u05d9\u05dd \u05dc-SchoolPoints!</h2>'
-        b += f'<p>\u05e9\u05dc\u05d5\u05dd {html_mod.escape(contact)},</p>'
-        b += f'<p>\u05d4\u05d7\u05e9\u05d1\u05d5\u05df \u05e9\u05dc <b>{html_mod.escape(inst_name)}</b> \u05e0\u05e4\u05ea\u05d7 \u05d1\u05d4\u05e6\u05dc\u05d7\u05d4!</p>'
-        b += f'<p><b>\u05e7\u05d5\u05d3 \u05de\u05d5\u05e1\u05d3:</b> {html_mod.escape(inst_code)}</p>'
-        b += f'<p><b>\u05de\u05e1\u05dc\u05d5\u05dc:</b> {html_mod.escape(pn)}</p>'
-        b += '<p>\u05db\u05d3\u05d9 \u05dc\u05d4\u05ea\u05d7\u05d9\u05dc:</p><ol>'
-        b += '<li>\u05d4\u05d9\u05db\u05e0\u05e1\u05d5 \u05dc- <a href="https://schoolpoints.co.il/web/signin">\u05d3\u05e3 \u05d4\u05db\u05e0\u05d9\u05e1\u05d4</a></li>'
-        b += f'<li>\u05d4\u05d6\u05d9\u05e0\u05d5 \u05d0\u05ea \u05e7\u05d5\u05d3 \u05d4\u05de\u05d5\u05e1\u05d3: <b>{html_mod.escape(inst_code)}</b></li>'
-        b += '<li>\u05d4\u05d6\u05d9\u05e0\u05d5 \u05d0\u05ea \u05d4\u05e1\u05d9\u05e1\u05de\u05d4 \u05e9\u05d1\u05d7\u05e8\u05ea\u05dd</li></ol>'
-        b += '<p>\u05d1\u05d4\u05e6\u05dc\u05d7\u05d4!<br>\u05e6\u05d5\u05d5\u05ea SchoolPoints</p></div>'
-        send_email(email, 'SchoolPoints - \u05d1\u05e8\u05d5\u05db\u05d9\u05dd \u05d4\u05d1\u05d0\u05d9\u05dd!', b)
+        esc = html_mod.escape
+        plan_display = plan
+        try:
+            from ..admin_db import ensure_admin_tables, get_all_plans
+            ensure_admin_tables()
+            for p in get_all_plans():
+                if p.get('plan_key') == plan:
+                    plan_display = str(p.get('display_name') or plan)
+                    break
+        except Exception:
+            pass
+        if plan == 'trial':
+            plan_display = 'ניסיון (7 ימים חינם)'
+        activate_url = f'https://schoolpoints.co.il/web/activate?tenant_id={esc(str(inst_code))}'
+        my_account_url = 'https://schoolpoints.co.il/web/my-account'
+        download_url = 'https://schoolpoints.co.il/web/download'
+        api_section = ''
+        if api_key:
+            api_section = (
+                '<div style="background:#fff8e1;padding:16px;border-radius:10px;border:1px solid #ffe082;margin:20px 0;">'
+                '<h3 style="margin-top:0;color:#f57f17;">&#128273; מפתח API (לחיבור התוכנה לענן)</h3>'
+                '<p style="margin:0 0 8px;">שמור מפתח זה — הוא משמש לחיבור תוכנת SchoolPoints לחשבון הענן שלך:</p>'
+                f'<div style="font-family:monospace;background:#fff;border:1px solid #ffc107;padding:10px 14px;border-radius:6px;font-size:14px;word-break:break-all;direction:ltr;text-align:left;">{esc(api_key)}</div>'
+                '<p style="margin:8px 0 0;font-size:12px;color:#888;">בהגדרות התוכנה: הגדרות מערכת → סנכרון ענן → הדבק Tenant ID ומפתח זה</p>'
+                '</div>'
+            )
+        b = (
+            '<div dir="rtl" style="font-family:Arial,sans-serif;line-height:1.7;color:#333;max-width:580px;margin:0 auto;">'
+            '<div style="background:linear-gradient(135deg,#667eea,#764ba2);padding:32px 24px;border-radius:16px 16px 0 0;text-align:center;">'
+            '<h1 style="color:#fff;margin:0;font-size:28px;">&#127881; ברוכים הבאים!</h1>'
+            '<p style="color:rgba(255,255,255,.85);margin:8px 0 0;font-size:16px;">SchoolPoints — מערכת ניקוד דיגיטלית</p>'
+            '</div>'
+            '<div style="background:#fff;padding:28px 24px;border:1px solid #e8e8e8;border-top:none;border-radius:0 0 16px 16px;">'
+            f'<p>שלום <b>{esc(contact)}</b>,</p>'
+            f'<p>החשבון של <b>{esc(inst_name)}</b> נפתח בהצלחה!</p>'
+            '<div style="background:#f4f8ff;padding:16px;border-radius:10px;border:1px solid #d0ddf5;margin:20px 0;">'
+            '<h3 style="margin-top:0;color:#3d5afe;">&#127963; פרטי המוסד</h3>'
+            f'<div style="margin-bottom:6px;"><b>שם המוסד:</b> {esc(inst_name)}</div>'
+            f'<div style="margin-bottom:6px;"><b>מסלול:</b> {esc(plan_display)}</div>'
+            f'<div><b>מזהה מוסד (Tenant ID):</b> <span style="font-family:monospace;background:#e8eeff;padding:2px 8px;border-radius:4px;font-size:15px;">{esc(str(inst_code))}</span></div>'
+            '</div>'
+            + api_section +
+            '<div style="background:#eaf7ee;padding:16px;border-radius:10px;border:1px solid #c3e6cb;margin:20px 0;">'
+            '<h3 style="margin-top:0;color:#27ae60;">&#9989; צעדים ראשונים</h3>'
+            '<ol style="margin:0;padding-right:20px;">'
+            f'<li style="margin-bottom:8px;"><a href="{download_url}" style="color:#27ae60;font-weight:700;">הורד והתקן את התוכנה</a></li>'
+            '<li style="margin-bottom:8px;">הפעל את עמדת הניהול</li>'
+            '<li style="margin-bottom:8px;">פתח <b>הגדרות מערכת ← רישום מערכת</b> והעתק את <b>קוד המערכת</b></li>'
+            f'<li style="margin-bottom:8px;"><a href="{activate_url}" style="color:#27ae60;font-weight:700;">לחץ כאן להפעלת הרישיון</a> — הדבק קוד מערכת וקבל קוד הפעלה</li>'
+            '<li>הדבק את קוד ההפעלה בתוכנה</li>'
+            '</ol></div>'
+            f'<div style="text-align:center;margin:24px 0 8px;"><a href="{my_account_url}" style="display:inline-block;padding:12px 28px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border-radius:10px;text-decoration:none;font-weight:700;font-size:15px;">כניסה לאזור האישי</a></div>'
+            '<hr style="border:0;border-top:1px solid #eee;margin:20px 0;">'
+            '<div style="font-size:12px;color:#aaa;text-align:center;">הודעה זו נשלחה אוטומטית ממערכת SchoolPoints Cloud.<br>'
+            '<a href="mailto:info@schoolpoints.co.il" style="color:#667eea;">info@schoolpoints.co.il</a></div>'
+            '</div></div>'
+        )
+        send_email(email, 'ברוכים הבאים ל-SchoolPoints! &#127881;', b)
     except Exception as e:
         logger.error(f"Welcome email error: {e}")
 

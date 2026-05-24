@@ -240,6 +240,23 @@ def admin_payments_page(request: Request) -> str:
         try: conn.close()
         except: pass
 
+    def _clean_notes(raw: str) -> str:
+        if not raw:
+            return ''
+        raw = str(raw)
+        if raw.startswith('{'):
+            try:
+                import json as _j
+                d = _j.loads(raw)
+                parts = []
+                if d.get('plan'): parts.append(d['plan'])
+                if d.get('email'): parts.append(d['email'])
+                if d.get('status') and d.get('status') != 'completed': parts.append(d['status'])
+                return ' | '.join(parts) if parts else ''
+            except Exception:
+                pass
+        return raw[:120]
+
     rows_html = ""
     total = 0
     for pr in pay_rows:
@@ -248,7 +265,8 @@ def admin_payments_page(request: Request) -> str:
         total += amt
         tid = pd.get('tenant_id','')
         iname = pd.get('inst_name','') or tid
-        rows_html += f'<tr style="border-bottom:1px solid #eee;"><td style="padding:8px;"><a href="/admin/institutions/{tid}" style="color:#2563eb;text-decoration:none;">{iname}</a></td><td style="padding:8px;">₪{amt}</td><td style="padding:8px;">{pd.get("payment_date","")}</td><td style="padding:8px;">{pd.get("payment_method","")}</td><td style="padding:8px;">{pd.get("reference","")}</td><td style="padding:8px;font-size:12px;">{pd.get("notes","")}</td></tr>'
+        notes_display = _clean_notes(pd.get('notes',''))
+        rows_html += f'<tr style="border-bottom:1px solid #eee;"><td style="padding:8px;"><a href="/admin/institutions/{tid}" style="color:#2563eb;text-decoration:none;">{iname}</a></td><td style="padding:8px;">₪{amt}</td><td style="padding:8px;">{pd.get("payment_date","")}</td><td style="padding:8px;">{pd.get("payment_method","")}</td><td style="padding:8px;">{pd.get("reference","")}</td><td style="padding:8px;font-size:12px;">{notes_display}</td></tr>'
 
     body = f"""
     <h2>תשלומים</h2>

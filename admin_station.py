@@ -3602,6 +3602,8 @@ class AdminStation:
 
         # עריכה רק בעמודות "נקודות" ו"הודעה פרטית" (ללא קשר למיקומן על המסך)
         if col_id in ('נקודות', 'הודעה פרטית'):
+            if not self.ensure_can_modify():
+                return
             self.start_inline_edit(item_id, col_id)
 
     def start_inline_edit(self, item_id, column):
@@ -3795,6 +3797,14 @@ class AdminStation:
     
     def ensure_can_modify(self) -> bool:
         """בדיקת רישיון לפני ביצוע פעולה המשנה נתונים"""
+        if getattr(self, '_license_readonly', False):
+            try:
+                messagebox.showerror("מצב תצוגה בלבד",
+                                     "המערכת פועלת במצב תצוגה בלבד — הרישיון פג תוקף.\n"
+                                     "לביצוע שינויים יש להפעיל רישיון חדש.")
+            except Exception:
+                pass
+            return False
         lm = getattr(self, "license_manager", None)
         if lm is None:
             return True
@@ -12981,6 +12991,38 @@ class AdminStation:
                     messagebox.showerror('שגיאה', f'אירעה שגיאה: {e}', parent=dialog2)
 
             tk.Button(row1gi, text='🚀 אתחול ענן (שלח הכל)', command=_do_cloud_init_push, bg='#e67e22', fg='white', font=('Arial', 9, 'bold')).pack(side=tk.RIGHT, padx=5, pady=5)
+
+            def _import_reg_file():
+                from tkinter import filedialog
+                import json as _json_reg
+                path = filedialog.askopenfilename(
+                    parent=dialog2,
+                    title='בחר קובץ הרשמה',
+                    filetypes=[('קובץ הרשמה', '*.json'), ('כל הקבצים', '*.*')]
+                )
+                if not path:
+                    return
+                try:
+                    with open(path, 'r', encoding='utf-8') as _f:
+                        data = _json_reg.load(_f)
+                except Exception as e:
+                    messagebox.showerror('שגיאה', f'לא ניתן לקרוא את הקובץ:\n{e}', parent=dialog2)
+                    return
+                tid = str(data.get('tenant_id') or '').strip()
+                ak  = str(data.get('api_key') or '').strip()
+                srv = str(data.get('server_url') or 'https://schoolpoints.co.il').rstrip('/')
+                if not tid or not ak:
+                    messagebox.showerror('שגיאה', 'הקובץ אינו תקין — חסר tenant_id או api_key.', parent=dialog2)
+                    return
+                tenant_id_var.set(tid)
+                api_key_var.set(ak)
+                push_url_var.set(srv + '/sync/push')
+                messagebox.showinfo('יובא בהצלחה',
+                    f'קוד מוסד: {tid}\nמפתח API הוזן.\nכתובת סנכרון הוגדרה אוטומטית.\nלחץ "שמור" להשלמת ההגדרה.',
+                    parent=dialog2)
+
+            tk.Button(row1gi, text='📂 ייבוא קובץ הרשמה', command=_import_reg_file,
+                      bg='#2ecc71', fg='white', font=('Arial', 9, 'bold')).pack(side=tk.RIGHT, padx=5, pady=5)
             api_key_entry_i = tk.Entry(row1fi, textvariable=api_key_var, font=('Arial', 10), width=FIELD_WIDTH, justify='right', show='*')
             api_key_entry_i.grid(row=0, column=1, sticky='e', padx=5)
             tk.Label(row1fi, text=fix_rtl_text("(סודי)"), font=('Arial', 9), bg='#ecf0f1', fg='#7f8c8d').grid(row=0, column=0, sticky='e', padx=6)
@@ -14499,6 +14541,14 @@ class AdminStation:
                     cfg['quiet_mode_ranges'] = quiet_mode_ranges
                 except Exception:
                     cfg['quiet_mode_ranges'] = []
+            # סנכרון לטבלת settings ב-DB (לענן)
+            try:
+                _qm_val = json.dumps({'quiet_mode_enabled': len(quiet_mode_ranges) > 0, 'quiet_mode_ranges': quiet_mode_ranges}, ensure_ascii=False)
+                _db = getattr(self, 'db', None)
+                if _db and hasattr(_db, 'set_setting'):
+                    _db.set_setting('quiet_mode_config', _qm_val)
+            except Exception:
+                pass
 
             # תיקיית תמונות תלמידים
             photos_folder = photos_folder_var.get().strip()
@@ -15858,6 +15908,11 @@ class AdminStation:
     def open_purchases_manager(self):
         if not bool(ENABLE_PURCHASES):
             messagebox.showwarning("לא זמין", "מסך קניות אינו זמין בגרסה זו")
+            return
+        if getattr(self, '_license_readonly', False):
+            messagebox.showerror("מצב תצוגה בלבד",
+                                 "המערכת פועלת במצב תצוגה בלבד — הרישיון פג תוקף.\n"
+                                 "לביצוע שינויים יש להפעיל רישיון חדש.")
             return
         if not (self.current_teacher and self.current_teacher.get('is_admin') == 1):
             messagebox.showwarning("אין הרשאה", "גישה רק למנהלים")
@@ -25078,22 +25133,24 @@ class AdminStation:
         self.root.after(100, self._wait_for_full_init_and_continue)
 
     def _show_license_block_dialog(self):
-        """חלון חסימה כשהרישיון פג תוקף — אפשרות להזין רישיון חדש או לצאת"""
+        """חלון חסימה כשהרישיון פג תוקף — הפעלת רישיון חדש, המשך בתצוגה בלבד, או יציאה"""
+        def fix_rtl_text(s):
+            # Leading RLM sets paragraph base direction to RTL so the colon appears on the left
+            return "\u200f" + s
         lm = getattr(self, 'license_manager', None)
         if lm is None:
             return
 
-        # הצגת root מינימלית כדי ש-Toplevel יעבוד
         try:
             self.root.deiconify()
             self.root.attributes('-alpha', 0.0)
         except Exception:
             pass
 
+        W, H = 640, 660
         block_win = tk.Toplevel(self.root)
         block_win.title("רישיון פג תוקף")
-        block_win.geometry("520x420")
-        block_win.configure(bg='#2c3e50')
+        block_win.configure(bg='#1e2a38')
         block_win.resizable(False, False)
         try:
             block_win.attributes('-topmost', True)
@@ -25103,88 +25160,168 @@ class AdminStation:
             block_win.update_idletasks()
             sw = block_win.winfo_screenwidth()
             sh = block_win.winfo_screenheight()
-            x = (sw - 520) // 2
-            y = (sh - 420) // 2
-            block_win.geometry(f"520x420+{x}+{y}")
+            block_win.geometry(f"{W}x{H}+{(sw - W) // 2}+{(sh - H) // 2}")
         except Exception:
-            pass
+            block_win.geometry(f"{W}x{H}")
 
-        main_frame = tk.Frame(block_win, bg='#2c3e50')
-        main_frame.pack(expand=True, fill='both', padx=20, pady=15)
+        BG = '#1e2a38'
+        BG2 = '#243447'
+        FG = '#ecf0f1'
+        FGDIM = '#95a5a6'
 
-        tk.Label(main_frame, text="⚠️", font=('Arial', 48), bg='#2c3e50', fg='#e74c3c').pack(pady=(5, 5))
-        tk.Label(
-            main_frame,
-            text="הרישיון פג תוקף",
-            font=('Arial', 18, 'bold'),
-            bg='#2c3e50',
-            fg='#e74c3c'
-        ).pack(pady=(0, 10))
+        main_frame = tk.Frame(block_win, bg=BG)
+        main_frame.pack(expand=True, fill='both', padx=24, pady=14)
 
-        # הודעה מפורטת
-        msg = lm.get_startup_message() or "הרישיון פג תוקף. יש להזין רישיון חדש כדי להמשיך."
-        tk.Label(
-            main_frame,
-            text=msg,
-            font=('Arial', 11),
-            bg='#2c3e50',
-            fg='#ecf0f1',
-            wraplength=460,
-            justify='center'
-        ).pack(pady=(0, 10))
+        tk.Label(main_frame, text="⚠", font=('Arial', 36), bg=BG, fg='#e74c3c').pack(pady=(4, 2))
+        tk.Label(main_frame, text="הרישיון פג תוקף",
+                 font=('Arial', 17, 'bold'), bg=BG, fg='#e74c3c').pack(pady=(0, 6))
 
-        # קוד מערכת
+        tk.Label(main_frame,
+                 text="הרישיון פג. כדי להמשיך לעבוד, יש להזין קוד הפעלה חדש.\n"
+                      "לחלופין — ניתן להמשיך במצב תצוגה בלבד (ללא שינויים).",
+                 font=('Arial', 10), bg=BG, fg=FG,
+                 wraplength=560, justify='right').pack(pady=(0, 10))
+
+        # --- קוד מערכת ---
         sys_code = getattr(lm, 'system_code', '') or ''
+        if not sys_code:
+            try:
+                from license_manager import _get_machine_id as _gmid, _format_system_code as _fmtsc
+                sys_code = _fmtsc(_gmid())
+            except Exception:
+                sys_code = ''
         if sys_code:
-            code_frame = tk.Frame(main_frame, bg='#34495e', highlightbackground='#3498db', highlightthickness=1)
-            code_frame.pack(fill=tk.X, padx=20, pady=5)
-            tk.Label(code_frame, text="קוד מערכת:", font=('Arial', 9), bg='#34495e', fg='#95a5a6').pack(anchor='e', padx=10, pady=(5, 0))
-            tk.Label(code_frame, text=sys_code, font=('Consolas', 12, 'bold'), bg='#34495e', fg='#3498db').pack(pady=(0, 5))
+            cf = tk.Frame(main_frame, bg=BG2, highlightbackground='#3498db', highlightthickness=1)
+            cf.pack(fill=tk.X, pady=(0, 8))
+            header = tk.Frame(cf, bg=BG2)
+            header.pack(fill=tk.X, padx=10, pady=(6, 0))
+            tk.Label(header, text=fix_rtl_text("קוד מערכת:"),
+                     font=('Arial', 9), bg=BG2, fg=FGDIM).pack(side=tk.RIGHT)
 
-        # שדות הזנת רישיון חדש
-        entry_frame = tk.Frame(main_frame, bg='#2c3e50')
-        entry_frame.pack(fill=tk.X, padx=20, pady=5)
+            def _copy_code():
+                try:
+                    block_win.clipboard_clear()
+                    block_win.clipboard_append(sys_code)
+                    copy_btn.config(text="✔ הועתק!")
+                    block_win.after(1800, lambda: copy_btn.config(text="📋 העתק"))
+                except Exception:
+                    pass
 
-        tk.Label(entry_frame, text="שם מוסד:", font=('Arial', 10), bg='#2c3e50', fg='#ecf0f1', anchor='e').pack(fill=tk.X)
-        school_entry = tk.Entry(entry_frame, font=('Arial', 11), justify='right')
-        school_entry.pack(fill=tk.X, pady=(0, 5))
-        # מילוי שם מוסד קיים
+            copy_btn = tk.Button(header, text="📋 העתק",
+                                 font=('Arial', 8), bg='#2980b9', fg='white',
+                                 relief='flat', padx=6, pady=1,
+                                 command=_copy_code, cursor='hand2')
+            copy_btn.pack(side=tk.LEFT)
+
+            code_var = tk.StringVar(value=sys_code)
+            code_lbl = tk.Entry(cf, textvariable=code_var,
+                                font=('Consolas', 12, 'bold'),
+                                bg=BG2, fg='#3498db',
+                                relief='flat', justify='center',
+                                state='readonly',
+                                readonlybackground=BG2)
+            code_lbl.pack(fill=tk.X, padx=10, pady=(2, 8))
+
+        # --- שדות הזנה ---
+        ef = tk.Frame(main_frame, bg=BG)
+        ef.pack(fill=tk.X, pady=(0, 4))
+
+        def _lbl(text):
+            tk.Label(ef, text=fix_rtl_text(text),
+                     font=('Arial', 10), bg=BG, fg=FG,
+                     anchor='e', justify='right').pack(fill=tk.X)
+
+        # --- קוד מוסד (Tenant ID) אם קיים ---
+        try:
+            _cfg = getattr(self, 'app_config', None) or self.load_app_config() or {}
+            _tenant_id = str(_cfg.get('sync_tenant_id') or '').strip()
+        except Exception:
+            _tenant_id = ''
+        if _tenant_id:
+            tf = tk.Frame(main_frame, bg=BG2, highlightbackground='#27ae60', highlightthickness=1)
+            tf.pack(fill=tk.X, pady=(0, 8))
+            th = tk.Frame(tf, bg=BG2)
+            th.pack(fill=tk.X, padx=10, pady=(6, 0))
+            tk.Label(th, text=fix_rtl_text("קוד מוסד (Tenant ID):"),
+                     font=('Arial', 9), bg=BG2, fg=FGDIM).pack(side=tk.RIGHT)
+            def _copy_tenant_id(_tid=_tenant_id):
+                try:
+                    block_win.clipboard_clear()
+                    block_win.clipboard_append(_tid)
+                    _cb.config(text='✔ הועתק!')
+                    block_win.after(1800, lambda: _cb.config(text='📋 העתק'))
+                except Exception:
+                    pass
+            _cb = tk.Button(th, text='📋 העתק', command=_copy_tenant_id,
+                            font=('Arial', 8), bg='#27ae60', fg='white',
+                            relief='flat', padx=6, pady=1, cursor='hand2')
+            _cb.pack(side=tk.LEFT)
+            _tv = tk.StringVar(value=_tenant_id)
+            tk.Entry(tf, textvariable=_tv, font=('Consolas', 11, 'bold'),
+                     bg=BG2, fg='#27ae60', relief='flat', justify='center',
+                     state='readonly', readonlybackground=BG2).pack(fill=tk.X, padx=10, pady=(2, 8))
+
+        _lbl("שם מוסד:")
+        school_row = tk.Frame(ef, bg=BG)
+        school_row.pack(fill=tk.X, pady=(2, 6))
+        school_entry = tk.Entry(school_row, font=('Arial', 11), justify='right',
+                                bg='#2c3e50', fg=FG, insertbackground=FG, relief='flat', bd=4)
+        school_entry.pack(fill=tk.X)
         existing_school = getattr(lm, 'school_name', '') or ''
         if existing_school:
             school_entry.insert(0, existing_school)
 
-        tk.Label(entry_frame, text="קוד הפעלה:", font=('Arial', 10), bg='#2c3e50', fg='#ecf0f1', anchor='e').pack(fill=tk.X)
-        key_entry = tk.Entry(entry_frame, font=('Arial', 11), justify='right')
-        key_entry.pack(fill=tk.X, pady=(0, 5))
+        _lbl("קוד הפעלה:")
+        key_row = tk.Frame(ef, bg=BG)
+        key_row.pack(fill=tk.X, pady=(2, 4))
+        key_entry = tk.Entry(key_row, font=('Arial', 11), justify='right',
+                             bg='#2c3e50', fg=FG, insertbackground=FG, relief='flat', bd=4)
+        key_entry.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+        def _paste_key():
+            try:
+                key_entry.delete(0, tk.END)
+                key_entry.insert(0, block_win.clipboard_get().strip())
+            except Exception:
+                pass
+        tk.Button(key_row, text="📋 הדבק", command=_paste_key,
+                  font=('Arial', 9), bg='#2980b9', fg='white',
+                  relief='flat', padx=6, pady=2, cursor='hand2').pack(side=tk.LEFT)
 
-        tk.Label(entry_frame, text="תאריך תפוגה (YYYY-MM-DD, לרישיון חודשי):", font=('Arial', 9), bg='#2c3e50', fg='#95a5a6', anchor='e').pack(fill=tk.X)
-        expiry_entry = tk.Entry(entry_frame, font=('Arial', 11), justify='right')
-        expiry_entry.pack(fill=tk.X, pady=(0, 5))
+        status_label = tk.Label(main_frame, text="", font=('Arial', 10), bg=BG, fg='#e74c3c')
+        status_label.pack(pady=(2, 4))
 
-        status_label = tk.Label(main_frame, text="", font=('Arial', 10), bg='#2c3e50', fg='#e74c3c')
-        status_label.pack(pady=3)
-
+        # --- כפתורי פעולה ---
         def try_activate():
             school = school_entry.get().strip()
             key = key_entry.get().strip()
-            expiry = expiry_entry.get().strip() or None
             if not school or not key:
-                status_label.config(text="יש להזין שם מוסד וקוד הפעלה", fg='#e74c3c')
+                status_label.config(text="\u200fיש להזין שם מוסד וקוד הפעלה.", fg='#e74c3c')
                 return
-            ok, msg_result = lm.activate(school, key, expiry)
+            ok, msg_result = lm.activate(school, key, None)
             if ok:
                 status_label.config(text=msg_result, fg='#27ae60')
-                block_win.after(1500, lambda: _continue_after_activate(block_win))
+                block_win.after(1500, lambda: _continue_activate())
             else:
                 status_label.config(text=msg_result, fg='#e74c3c')
 
-        def _continue_after_activate(win):
+        def _continue_activate():
             try:
-                win.destroy()
+                block_win.destroy()
             except Exception:
                 pass
-            # המשך לממשק הראשי
             self._wait_for_full_init_and_continue()
+
+        def _continue_readonly():
+            try:
+                block_win.destroy()
+            except Exception:
+                pass
+            self._license_readonly = True
+            self._wait_for_full_init_and_continue()
+
+        def _open_contact():
+            import webbrowser
+            webbrowser.open('https://www.schoolpoints.co.il/web/contact')
 
         def exit_app():
             try:
@@ -25200,28 +25337,27 @@ class AdminStation:
             except Exception:
                 pass
 
-        btn_frame = tk.Frame(main_frame, bg='#2c3e50')
-        btn_frame.pack(pady=10)
-        tk.Button(
-            btn_frame,
-            text="🔑 הפעל רישיון",
-            command=try_activate,
-            font=('Arial', 11, 'bold'),
-            bg='#27ae60',
-            fg='white',
-            width=16,
-            cursor='hand2'
-        ).pack(side=tk.RIGHT, padx=8)
-        tk.Button(
-            btn_frame,
-            text="❌ יציאה",
-            command=exit_app,
-            font=('Arial', 11, 'bold'),
-            bg='#e74c3c',
-            fg='white',
-            width=12,
-            cursor='hand2'
-        ).pack(side=tk.RIGHT, padx=8)
+        btn_top = tk.Frame(main_frame, bg=BG)
+        btn_top.pack(fill=tk.X, pady=(4, 2))
+        tk.Button(btn_top, text="🔑 הפעל רישיון",
+                  command=try_activate,
+                  font=('Arial', 11, 'bold'), bg='#27ae60', fg='white',
+                  relief='flat', padx=14, pady=7, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+        tk.Button(btn_top, text="👁 המשך בתצוגה בלבד",
+                  command=_continue_readonly,
+                  font=('Arial', 10), bg='#2980b9', fg='white',
+                  relief='flat', padx=10, pady=7, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+
+        btn_bot = tk.Frame(main_frame, bg=BG)
+        btn_bot.pack(fill=tk.X, pady=(2, 4))
+        tk.Button(btn_bot, text="📞 צור קשר",
+                  command=_open_contact,
+                  font=('Arial', 10), bg='#8e44ad', fg='white',
+                  relief='flat', padx=10, pady=5, cursor='hand2').pack(side=tk.RIGHT, padx=4)
+        tk.Button(btn_bot, text="❌ יציאה",
+                  command=exit_app,
+                  font=('Arial', 10), bg='#e74c3c', fg='white',
+                  relief='flat', padx=10, pady=5, cursor='hand2').pack(side=tk.RIGHT, padx=4)
 
         block_win.protocol("WM_DELETE_WINDOW", exit_app)
         block_win.focus_force()
@@ -25248,10 +25384,10 @@ class AdminStation:
             elif getattr(lm, 'trial_expired', False) and not getattr(lm, 'is_licensed', False):
                 is_expired = True
 
-            if is_expired:
+            if is_expired and not getattr(self, '_license_readonly', False):
                 self._show_license_block_dialog()
                 return
-            
+
         # כל הרכיבים מוכנים - הצגת הממשק הראשי
         try:
             self.root.deiconify()
@@ -25269,6 +25405,18 @@ class AdminStation:
             self.root.focus_force()
         except Exception:
             pass
+
+        # באנר מצב תצוגה בלבד (כשהרישיון פג והמשתמש בחר להמשיך ללא רישיון)
+        if getattr(self, '_license_readonly', False):
+            try:
+                ro_bar = tk.Frame(self.root, bg='#c0392b', height=28)
+                ro_bar.pack(side=tk.TOP, fill=tk.X)
+                ro_bar.pack_propagate(False)
+                tk.Label(ro_bar,
+                         text="⚠  מצב תצוגה בלבד — הרישיון פג. לא ניתן לבצע שינויים.  ⚠",
+                         font=('Arial', 10, 'bold'), bg='#c0392b', fg='white').pack(expand=True)
+            except Exception:
+                pass
 
         # איפוס caches שתלויים במשתמש, כדי למנוע מצב שבו מורה רואה רשימה ישנה עד רענון ידני
         try:

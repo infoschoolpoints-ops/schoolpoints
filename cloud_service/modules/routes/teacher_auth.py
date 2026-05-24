@@ -36,7 +36,8 @@ def web_signin(request: Request) -> Response:
       <label style="display:block;margin:10px 0 6px;font-weight:800;">קוד מוסד</label>
       <input name="tenant_id" autocomplete="username" pattern="[a-zA-Z0-9_-]+" class="form-input" style="direction:ltr; text-align:left;" required />
       <label style="display:block;margin:10px 0 6px;font-weight:800;">סיסמה</label>
-      <input name="password" type="password" autocomplete="current-password" class="form-input" required />
+      <div style="position:relative;"><input id="pw-signin" name="password" type="password" autocomplete="current-password" class="form-input" required style="padding-left:38px;" /><button type="button" onclick="togglePw('pw-signin',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר סיסמה">👁</button></div>
+      <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁':'👁';}}  </script>
       <div class="actionbar" style="justify-content:flex-start;">
         <button class="green" type="submit">כניסה</button>
         <a class="gray" href="/web/download">הורדה</a>

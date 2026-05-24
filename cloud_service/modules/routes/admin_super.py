@@ -155,7 +155,8 @@ def admin_login_page(request: Request, err: str = '') -> str:
             <form method="post" action="/admin/login">
                 <input type="hidden" name="login_type" value="staff">
                 <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">שם משתמש</label><input name="username" class="form-input" required autocomplete="username"></div>
-                <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">סיסמה</label><input name="password" type="password" class="form-input" required autocomplete="current-password"></div>
+                <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">סיסמה</label>
+                <div style="position:relative;"><input id="pw-staff" name="password" type="password" class="form-input" required autocomplete="current-password" style="padding-left:38px;"><button type="button" onclick="togglePw('pw-staff',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר סיסמה">👁</button></div></div>
                 <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
             </form>
         </div>
@@ -163,10 +164,12 @@ def admin_login_page(request: Request, err: str = '') -> str:
             <h3 style="margin-top:0;">כניסה עם מפתח מנהל</h3>
             <form method="post" action="/admin/login">
                 <input type="hidden" name="login_type" value="key">
-                <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">Admin Key</label><input name="admin_key" type="password" class="form-input" required></div>
+                <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">Admin Key</label>
+                <div style="position:relative;"><input id="pw-akey" name="admin_key" type="password" class="form-input" required style="padding-left:38px;"><button type="button" onclick="togglePw('pw-akey',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר סיסמה">👁</button></div></div>
                 <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
             </form>
         </div>
+        <script>function togglePw(id,btn){var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'[show]':'[hide]';}</script>
     </div>
     """
     return basic_web_shell("כניסת ניהול", body, request)
@@ -180,21 +183,25 @@ def admin_login_submit(
     password: str = Form('')
 ) -> Response:
     if login_type == 'staff':
-        u = str(username or '').strip()
-        p = str(password or '').strip()
-        if not u or not p:
-            return RedirectResponse(url="/admin/login?err=חסר+שם+משתמש+או+סיסמה", status_code=302)
-        staff = verify_staff_login(u, p)
-        if not staff:
-            return RedirectResponse(url="/admin/login?err=שם+משתמש+או+סיסמה+שגויים", status_code=302)
-        resp = RedirectResponse(url="/admin/institutions", status_code=302)
-        token = _create_staff_session(u)
-        resp.set_cookie('admin_staff_session', token, httponly=True, samesite='lax', max_age=60*60*8)
-        return resp
+        try:
+            u = str(username or '').strip()
+            p = str(password or '').strip()
+            if not u or not p:
+                return RedirectResponse(url="/admin/login?err=%D7%97%D7%A1%D7%A8+%D7%A9%D7%9D+%D7%9E%D7%A9%D7%AA%D7%9E%D7%A9+%D7%90%D7%95+%D7%A1%D7%99%D7%A1%D7%9E%D7%94", status_code=302)
+            staff = verify_staff_login(u, p)
+            if not staff:
+                return RedirectResponse(url="/admin/login?err=%D7%A9%D7%9D+%D7%9E%D7%A9%D7%AA%D7%9E%D7%A9+%D7%90%D7%95+%D7%A1%D7%99%D7%A1%D7%9E%D7%94+%D7%A9%D7%92%D7%95%D7%99%D7%99%D7%9D", status_code=302)
+            resp = RedirectResponse(url="/admin/institutions", status_code=302)
+            token = _create_staff_session(u)
+            resp.set_cookie('admin_staff_session', token, httponly=True, samesite='lax', max_age=60*60*8)
+            return resp
+        except Exception as _e:
+            logger.error(f"[ADMIN-LOGIN] staff login error: {_e}", exc_info=True)
+            return RedirectResponse(url="/admin/login?err=server+error", status_code=302)
     else:
         expected = admin_expected_key()
         if expected and str(admin_key or '').strip() != expected:
-            return RedirectResponse(url="/admin/login?err=מפתח+שגוי", status_code=302)
+            return RedirectResponse(url="/admin/login?err=%D7%9E%D7%A4%D7%AA%D7%97+%D7%A9%D7%92%D7%95%D7%99", status_code=302)
         resp = RedirectResponse(url="/admin/institutions", status_code=302)
         resp.set_cookie('admin_key', str(admin_key or '').strip(), httponly=True, samesite='lax', max_age=60*60*24*30)
         return resp
@@ -445,6 +452,16 @@ def admin_institution_detail(request: Request, tid: str) -> str:
     # Payments for this institution
     payments_html = ""
     total_paid = 0
+    def _fmt_notes(raw):
+        if not raw: return ''
+        raw = str(raw)
+        if raw.startswith('{'):
+            try:
+                nd = json.loads(raw)
+                parts = [p for p in [nd.get('plan',''), nd.get('email','')] if p]
+                return ' | '.join(parts) if parts else ''
+            except Exception: pass
+        return raw[:120]
     try:
         conn2 = get_db_connection()
         cur2 = conn2.cursor()
@@ -459,7 +476,7 @@ def admin_institution_detail(request: Request, tid: str) -> str:
                 <td style="padding:6px;">₪{amt}</td>
                 <td style="padding:6px;">{pd.get('payment_method') or '-'}</td>
                 <td style="padding:6px;">{pd.get('reference') or ''}</td>
-                <td style="padding:6px;font-size:12px;">{pd.get('notes') or ''}</td></tr>"""
+                <td style="padding:6px;font-size:12px;">{_fmt_notes(pd.get('notes'))}</td></tr>"""
         conn2.close()
     except Exception:
         pass
