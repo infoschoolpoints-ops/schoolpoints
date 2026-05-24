@@ -169,7 +169,7 @@ def admin_login_page(request: Request, err: str = '') -> str:
                 <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
             </form>
         </div>
-        <script>function togglePw(id,btn){var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'[show]':'[hide]';}</script>
+        <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'[show]':'[hide]';}}</script>
     </div>
     """
     return basic_web_shell("כניסת ניהול", body, request)
