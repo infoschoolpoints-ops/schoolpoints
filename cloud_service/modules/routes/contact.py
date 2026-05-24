@@ -270,7 +270,6 @@ def _callback_form_html(error: str = '') -> str:
 <label><input type="radio" name="software_type" value="היברידית"> היברידית</label>
 <label><input type="radio" name="software_type" value="מקוונת"> מקוונת</label>
 </div></div>
-<div class="fl cbfull"><label>מעוניינים בציוד נלווה (צ'יפים / כרטיסים וכיו"ב)</label><textarea name="equipment_notes" placeholder="פרטו כאן אם יש צורך בציוד נלווה..."></textarea></div>
 </div>
 <div style="margin-top:22px;text-align:center;">
 <button type="submit" style="padding:14px 52px;font-size:18px;font-weight:800;border-radius:12px;background:linear-gradient(135deg,#f7971e,#ffd200);border:none;color:#1a1a2e;cursor:pointer;transition:opacity .2s;">שלח פנייה</button>
@@ -296,7 +295,6 @@ def web_callback_submit(
     num_students: str = Form(default=''),
     num_classes: str = Form(default=''),
     software_type: str = Form(default=''),
-    equipment_notes: str = Form(default=''),
 ) -> Response:
     school_name = str(school_name or '').strip()
     contact_name = str(contact_name or '').strip()
@@ -314,7 +312,6 @@ def web_callback_submit(
         f'<b>מס\' תלמידים:</b> {num_students or "לא צוין"}',
         f'<b>מס\' כיתות:</b> {num_classes or "לא צוין"}',
         f'<b>סוג תוכנה:</b> {software_type or "לא צוין"}',
-        f'<b>ציוד נלווה:</b> {equipment_notes or "לא צוין"}',
     ]
     body_html = '<div dir="rtl" style="line-height:2;">' + '<br>'.join(lines) + '</div>'
     subject = f'פנייה חדשה ממוסד: {school_name}'

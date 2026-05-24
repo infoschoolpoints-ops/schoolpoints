@@ -108,8 +108,6 @@ def _payme_generate_sale(*, amount: float, product_name: str,
         'product_name': product_name,
         'sale_callback_url': sale_callback_url,
         'sale_return_url': sale_return_url,
-        'sale_type': 'J4',       # basic sale
-        'installments': 1,
         'language': 'he',
     }
     if buyer_key:
