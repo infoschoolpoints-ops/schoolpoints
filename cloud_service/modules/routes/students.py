@@ -43,29 +43,42 @@ def web_students(request: Request):
             </div>
 
             <div class="card" style="padding:0; overflow:hidden;">
-                <div style="padding:10px; background:rgba(0,0,0,0.03); border-bottom:1px solid rgba(0,0,0,0.1); display:flex; justify-content:space-between; align-items:center;">
+                <div style="padding:10px; background:rgba(0,0,0,0.03); border-bottom:1px solid rgba(0,0,0,0.1); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
                     <div id="s_status" style="font-size:13px; font-weight:bold; opacity:0.7;">טוען...</div>
-                    <div style="display:flex; gap:8px;">
+                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
                         <span id="s_selected" style="font-size:13px; padding-top:6px;">לא נבחר תלמיד</span>
                         <button id="s_qpoints" class="green" style="font-size:12px; padding:4px 10px; background:#27ae60; color:white; border:none; border-radius:4px; opacity:0.5; pointer-events:none;" onclick="openQuickPoints()">⚡ עדכון נקודות</button>
                         <button id="s_edit" class="blue" style="font-size:12px; padding:4px 10px; opacity:0.5; pointer-events:none;" onclick="openEdit()">✏️ ערוך</button>
                         <button id="s_delete" class="red" style="font-size:12px; padding:4px 10px; background:#e74c3c; border:none; opacity:0.5; pointer-events:none;" onclick="delSelected()">🗑 מחק</button>
+                        <button onclick="toggleColPanel()" style="font-size:12px; padding:4px 10px; background:#8e44ad; color:white; border:none; border-radius:4px; cursor:pointer;">📋 עמודות</button>
                     </div>
                 </div>
+                <!-- Column visibility panel -->
+                <div id="col_panel" style="display:none; padding:10px; background:rgba(0,0,0,0.05); border-bottom:1px solid rgba(0,0,0,0.1); flex-wrap:wrap; gap:12px;">
+                    <label style="font-size:12px;"><input type="checkbox" id="col_class" checked onchange="applyColVis()"> כיתה</label>
+                    <label style="font-size:12px;"><input type="checkbox" id="col_points" checked onchange="applyColVis()"> נקודות</label>
+                    <label style="font-size:12px;"><input type="checkbox" id="col_swipe" checked onchange="applyColVis()"> תיקוף אחרון</label>
+                    <label style="font-size:12px;"><input type="checkbox" id="col_bday" checked onchange="applyColVis()"> יום הולדת</label>
+                    <label style="font-size:12px;"><input type="checkbox" id="col_msg" onchange="applyColVis()"> הודעה פרטית</label>
+                    <label style="font-size:12px;"><input type="checkbox" id="col_card" checked onchange="applyColVis()"> מס' כרטיס</label>
+                    <label style="font-size:12px;"><input type="checkbox" id="col_idnum" onchange="applyColVis()"> ת"ז</label>
+                    <label style="font-size:12px;"><input type="checkbox" id="col_serial" onchange="applyColVis()"> מס' סידורי</label>
+                </div>
                 <div class="table-scroll" style="max-height:600px;">
-                    <table style="width:100%; border-collapse:collapse; min-width:800px;">
+                    <table id="s_table" style="width:100%; border-collapse:collapse; min-width:700px;">
                         <thead>
-                            <tr style="text-align:right;">
-                                <th style="padding:12px; width:60px;">ID</th>
-                                <th style="padding:12px;">שם משפחה</th>
-                                <th style="padding:12px;">שם פרטי</th>
-                                <th style="padding:12px; width:100px;">כיתה</th>
-                                <th style="padding:12px;">נקודות</th>
-                                <th style="padding:12px;">תיקוף אחרון</th>
-                                <th style="padding:12px;">יום הולדת</th>
-                                <th style="padding:12px;">הודעה פרטית</th>
-                                <th style="padding:12px;">מס' כרטיס</th>
-                                <th style="padding:12px;">ת"ז</th>
+                            <tr style="text-align:right; user-select:none;">
+                                <th style="padding:10px; width:44px; cursor:default;">#</th>
+                                <th style="padding:10px; cursor:pointer;" onclick="sortBy('first_name')"><span id="sh_first_name">שם פרטי</span></th>
+                                <th style="padding:10px; cursor:pointer;" onclick="sortBy('last_name')"><span id="sh_last_name">שם משפחה</span></th>
+                                <th class="col_class" style="padding:10px; cursor:pointer;" onclick="sortBy('class_name')"><span id="sh_class_name">כיתה</span></th>
+                                <th class="col_points" style="padding:10px; cursor:pointer;" onclick="sortBy('points')"><span id="sh_points">נקודות</span></th>
+                                <th class="col_swipe" style="padding:10px; cursor:pointer;" onclick="sortBy('last_swiped_at')"><span id="sh_last_swiped_at">תיקוף אחרון</span></th>
+                                <th class="col_bday" style="padding:10px;">יום הולדת</th>
+                                <th class="col_msg" style="padding:10px; cursor:pointer;" onclick="sortBy('private_message')"><span id="sh_private_message">הודעה פרטית</span></th>
+                                <th class="col_card" style="padding:10px;">מס' כרטיס</th>
+                                <th class="col_idnum" style="padding:10px;">ת"ז</th>
+                                <th class="col_serial" style="padding:10px; cursor:pointer;" onclick="sortBy('serial_number')"><span id="sh_serial_number">מס' סידורי</span></th>
                             </tr>
                         </thead>
                         <tbody id="s_rows"></tbody>
@@ -168,6 +181,7 @@ def web_students(request: Request):
 
         <script>
             let selectedId = null;
+            let _sortCol = 'class_name', _sortDir = 1;  // 1=asc, -1=desc
             const rowsEl = document.getElementById('s_rows');
             const statusEl = document.getElementById('s_status');
             const searchEl = document.getElementById('s_search');
@@ -177,6 +191,61 @@ def web_students(request: Request):
             const btnQP = document.getElementById('s_qpoints');
             const modal = document.getElementById('s_modal');
             const qpModal = document.getElementById('qp_modal');
+
+            function toggleColPanel() {
+                const p = document.getElementById('col_panel');
+                p.style.display = p.style.display === 'none' ? 'flex' : 'none';
+            }
+            function applyColVis() {
+                const map = {col_class:'col_class',col_points:'col_points',col_swipe:'col_swipe',col_bday:'col_bday',col_msg:'col_msg',col_card:'col_card',col_idnum:'col_idnum',col_serial:'col_serial'};
+                for (const [cbId, cls] of Object.entries(map)) {
+                    const show = document.getElementById(cbId).checked;
+                    document.querySelectorAll('.'+cls).forEach(el => el.style.display = show ? '' : 'none');
+                }
+            }
+            function sortBy(col) {
+                if (_sortCol === col) _sortDir = -_sortDir;
+                else { _sortCol = col; _sortDir = 1; }
+                // Update header arrows
+                ['first_name','last_name','class_name','points','last_swiped_at','private_message','serial_number'].forEach(c => {
+                    const el = document.getElementById('sh_'+c);
+                    if (el) el.textContent = el.textContent.replace(/ [▲▼]$/,'');
+                });
+                const hel = document.getElementById('sh_'+col);
+                if (hel) hel.textContent = hel.textContent + (_sortDir===1?' ▲':' ▼');
+                renderRows();
+            }
+            function renderRows() {
+                if (!_allStudents || !_allStudents.length) return;
+                const sorted = [..._allStudents].sort((a,b) => {
+                    let va = a[_sortCol], vb = b[_sortCol];
+                    if (va == null) va = ''; if (vb == null) vb = '';
+                    if (typeof va === 'number' && typeof vb === 'number') return _sortDir*(va-vb);
+                    return _sortDir * String(va).localeCompare(String(vb), 'he');
+                });
+                rowsEl.innerHTML = sorted.map((s,i) => `
+                    <tr data-id="${s.id}" onclick="setSelected(${s.id})" style="border-bottom:1px solid rgba(255,255,255,0.05); cursor:pointer;">
+                        <td style="padding:10px; opacity:0.5; font-size:12px;">${i+1}</td>
+                        <td style="padding:10px; font-weight:bold;">${esc(s.first_name)}</td>
+                        <td style="padding:10px;">${esc(s.last_name)}</td>
+                        <td class="col_class" style="padding:10px;">${esc(s.class_name)}</td>
+                        <td class="col_points" style="padding:10px; color:#2ecc71; font-weight:bold;">${s.points}</td>
+                        <td class="col_swipe" style="padding:10px; font-size:12px;">${fmtDate(s.last_swiped_at)}</td>
+                        <td class="col_bday" style="padding:10px; font-size:12px;">${fmtBday(s)}</td>
+                        <td class="col_msg" style="padding:10px; opacity:0.8;">${esc(s.private_message)}</td>
+                        <td class="col_card" style="padding:10px; direction:ltr; text-align:right;">${esc(s.card_number)}</td>
+                        <td class="col_idnum" style="padding:10px;">${esc(s.id_number)}</td>
+                        <td class="col_serial" style="padding:10px; opacity:0.7;">${esc(s.serial_number)}</td>
+                    </tr>
+                `).join('');
+                applyColVis();
+                // Restore selection highlight
+                if (selectedId) {
+                    document.querySelectorAll('#s_rows tr').forEach(tr => {
+                        tr.style.background = (tr.dataset.id == selectedId) ? 'rgba(52, 152, 219, 0.2)' : '';
+                    });
+                }
+            }
             
             // Fields
             const mId = document.getElementById('m_student_id');
@@ -221,7 +290,9 @@ def web_students(request: Request):
                 btnDelete.style.pointerEvents = on ? 'auto' : 'none';
                 btnQP.style.opacity = on ? '1' : '0.5';
                 btnQP.style.pointerEvents = on ? 'auto' : 'none';
-                selectedEl.textContent = on ? 'נבחר תלמיד ID ' + id : 'לא נבחר תלמיד';
+                const stu = _allStudents.find(x => x.id == id);
+                const stuName = stu ? (stu.first_name + ' ' + stu.last_name).trim() : 'תלמיד';
+                selectedEl.textContent = on ? 'נבחר: ' + stuName : 'לא נבחר תלמיד';
                 
                 document.querySelectorAll('#s_rows tr').forEach(tr => {
                     tr.style.background = (tr.dataset.id == id) ? 'rgba(52, 152, 219, 0.2)' : '';
@@ -245,20 +316,7 @@ def web_students(request: Request):
                     _allStudents = data.items;
                     statusEl.textContent = data.items.length + ' תלמידים';
                     
-                    rowsEl.innerHTML = data.items.map(s => `
-                        <tr data-id="${s.id}" onclick="setSelected(${s.id})" style="border-bottom:1px solid rgba(255,255,255,0.05); cursor:pointer;">
-                            <td style="padding:12px; opacity:0.7;">${s.id}</td>
-                            <td style="padding:12px; font-weight:bold;">${esc(s.last_name)}</td>
-                            <td style="padding:12px;">${esc(s.first_name)}</td>
-                            <td style="padding:12px;">${esc(s.class_name)}</td>
-                            <td style="padding:12px; color:#2ecc71; font-weight:bold;">${s.points}</td>
-                            <td style="padding:12px; font-size:12px;">${fmtDate(s.last_swiped_at)}</td>
-                            <td style="padding:12px; font-size:12px;">${fmtBday(s)}</td>
-                            <td style="padding:12px; opacity:0.8;">${esc(s.private_message)}</td>
-                            <td style="padding:12px; direction:ltr; text-align:right;">${esc(s.card_number)}</td>
-                            <td style="padding:12px;">${esc(s.id_number)}</td>
-                        </tr>
-                    `).join('');
+                    renderRows();
                     
                 } catch (e) {
                     statusEl.textContent = 'שגיאה בטעינה';

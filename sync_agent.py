@@ -2307,6 +2307,65 @@ def run_once(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str =
         conn.close()
 
 
+def run_full_cycle(db_path: str, push_url: str, *, api_key: str = '', tenant_id: str = '',
+                   station_id: str = '') -> dict:
+    """Push local pending changes AND pull remote changes in one cycle.
+    Returns {'pushed': n, 'pulled': n, 'ok': bool}.
+    """
+    pull_url = _pull_url_from_push(push_url, {})
+    conn = _connect(db_path)
+    try:
+        _ensure_change_log(conn)
+        _ensure_sync_state(conn)
+        # 1) Push
+        pushed = 0
+        push_ok = True
+        changes = fetch_pending_changes(conn, limit=DEFAULT_BATCH_SIZE)
+        if changes:
+            ok = push_changes(push_url, changes, api_key=api_key, tenant_id=tenant_id, station_id=station_id)
+            if ok:
+                ids = [int(c.get('id') or 0) for c in changes if int(c.get('id') or 0) > 0]
+                mark_changes_synced(conn, ids)
+                pushed = len(changes)
+                print(f"[SYNC] Manual push: {pushed} change(s) sent")
+            else:
+                push_ok = False
+                print(f"[SYNC] Manual push: failed to send {len(changes)} change(s)")
+        # 2) Pull
+        pulled = 0
+        pull_ok = True
+        if pull_url and api_key and tenant_id:
+            since_id_s = _get_sync_state(conn, 'pull_since_id', '0')
+            try:
+                since_id = int(str(since_id_s or '0').strip() or '0')
+            except Exception:
+                since_id = 0
+            resp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=since_id)
+            if isinstance(resp, dict) and resp.get('ok'):
+                items = resp.get('items') or []
+                if isinstance(items, list) and items:
+                    _CHUNK = 50
+                    for _ci in range(0, len(items), _CHUNK):
+                        try:
+                            pulled += apply_pull_events(conn, items[_ci:_ci + _CHUNK])
+                        except Exception as _ce:
+                            print(f"[PULL] Chunk error: {_ce}")
+                next_since = resp.get('next_since_id')
+                try:
+                    next_since_i = int(next_since) if next_since is not None else since_id
+                except Exception:
+                    next_since_i = since_id
+                if next_since_i != since_id:
+                    _set_sync_state(conn, 'pull_since_id', str(next_since_i))
+                print(f"[SYNC] Manual pull: {pulled} event(s) applied, since_id {since_id}->{next_since_i}")
+            else:
+                pull_ok = False
+                print(f"[SYNC] Manual pull: failed resp={type(resp).__name__}")
+        return {'pushed': pushed, 'pulled': pulled, 'ok': push_ok and pull_ok}
+    finally:
+        conn.close()
+
+
 def _print_pending(db_path: str, *, limit: int = 20, include_synced: bool = False) -> None:
     conn = _connect(db_path)
     try:
@@ -2594,7 +2653,30 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                     try:
                         print("[FILE-SYNC] Starting file sync cycle...")
                         assets_base = base_dir  # shared dir for all stations on this machine
+                        # Normalize logo/photos into images/ before pushing
+                        try:
+                            from sync_file_module import normalize_assets_for_sync, apply_pulled_assets
+                            normalize_assets_for_sync(assets_base, cfg)
+                        except Exception as _nae:
+                            print(f"[FILE-SYNC] normalize_assets warning: {_nae}")
                         sync_files_cycle(str(push_url), str(api_key), str(tenant_id), str(assets_base))
+                        # After pull cycle, update config if new logo/photos appeared
+                        try:
+                            pulled_assets = apply_pulled_assets(assets_base)
+                            if pulled_assets:
+                                _cur_cfg = _load_config(base_dir)
+                                _changed = False
+                                if 'logo_path' in pulled_assets and not str(_cur_cfg.get('logo_path') or '').strip():
+                                    _cur_cfg['logo_path'] = pulled_assets['logo_path']
+                                    _changed = True
+                                if 'photos_folder' in pulled_assets and not str(_cur_cfg.get('photos_folder') or '').strip():
+                                    _cur_cfg['photos_folder'] = pulled_assets['photos_folder']
+                                    _changed = True
+                                if _changed:
+                                    _save_config(base_dir, _cur_cfg)
+                                    print(f"[FILE-SYNC] Applied pulled assets to config: {pulled_assets}")
+                        except Exception as _aae:
+                            print(f"[FILE-SYNC] apply_pulled_assets warning: {_aae}")
                         last_file_sync = now
                         _file_sync_interval = 300  # reset to 5 min on success
                     except Exception as e:

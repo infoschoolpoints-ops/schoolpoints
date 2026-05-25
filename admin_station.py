@@ -894,11 +894,20 @@ class AdminStation:
                     db_path = getattr(self.db, 'db_path', None)
                     if db_path:
                         try:
-                            sync_agent.run_once(db_path, push_url, api_key=api_key,
-                                                tenant_id=tenant_id, station_id=station_id)
+                            result = sync_agent.run_full_cycle(db_path, push_url, api_key=api_key,
+                                                               tenant_id=tenant_id, station_id=station_id)
+                            pushed = result.get('pushed', 0)
+                            pulled = result.get('pulled', 0)
+                            print(f"[MANUAL-SYNC] pushed={pushed} pulled={pulled} ok={result.get('ok')}")
+                        except Exception as _se:
+                            print(f"[MANUAL-SYNC] error: {_se}")
+                        self._cloud_last_sync_ts = _t.time()
+                        # Refresh student list if anything was pulled
+                        try:
+                            if pulled > 0:
+                                self.root.after(200, self.load_students)
                         except Exception:
                             pass
-                        self._cloud_last_sync_ts = _t.time()
             finally:
                 self._cloud_syncing = False
                 try:

@@ -30,6 +30,84 @@ def _get_local_file_manifest(root_dir: str, subdirs: List[str]) -> Dict[str, str
                     manifest[rel_path] = _calc_file_hash(full_path)
     return manifest
 
+def normalize_assets_for_sync(base_dir: str, config: dict) -> dict:
+    """Copy logo and student photos from absolute paths into base_dir/images/ for cloud sync.
+
+    Returns a dict with updated local absolute paths (logo_path, photos_folder) if they changed.
+    This is a one-way normalization — the source paths remain unchanged; we just mirror
+    the files into a location the sync module can discover.
+    """
+    import shutil as _shutil
+    images_dir = os.path.join(base_dir, 'images')
+    updated: dict = {}
+
+    # --- Logo ---
+    logo_path = str(config.get('logo_path') or '').strip()
+    if logo_path and os.path.isfile(logo_path):
+        dest_logo_dir = os.path.join(images_dir, 'logo')
+        try:
+            os.makedirs(dest_logo_dir, exist_ok=True)
+            fname = os.path.basename(logo_path)
+            dest = os.path.join(dest_logo_dir, fname)
+            src_hash = _calc_file_hash(logo_path)
+            dst_hash = _calc_file_hash(dest) if os.path.exists(dest) else ''
+            if src_hash != dst_hash:
+                _shutil.copy2(logo_path, dest)
+                print(f"[ASSET-SYNC] Copied logo to images/logo/{fname}")
+            updated['logo_path'] = dest
+        except Exception as e:
+            print(f"[ASSET-SYNC] Logo copy failed: {e}")
+
+    # --- Student photos ---
+    photos_folder = str(config.get('photos_folder') or '').strip()
+    if photos_folder and os.path.isdir(photos_folder):
+        dest_photos_dir = os.path.join(images_dir, 'photos')
+        try:
+            os.makedirs(dest_photos_dir, exist_ok=True)
+            # Skip if already inside images/ (already normalized)
+            if not os.path.abspath(photos_folder).startswith(os.path.abspath(images_dir) + os.sep):
+                copied = 0
+                for fname in os.listdir(photos_folder):
+                    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                        src = os.path.join(photos_folder, fname)
+                        dst = os.path.join(dest_photos_dir, fname)
+                        src_hash = _calc_file_hash(src)
+                        dst_hash = _calc_file_hash(dst) if os.path.exists(dst) else ''
+                        if src_hash != dst_hash:
+                            _shutil.copy2(src, dst)
+                            copied += 1
+                if copied > 0:
+                    print(f"[ASSET-SYNC] Copied {copied} photo(s) to images/photos/")
+            updated['photos_folder'] = dest_photos_dir
+        except Exception as e:
+            print(f"[ASSET-SYNC] Photos copy failed: {e}")
+
+    return updated
+
+
+def apply_pulled_assets(base_dir: str) -> dict:
+    """After a file-sync pull, detect images/logo/ and images/photos/ and return
+    config values that should be written to local config (for new stations).
+    Returns dict with logo_path and/or photos_folder if found.
+    """
+    result: dict = {}
+    images_dir = os.path.join(base_dir, 'images')
+
+    logo_dir = os.path.join(images_dir, 'logo')
+    if os.path.isdir(logo_dir):
+        for f in os.listdir(logo_dir):
+            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp')):
+                result['logo_path'] = os.path.join(logo_dir, f)
+                break
+
+    photos_dir = os.path.join(images_dir, 'photos')
+    if os.path.isdir(photos_dir):
+        if any(f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) for f in os.listdir(photos_dir)):
+            result['photos_folder'] = photos_dir
+
+    return result
+
+
 def sync_files_cycle(push_url: str, api_key: str, tenant_id: str, base_dir: str):
     if not push_url or not api_key or not tenant_id:
         return

@@ -171,10 +171,17 @@ def api_sync_diagnostic(request: Request) -> Dict[str, Any]:
                 diag[table] = count
             except Exception as e:
                 diag[table] = f'error: {e}'
+        from ..config import USE_POSTGRES as _UP
+        import json as _j2
         for key in ['anti_spam_config', 'quiet_mode_config', 'holidays', 'system_settings']:
             try:
+                # Use savepoint so a failure in one key doesn't abort the whole transaction
+                if _UP:
+                    cur.execute('SAVEPOINT diag_key')
                 cur.execute(sql_placeholder('SELECT value FROM settings WHERE key = ? LIMIT 1'), (key,))
                 row = cur.fetchone()
+                if _UP:
+                    cur.execute('RELEASE SAVEPOINT diag_key')
                 if row:
                     raw = (row['value'] if isinstance(row, dict) else row[0]) or ''
                     diag[f'setting:{key}'] = raw[:200] if raw else '(empty)'
@@ -182,36 +189,54 @@ def api_sync_diagnostic(request: Request) -> Dict[str, Any]:
                     if key == 'holidays':
                         # Auto-populate from public_closures table if it has data
                         try:
-                            cur.execute('SELECT name, start_date, end_date FROM public_closures LIMIT 200')
+                            if _UP:
+                                cur.execute('SAVEPOINT diag_holidays')
+                                # PostgreSQL schema uses title/start_at/end_at
+                                cur.execute('SELECT title, start_at, end_at FROM public_closures LIMIT 200')
+                            else:
+                                cur.execute('SELECT name, start_date, end_date FROM public_closures LIMIT 200')
                             pc_rows = cur.fetchall() or []
+                            if _UP:
+                                cur.execute('RELEASE SAVEPOINT diag_holidays')
                             if pc_rows:
                                 items = []
                                 for pr in pc_rows:
                                     pd2 = dict(pr) if isinstance(pr, dict) else {k: pr[k] for k in pr.keys()}
-                                    items.append({'name': pd2.get('name',''), 'start_date': str(pd2.get('start_date',''))[:10], 'end_date': str(pd2.get('end_date',''))[:10]})
-                                import json as _j2
-                                from ..config import USE_POSTGRES as _UP
+                                    if _UP:
+                                        items.append({'name': pd2.get('title',''), 'start_date': str(pd2.get('start_at',''))[:10], 'end_date': str(pd2.get('end_at',''))[:10]})
+                                    else:
+                                        items.append({'name': pd2.get('name',''), 'start_date': str(pd2.get('start_date',''))[:10], 'end_date': str(pd2.get('end_date',''))[:10]})
                                 hval = _j2.dumps({'items': items}, ensure_ascii=False)
                                 try:
                                     if _UP:
+                                        cur.execute('SAVEPOINT diag_hinsert')
                                         cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('holidays', hval))
+                                        cur.execute('RELEASE SAVEPOINT diag_hinsert')
                                     else:
                                         cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ('holidays', hval))
                                     conn.commit()
                                     diag[f'setting:{key}'] = f'{len(items)} חגים (הועתק מ-public_closures)'
                                 except Exception:
-                                    try: conn.rollback()
+                                    try:
+                                        if _UP: cur.execute('ROLLBACK TO SAVEPOINT diag_hinsert')
+                                        else: conn.rollback()
                                     except Exception: pass
                                     diag[f'setting:{key}'] = f'{len(items)} חגים (ב-public_closures, לא נשמר)'
                             else:
                                 diag[f'setting:{key}'] = '(not found)'
                         except Exception:
-                            try: conn.rollback()
+                            try:
+                                if _UP: cur.execute('ROLLBACK TO SAVEPOINT diag_holidays')
+                                else: conn.rollback()
                             except Exception: pass
                             diag[f'setting:{key}'] = '(not found)'
                     else:
                         diag[f'setting:{key}'] = '(not found)'
             except Exception as e:
+                try:
+                    if _UP: cur.execute('ROLLBACK TO SAVEPOINT diag_key')
+                    else: conn.rollback()
+                except Exception: pass
                 diag[f'setting:{key}'] = f'error: {e}'
         return diag
     finally:

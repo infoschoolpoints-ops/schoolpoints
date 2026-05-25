@@ -21,10 +21,10 @@ _INST_COLS = [
     "api_key TEXT DEFAULT ''",
 ]
 
-# (plan_key, display_name, price_monthly, description, features_json, max_stations, is_active, sort_order, duration_months, is_featured, is_visible)
+# (plan_key, display_name, price_monthly, description, features_json, max_stations, is_active, sort_order, duration_months, is_featured, is_visible, allow_installments)
 _DEFAULT_PLANS = [
-    ('short', 'מסלול קצר', 700, 'תשלום ל-2 חודשים', '["גישה מלאה לכל הפיצ\u05f3רים","סנכרון ענן","עמדות ללא הגבלה","תמיכה מלאה"]', 999, 1, 1, 2, 0, 1),
-    ('annual', 'מסלול שנתי', 200, 'תשלום חודשי ל-12 חודשים', '["גישה מלאה לכל הפיצ\u05f3רים","סנכרון ענן","עמדות ללא הגבלה","תמיכה מלאה","חיסכון משמעותי!"]', 999, 1, 2, 12, 1, 1),
+    ('short', 'מסלול קצר', 700, 'תשלום ל-2 חודשים', '["גישה מלאה לכל הפיצ\u05f3רים","סנכרון ענן","עמדות ללא הגבלה","תמיכה מלאה"]', 999, 1, 1, 2, 0, 1, 0),
+    ('annual', 'מסלול שנתי', 200, 'תשלום ל-12 חודשים', '["גישה מלאה לכל הפיצ\u05f3רים","סנכרון ענן","עמדות ללא הגבלה","תמיכה מלאה","חיסכון משמעותי!"]', 999, 1, 2, 12, 1, 1, 1),
 ]
 
 
@@ -58,7 +58,7 @@ def ensure_admin_tables():
             is_visible INTEGER DEFAULT 1)""")
         conn.commit()
         # Add new columns if table existed before migration
-        for _new_col in ['duration_months INTEGER DEFAULT 1', 'is_featured INTEGER DEFAULT 0', 'is_visible INTEGER DEFAULT 1']:
+        for _new_col in ['duration_months INTEGER DEFAULT 1', 'is_featured INTEGER DEFAULT 0', 'is_visible INTEGER DEFAULT 1', 'allow_installments INTEGER DEFAULT 0']:
             try:
                 if USE_POSTGRES:
                     cur.execute(f'ALTER TABLE plan_config ADD COLUMN IF NOT EXISTS {_new_col}')
@@ -76,8 +76,8 @@ def ensure_admin_tables():
         if cnt == 0:
             for p in _DEFAULT_PLANS:
                 cur.execute(sql_placeholder(
-                    "INSERT INTO plan_config (plan_key,display_name,price_monthly,description,features_json,max_stations,is_active,sort_order,duration_months,is_featured,is_visible)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)"), p)
+                    "INSERT INTO plan_config (plan_key,display_name,price_monthly,description,features_json,max_stations,is_active,sort_order,duration_months,is_featured,is_visible,allow_installments)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"), p)
             conn.commit()
 
         # institution_payments

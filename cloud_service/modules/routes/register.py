@@ -89,8 +89,14 @@ def _build_plan_cards_html() -> str:
             feats = []
         feat_html = ''.join(f'<li>{html_mod.escape(str(f))}</li>' for f in feats if f)
         badge = f'<div class="pbdg">מומלץ</div>' if featured else ''
+        allow_inst = int(p.get('allow_installments') or 0)
         if dur > 1:
-            price_disp = f'<div class="pp">&#8362;{price}<span>/חודש</span></div><div style="font-size:12px;opacity:.8;margin-top:-8px;margin-bottom:8px;">סה״כ ל-{dur} חודשים: <b style="color:#2ecc71;">₪{total}</b></div>'
+            inst_note = (f'<div style="font-size:11px;color:#2ecc71;margin-top:4px;margin-bottom:6px;">'
+                         f'✓ תשלום אחד ₪{total} <b>או</b> {dur} תשלומים של ₪{price}</div>') if allow_inst else ''
+            price_disp = (f'<div class="pp">&#8362;{price}<span>/חודש</span></div>'
+                          f'<div style="font-size:12px;opacity:.8;margin-top:-8px;margin-bottom:4px;">'
+                          f'סה״כ ל-{dur} חודשים: <b style="color:#2ecc71;">₪{total}</b></div>'
+                          f'{inst_note}')
         else:
             price_disp = f'<div class="pp">&#8362;{price}<span>/חודש</span></div>'
         cards += (f'<div class="pc" data-plan="{pk}" onclick="selPlan(\'{pk}\')">' +
