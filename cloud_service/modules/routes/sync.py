@@ -11,7 +11,7 @@ import time
 import gzip
 import traceback
 
-from ..config import USE_POSTGRES, BASE_DIR
+from ..config import USE_POSTGRES, BASE_DIR  # noqa: F401
 from ..db import get_db_connection, sql_placeholder, ensure_tenant_db_exists, tenant_db_connection
 from .settings import get_web_setting_json
 from ..ui import public_web_shell
@@ -279,13 +279,27 @@ def sync_connect_enhanced(payload: EnhancedConnectRequest, request: Request) -> 
 
         base_url = str(request.base_url).rstrip('/')
         push_url = base_url + '/sync/push'
-        _connect_ready[station_id] = {
+        _cr_data = {
             'tenant_id': tenant_id,
             'api_key': api_key,
             'push_url': push_url,
             'station_id': station_id,
             'created_at': datetime.datetime.now().isoformat()
         }
+        _connect_ready[station_id] = _cr_data
+        # Also persist to DB for cross-worker reliability
+        try:
+            _aconn = get_db_connection()
+            _acur = _aconn.cursor()
+            _cr_json = json.dumps(_cr_data)
+            if not USE_POSTGRES:
+                _acur.execute("INSERT OR REPLACE INTO connect_ready_store (station_id, data_json, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)", (station_id, _cr_json))
+            else:
+                _acur.execute("INSERT INTO connect_ready_store (station_id, data_json, created_at) VALUES (%s, %s, CURRENT_TIMESTAMP) ON CONFLICT (station_id) DO UPDATE SET data_json = EXCLUDED.data_json, created_at = CURRENT_TIMESTAMP", (station_id, _cr_json))
+            _aconn.commit()
+            _aconn.close()
+        except Exception:
+            pass
 
         sync_token = secrets.token_urlsafe(32)
         _sync_progress[sync_token] = {
@@ -342,6 +356,21 @@ def sync_connect_status(station_id: str = Query(...)) -> Dict[str, Any]:
     if not sid:
         raise HTTPException(status_code=400, detail='missing station_id')
     data = _connect_ready.get(sid)
+    if not data:
+        # Fallback: check DB (for multi-worker deployments)
+        try:
+            _dconn = get_db_connection()
+            _dcur = _dconn.cursor()
+            _dcur.execute(sql_placeholder("SELECT data_json FROM connect_ready_store WHERE station_id = ? ORDER BY created_at DESC LIMIT 1"), (sid,))
+            _drow = _dcur.fetchone()
+            _dconn.close()
+            if _drow:
+                _djson = (_drow['data_json'] if isinstance(_drow, dict) else _drow[0]) or ''
+                if _djson:
+                    data = json.loads(_djson)
+                    _connect_ready[sid] = data
+        except Exception:
+            pass
     if not data:
         return {'ok': False, 'ready': False}
     return {

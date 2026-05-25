@@ -190,13 +190,24 @@ def api_sync_diagnostic(request: Request) -> Dict[str, Any]:
                                     pd2 = dict(pr) if isinstance(pr, dict) else {k: pr[k] for k in pr.keys()}
                                     items.append({'name': pd2.get('name',''), 'start_date': str(pd2.get('start_date',''))[:10], 'end_date': str(pd2.get('end_date',''))[:10]})
                                 import json as _j2
+                                from ..config import USE_POSTGRES as _UP
                                 hval = _j2.dumps({'items': items}, ensure_ascii=False)
-                                cur.execute(sql_placeholder("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)"), ('holidays', hval))
-                                conn.commit()
-                                diag[f'setting:{key}'] = f'{len(items)} חגים (הועתק מ-public_closures)'
+                                try:
+                                    if _UP:
+                                        cur.execute("INSERT INTO settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", ('holidays', hval))
+                                    else:
+                                        cur.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", ('holidays', hval))
+                                    conn.commit()
+                                    diag[f'setting:{key}'] = f'{len(items)} חגים (הועתק מ-public_closures)'
+                                except Exception:
+                                    try: conn.rollback()
+                                    except Exception: pass
+                                    diag[f'setting:{key}'] = f'{len(items)} חגים (ב-public_closures, לא נשמר)'
                             else:
                                 diag[f'setting:{key}'] = '(not found)'
                         except Exception:
+                            try: conn.rollback()
+                            except Exception: pass
                             diag[f'setting:{key}'] = '(not found)'
                     else:
                         diag[f'setting:{key}'] = '(not found)'

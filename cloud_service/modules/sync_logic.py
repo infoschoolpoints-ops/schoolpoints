@@ -564,7 +564,9 @@ def apply_full_snapshot_sqlite(tconn, snap: Dict[str, Any]) -> Dict[str, int]:
     if not isinstance(snap, dict):
         return applied
         
-    core_tables = ['students', 'teachers', 'classes', 'messages', 'time_bonus_schedules', 'special_bonus_schedules']
+    core_tables = ['students', 'teachers', 'classes', 'messages',
+                   'static_messages', 'threshold_messages', 'news_items', 'ads_items', 'student_messages',
+                   'time_bonus_schedules', 'special_bonus_schedules']
     other_tables = [t for t in snap.keys() if t not in core_tables]
     
     # Process core first (though for full snapshot we usually wipe anyway)

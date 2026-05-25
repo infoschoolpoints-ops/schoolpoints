@@ -30,24 +30,33 @@ def web_signin(request: Request) -> Response:
 
     nxt = web_next_from_request(request, '/web/teacher-login')
     body = f"""
-    <h2>כניסת מוסד</h2>
-    <div style="color:#637381; margin-top:-6px;">יש להזין קוד מוסד וסיסמת מוסד.</div>
-    <form method="post" action="/web/signin?next={urllib.parse.quote(nxt, safe='')}" style="margin-top:12px; max-width:520px;">
-      <label style="display:block;margin:10px 0 6px;font-weight:800;">קוד מוסד</label>
-      <input name="tenant_id" autocomplete="username" pattern="[a-zA-Z0-9_-]+" class="form-input" style="direction:ltr; text-align:left;" required />
-      <label style="display:block;margin:10px 0 6px;font-weight:800;">סיסמה</label>
-      <div style="display:flex;align-items:center;direction:ltr;"><input id="pw-signin" name="password" type="password" autocomplete="current-password" class="form-input" required style="flex:1;border-radius:8px 0 0 8px;" /><button type="button" onclick="togglePw('pw-signin',this)" style="padding:10px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-left:none;border-radius:0 8px 8px 0;cursor:pointer;font-size:16px;color:#aaa;white-space:nowrap;" title="הצג/הסתר סיסמה">👁</button></div>
-      <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁':'�';}}</script>
-      <div class="actionbar" style="justify-content:flex-start;">
-        <button class="green" type="submit">כניסה</button>
-        <a class="gray" href="/web/download">הורדה</a>
+    <h2 style="margin-bottom:4px;">כניסת מוסד</h2>
+    <div style="color:#637381;margin-bottom:20px;font-size:14px;">הזן קוד מוסד וסיסמה להמשך.</div>
+    <form method="post" action="/web/signin?next={urllib.parse.quote(nxt, safe='')}" style="max-width:440px;">
+      <div style="margin-bottom:16px;">
+        <label style="display:block;margin-bottom:6px;font-weight:700;font-size:14px;">קוד מוסד</label>
+        <input name="tenant_id" autocomplete="username" pattern="[a-zA-Z0-9_-]+" class="form-input"
+               style="width:100%;direction:ltr;text-align:left;box-sizing:border-box;" required />
       </div>
-      <div style="margin-top:16px;font-size:14px;">
-        <a href="/web/forgot-password" style="color:#667eea;text-decoration:none;font-weight:600;">שכחתי סיסמה</a>
-        &nbsp;|&nbsp;
-        <a href="/web/register" style="color:#667eea;text-decoration:none;font-weight:600;">פתיחת חשבון חדש</a>
-        &nbsp;|&nbsp;
-        <a href="/web/my-account" style="color:#667eea;text-decoration:none;font-weight:600;">אזור אישי</a>
+      <div style="margin-bottom:20px;">
+        <label style="display:block;margin-bottom:6px;font-weight:700;font-size:14px;">סיסמה</label>
+        <div style="display:flex;align-items:stretch;width:100%;">
+          <input id="pw-signin" name="password" type="password" autocomplete="current-password"
+                 style="flex:1;padding:10px 14px;font-size:15px;border:1px solid rgba(255,255,255,0.18);border-radius:8px 0 0 8px;background:rgba(255,255,255,0.07);color:inherit;min-width:0;" required />
+          <button type="button" onclick="togglePw('pw-signin',this)"
+                  style="padding:0 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);border-left:none;border-radius:0 8px 8px 0;cursor:pointer;font-size:16px;color:#aaa;flex-shrink:0;"
+                  title="הצג/הסתר סיסמה">👁</button>
+        </div>
+      </div>
+      <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁':'🔓';}}</script>
+      <div style="display:flex;gap:10px;margin-bottom:20px;">
+        <button type="submit" class="green" style="flex:1;padding:11px;font-size:15px;font-weight:700;">כניסה</button>
+        <a href="/web/download" class="gray" style="flex:1;padding:11px;font-size:15px;text-align:center;text-decoration:none;border-radius:8px;display:block;">הורדה</a>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);">
+        <a href="/web/forgot-password" style="color:#667eea;text-decoration:none;">שכחתי סיסמה</a>
+        <a href="/web/register" style="color:#667eea;text-decoration:none;">פתיחת חשבון חדש</a>
+        <a href="/web/my-account" style="color:#667eea;text-decoration:none;">אזור אישי</a>
       </div>
     </form>
     """

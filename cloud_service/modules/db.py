@@ -1512,6 +1512,13 @@ def init_global_tables() -> None:
                     snapshot_gzip BYTEA
                 )
             ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS connect_ready_store (
+                    station_id TEXT PRIMARY KEY,
+                    data_json TEXT NOT NULL,
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
         else:
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS institutions (
@@ -1581,6 +1588,13 @@ def init_global_tables() -> None:
                     tenant_id TEXT PRIMARY KEY,
                     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     snapshot_gzip BLOB
+                )
+            ''')
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS connect_ready_store (
+                    station_id TEXT PRIMARY KEY,
+                    data_json TEXT NOT NULL,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
         conn.commit()
