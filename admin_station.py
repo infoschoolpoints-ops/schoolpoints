@@ -14542,6 +14542,7 @@ class AdminStation:
                 except Exception:
                     cfg['quiet_mode_ranges'] = []
             # סנכרון לטבלת settings ב-DB (לענן)
+            _qm_val = ''
             try:
                 _qm_val = json.dumps({'quiet_mode_enabled': len(quiet_mode_ranges) > 0, 'quiet_mode_ranges': quiet_mode_ranges}, ensure_ascii=False)
                 _db = getattr(self, 'db', None)
@@ -14549,6 +14550,28 @@ class AdminStation:
                     _db.set_setting('quiet_mode_config', _qm_val)
             except Exception:
                 pass
+            # דחיפה ישירה לענן
+            if _qm_val:
+                try:
+                    _push_url = str(cfg.get('sync_push_url') or '').strip()
+                    _tid2 = str(cfg.get('sync_tenant_id') or '').strip()
+                    _akey2 = str(cfg.get('sync_api_key') or cfg.get('api_key') or cfg.get('sync_key') or '').strip()
+                    if _push_url and _tid2 and _akey2:
+                        _qm_body = json.dumps({"tenant_id": _tid2, "station_id": "admin-settings",
+                            "changes": [{"entity_type": "setting", "entity_id": "quiet_mode_config",
+                                         "action_type": "update",
+                                         "payload_json": json.dumps({"key": "quiet_mode_config", "value": _qm_val})}]
+                        }).encode('utf-8')
+                        def _push_qm():
+                            try:
+                                _req2 = urllib.request.Request(_push_url, data=_qm_body,
+                                    headers={"Content-Type": "application/json", "api-key": _akey2})
+                                urllib.request.urlopen(_req2, timeout=6)
+                            except Exception:
+                                pass
+                        threading.Thread(target=_push_qm, daemon=True).start()
+                except Exception:
+                    pass
 
             # תיקיית תמונות תלמידים
             photos_folder = photos_folder_var.get().strip()

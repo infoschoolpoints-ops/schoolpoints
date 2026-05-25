@@ -131,17 +131,18 @@ def _verify_staff_session(token: str) -> bool:
     try:
         parts = token.split(':', 1)
         if len(parts) != 2: return False
-        username, sig = parts
+        u_enc, sig = parts
         secret = (admin_expected_key() or 'x').encode()
-        exp = _hmac.new(secret, username.encode(), _hl.sha256).hexdigest()
+        exp = _hmac.new(secret, u_enc.encode('ascii', 'replace'), _hl.sha256).hexdigest()
         return _hmac.compare_digest(sig, exp)
     except: return False
 
 def _create_staff_session(username: str) -> str:
-    import hmac as _hmac, hashlib as _hl
+    import hmac as _hmac, hashlib as _hl, urllib.parse as _up
+    u_enc = _up.quote(str(username or ''), safe='')
     secret = (admin_expected_key() or 'x').encode()
-    sig = _hmac.new(secret, username.encode(), _hl.sha256).hexdigest()
-    return f"{username}:{sig}"
+    sig = _hmac.new(secret, u_enc.encode('ascii', 'replace'), _hl.sha256).hexdigest()
+    return f"{u_enc}:{sig}"
 
 @router.get('/admin/login', response_class=HTMLResponse)
 def admin_login_page(request: Request, err: str = '') -> str:
@@ -156,7 +157,7 @@ def admin_login_page(request: Request, err: str = '') -> str:
                 <input type="hidden" name="login_type" value="staff">
                 <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">שם משתמש</label><input name="username" class="form-input" required autocomplete="username"></div>
                 <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">סיסמה</label>
-                <div style="position:relative;"><input id="pw-staff" name="password" type="password" class="form-input" required autocomplete="current-password" style="padding-left:38px;"><button type="button" onclick="togglePw('pw-staff',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר סיסמה">👁</button></div></div>
+                <div style="display:flex;align-items:center;direction:ltr;"><input id="pw-staff" name="password" type="password" class="form-input" required autocomplete="current-password" style="flex:1;border-radius:8px 0 0 8px;"><button type="button" onclick="togglePw('pw-staff',this)" style="padding:10px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-left:none;border-radius:0 8px 8px 0;cursor:pointer;font-size:16px;color:#aaa;white-space:nowrap;" title="הצג/הסתר סיסמה">👁</button></div></div>
                 <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
             </form>
         </div>
@@ -165,11 +166,11 @@ def admin_login_page(request: Request, err: str = '') -> str:
             <form method="post" action="/admin/login">
                 <input type="hidden" name="login_type" value="key">
                 <div style="margin-bottom:10px;"><label style="font-size:12px;color:#666;">Admin Key</label>
-                <div style="position:relative;"><input id="pw-akey" name="admin_key" type="password" class="form-input" required style="padding-left:38px;"><button type="button" onclick="togglePw('pw-akey',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר סיסמה">👁</button></div></div>
+                <div style="display:flex;align-items:center;direction:ltr;"><input id="pw-akey" name="admin_key" type="password" class="form-input" required style="flex:1;border-radius:8px 0 0 8px;"><button type="button" onclick="togglePw('pw-akey',this)" style="padding:10px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-left:none;border-radius:0 8px 8px 0;cursor:pointer;font-size:16px;color:#aaa;white-space:nowrap;" title="הצג/הסתר סיסמה">👁</button></div></div>
                 <button type="submit" class="btn-primary" style="width:100%;">כניסה</button>
             </form>
         </div>
-        <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'[show]':'[hide]';}}</script>
+        <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁':'🔓';}}</script>
     </div>
     """
     return basic_web_shell("כניסת ניהול", body, request)
@@ -465,7 +466,13 @@ def admin_institution_detail(request: Request, tid: str) -> str:
     try:
         conn2 = get_db_connection()
         cur2 = conn2.cursor()
-        cur2.execute(sql_placeholder('SELECT * FROM institution_payments WHERE tenant_id = ? ORDER BY payment_date DESC'), (tid,))
+        inst_email = str(d.get('email') or '').strip()
+        if inst_email:
+            cur2.execute(sql_placeholder(
+                'SELECT * FROM institution_payments WHERE tenant_id = ? OR tenant_id = ? ORDER BY payment_date DESC'
+            ), (tid, inst_email))
+        else:
+            cur2.execute(sql_placeholder('SELECT * FROM institution_payments WHERE tenant_id = ? ORDER BY payment_date DESC'), (tid,))
         pay_rows = cur2.fetchall() or []
         for pr in pay_rows:
             pd = row_to_dict(pr)

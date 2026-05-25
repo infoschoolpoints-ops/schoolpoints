@@ -146,13 +146,25 @@ def _record_payment(*, tenant_id: str, email: str, plan: str, amount: int,
     conn = get_db_connection()
     try:
         cur = conn.cursor()
+        # Resolve actual tenant_id from institutions table when not provided
+        actual_tid = str(tenant_id or '').strip()
+        if not actual_tid and email:
+            try:
+                cur.execute(sql_placeholder("SELECT tenant_id FROM institutions WHERE email = ? LIMIT 1"), (email,))
+                _row = cur.fetchone()
+                if _row:
+                    actual_tid = str((_row['tenant_id'] if isinstance(_row, dict) else _row[0]) or '').strip()
+            except Exception:
+                pass
+        if not actual_tid:
+            actual_tid = (email or '').strip()
         notes_val = (plan or '') + (' | ' if plan else '') + (email or '')
         if status and status != 'completed':
             notes_val = f'{status} | {notes_val}'
         cur.execute(sql_placeholder(
             "INSERT INTO institution_payments (tenant_id, amount, payment_method, reference, notes, payment_date) "
             "VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)"),
-            (tenant_id or email, amount, method, reference, notes_val.strip(' |')))
+            (actual_tid, amount, method, reference, notes_val.strip(' |')))
         conn.commit()
         # Get last id
         if USE_POSTGRES:

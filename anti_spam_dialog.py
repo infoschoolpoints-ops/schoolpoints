@@ -507,12 +507,36 @@ def open_anti_spam_dialog(parent, load_config_func, save_config_func, db=None):
         config['anti_spam_rules'] = rules_list
         if save_config_func(config):
             # סנכרון לטבלת settings ב-DB (לענן)
+            _val = ''
             try:
                 if db and hasattr(db, 'set_setting'):
                     _val = _json.dumps({'anti_spam_enabled': bool(enabled_var.get()), 'anti_spam_rules': rules_list}, ensure_ascii=False)
                     db.set_setting('anti_spam_config', _val)
             except Exception:
                 pass
+            # דחיפה ישירה לענן
+            if _val:
+                try:
+                    import threading as _thr, urllib.request as _ureq
+                    _cfg2 = load_config_func() or {}
+                    _purl = str(_cfg2.get('sync_push_url') or '').strip()
+                    _tid = str(_cfg2.get('sync_tenant_id') or '').strip()
+                    _akey = str(_cfg2.get('sync_api_key') or _cfg2.get('api_key') or _cfg2.get('sync_key') or '').strip()
+                    if _purl and _tid and _akey:
+                        _body = _json.dumps({"tenant_id": _tid, "station_id": "admin-settings",
+                            "changes": [{"entity_type": "setting", "entity_id": "anti_spam_config",
+                                         "action_type": "update",
+                                         "payload_json": _json.dumps({"key": "anti_spam_config", "value": _val})}]
+                        }).encode('utf-8')
+                        def _do_push():
+                            try:
+                                _req = _ureq.Request(_purl, data=_body, headers={"Content-Type": "application/json", "api-key": _akey})
+                                _ureq.urlopen(_req, timeout=6)
+                            except Exception:
+                                pass
+                        _thr.Thread(target=_do_push, daemon=True).start()
+                except Exception:
+                    pass
             messagebox.showinfo("הצלחה", "ההגדרות נשמרו בהצלחה")
             dialog.destroy()
         else:

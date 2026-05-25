@@ -124,34 +124,47 @@ def approve_pending_registration(reg_id: int) -> Dict[str, Any]:
         
         download_url = "https://schoolpoints.co.il/web/download"
         activate_url = f"https://schoolpoints.co.il/web/activate?tenant_id={tenant_id}"
-        
+        my_account_url = "https://schoolpoints.co.il/web/my-account"
+
         body = f"""
         <div dir="rtl" style="font-family:Arial, sans-serif; line-height:1.6; color:#333;">
             <h2 style="color:#2ecc71;">ברוכים הבאים ל-SchoolPoints!</h2>
             <p>שלום {contact},</p>
             <p>תודה שנרשמת למערכת SchoolPoints. ההרשמה עברה בהצלחה והחשבון שלך מוכן.</p>
-            
+
             <div style="background:#f9f9f9; padding:15px; border-radius:10px; border:1px solid #ddd; margin:20px 0;">
                 <h3 style="margin-top:0;">פרטי המוסד שלך:</h3>
                 <div><b>שם המוסד:</b> {inst_name}</div>
-                <div><b>מזהה מוסד (Tenant ID):</b> <span style="font-family:monospace; background:#eee; padding:2px 5px;">{tenant_id}</span></div>
-                <div><b>סיסמת ניהול:</b> (כפי שבחרת בהרשמה)</div>
+                <div style="margin-top:6px;"><b>מזהה מוסד (Tenant ID):</b>
+                    <span style="font-family:monospace; background:#eee; padding:2px 8px; border-radius:4px; font-size:15px;">{tenant_id}</span>
+                </div>
+                <div style="margin-top:6px;"><b>סיסמת ניהול:</b> כפי שבחרת בהרשמה</div>
             </div>
-            
-            <p>
-                <b>להורדת התוכנה:</b><br/>
+
+            <div style="background:#fff8e1; padding:15px; border-radius:10px; border:1px solid #ffe082; margin:20px 0;">
+                <h3 style="margin-top:0; color:#f57f17;">🔑 מפתח API (לחיבור התוכנה לענן)</h3>
+                <p style="margin:0 0 8px;">שמור מפתח זה — הוא משמש לחיבור תוכנת SchoolPoints לחשבון הענן שלך:</p>
+                <div style="font-family:monospace; background:#fff; border:1px solid #ffc107; padding:10px 14px; border-radius:6px; font-size:14px; word-break:break-all; direction:ltr; text-align:left;">{api_key}</div>
+                <p style="margin:8px 0 0; font-size:12px; color:#888;">בהגדרות התוכנה: הגדרות מערכת ← סנכרון ענן ← הדבק כאן את ה-Tenant ID והמפתח הנ"ל</p>
+            </div>
+
+            <p><b>להורדת התוכנה:</b><br/>
                 <a href="{download_url}" style="color:#2ecc71;">לחץ כאן להורדה</a>
             </p>
-            
+
             <div style="background:#eaf7ee; padding:15px; border-radius:10px; border:1px solid #c3e6cb; margin:20px 0;">
-                <h3 style="margin-top:0; color:#27ae60;">הפעלת הרישיון:</h3>
+                <h3 style="margin-top:0; color:#27ae60;">הפעלת רישיון לתוכנה (מצב לא מקוון):</h3>
                 <div>1. התקן והפעל את התוכנה</div>
                 <div>2. פתח <b>⚙ הגדרות מערכת → רישום מערכת</b></div>
                 <div>3. העתק את <b>קוד המערכת</b> המוצג שם</div>
-                <div>4. <a href="{activate_url}" style="color:#2ecc71; font-weight:bold;">לחץ כאן להפעלת הרישיון</a> — הדבק את קוד המערכת וקבל קוד הפעלה</div>
+                <div>4. <a href="{activate_url}" style="color:#2ecc71; font-weight:bold;">לחץ כאן להפעלת הרישיון</a> — הדבק קוד מערכת וקבל קוד הפעלה</div>
                 <div>5. הדבק את קוד ההפעלה בתוכנה</div>
             </div>
-            
+
+            <p style="text-align:center;">
+                <a href="{my_account_url}" style="display:inline-block; padding:10px 24px; background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; border-radius:8px; text-decoration:none; font-weight:700;">כניסה לאזור האישי</a>
+            </p>
+
             <hr style="border:0; border-top:1px solid #eee; margin:20px 0;">
             <div style="font-size:12px; color:#888;">
                 הודעה זו נשלחה אוטומטית ממערכת SchoolPoints Cloud.

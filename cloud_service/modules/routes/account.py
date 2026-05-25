@@ -17,14 +17,14 @@ def _get_institution(tenant_id):
     try:
         cur = conn.cursor()
         cur.execute(sql_placeholder(
-            'SELECT tenant_id,name,contact_name,email,phone,plan,created_at,last_login,login_count,license_expiry'
+            'SELECT tenant_id,name,contact_name,email,phone,plan,created_at,last_login,login_count,license_expiry,api_key'
             ' FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id,))
         row = cur.fetchone()
         if not row:
             return None
         if isinstance(row, dict):
             return row
-        cols = ['tenant_id','name','contact_name','email','phone','plan','created_at','last_login','login_count','license_expiry']
+        cols = ['tenant_id','name','contact_name','email','phone','plan','created_at','last_login','login_count','license_expiry','api_key']
         return dict(zip(cols, row))
     except Exception:
         return None
@@ -86,11 +86,100 @@ def _build_account_html(inst, plan, pn, plans_map):
     h += f'<div class="ai"><span>\u05ea\u05d0\u05e8\u05d9\u05da \u05d4\u05e8\u05e9\u05de\u05d4:</span>{esc(str(inst.get("created_at") or "-")[:19])}</div>'
     h += '</div>'
 
-    # --- Activation link ---
+    # --- API Key section ---
+    ak = str(inst.get('api_key') or '')
     tid = esc(str(inst.get('tenant_id') or ''))
-    h += f'''<div style="text-align:center;margin-top:20px;">
-      <a href="/web/activate?tenant_id={tid}" style="display:inline-block;padding:10px 24px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border-radius:10px;font-weight:700;text-decoration:none;font-size:15px;">\u05d4\u05e4\u05e2\u05dc\u05ea \u05e8\u05d9\u05e9\u05d9\u05d5\u05df</a>
-    </div>'''
+    if ak:
+        h += f'''<div style="margin-top:20px;background:rgba(255,193,7,.08);border:1px solid rgba(255,193,7,.3);border-radius:14px;padding:18px 20px;">
+          <div style="font-weight:700;font-size:15px;margin-bottom:10px;">&#128273; מפתח API לחיבור התוכנה לענן</div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <input id="apiKeyBox" type="password" value="{esc(ak)}" readonly
+              style="flex:1;font-family:monospace;font-size:13px;padding:9px 12px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:rgba(0,0,0,.2);color:#fff;direction:ltr;text-align:left;" />
+            <button onclick="var b=document.getElementById('apiKeyBox');b.type=b.type==='password'?'text':'password';this.textContent=b.type==='password'?'&#128065;':'&#128274;';"
+              style="padding:9px 12px;border-radius:8px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;cursor:pointer;font-size:16px;">&#128065;</button>
+            <button onclick="navigator.clipboard.writeText('{esc(ak)}').then(()=>{{this.textContent='\u2705';setTimeout(()=>this.textContent='📋',1800);}});"
+              style="padding:9px 12px;border-radius:8px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#fff;cursor:pointer;font-size:16px;">&#128203;</button>
+          </div>
+          <div style="margin-top:8px;font-size:12px;opacity:.6;">Tenant ID + מפתח API נדרשים להגדרת הסנכרון בתוכנה</div>
+        </div>'''
+    # --- Registration file download ---
+    h += f'''<div style="margin-top:20px;background:rgba(46,204,113,.08);border:1px solid rgba(46,204,113,.3);border-radius:14px;padding:18px 20px;">
+      <div style="font-weight:700;font-size:15px;margin-bottom:8px;">&#128196; קובץ הרשמה לתוכנה</div>
+      <div style="font-size:13px;opacity:.75;margin-bottom:12px;">הורד קובץ JSON ויבא אותו בתוכנה לחיבור אוטומטי לענן (tenant_id + מפתח API).</div>
+      <button onclick="downloadRegFile('{esc(str(inst.get('tenant_id') or ''))}','{esc(ak or '')}')"
+        style="padding:9px 20px;background:#2ecc71;border:none;border-radius:8px;color:#fff;font-weight:700;font-size:14px;cursor:pointer;">
+        &#11015; הורד קובץ הרשמה
+      </button>
+    </div>
+    <script>
+    function downloadRegFile(tid, ak){{
+      var obj = {{tenant_id:tid, api_key:ak, server_url:"https://schoolpoints.co.il"}};
+      var blob = new Blob([JSON.stringify(obj,null,2)], {{type:"application/json"}});
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "schoolpoints_registration.json";
+      a.click();
+    }}
+    </script>'''
+
+    # --- Inline activation form ---
+    h += f'''<div style="margin-top:20px;background:rgba(102,126,234,.08);border:1px solid rgba(102,126,234,.3);border-radius:14px;padding:20px 20px 16px;">
+      <div style="font-weight:700;font-size:15px;margin-bottom:4px;">&#128273; הפעלת רישיון (לא-מקוון)</div>
+      <div style="font-size:13px;opacity:.7;margin-bottom:14px;">העתק את <b>קוד המערכת</b> מהתוכנה (הגדרות &rarr; רישיון) והזן כאן כדי לקבל קוד הפעלה.</div>
+      <div style="display:flex;gap:8px;margin-bottom:10px;">
+        <input id="sysCodeIn" type="text" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="24"
+          style="flex:1;padding:10px 12px;border:1px solid rgba(255,255,255,.2);background:rgba(0,0,0,.2);color:#fff;border-radius:8px;font-family:Consolas,monospace;font-size:13px;direction:ltr;text-align:left;"/>
+        <button id="genKeyBtn" onclick="genActivationKey('{esc(str(inst.get('tenant_id') or ''))}','{esc(ak or '')}')"
+          style="padding:10px 18px;background:linear-gradient(135deg,#667eea,#764ba2);border:none;border-radius:8px;color:#fff;font-weight:700;font-size:14px;cursor:pointer;white-space:nowrap;">
+          &#9889; צור קוד
+        </button>
+      </div>
+      <div id="actKeyResult" style="display:none;margin-top:10px;background:rgba(46,204,113,.1);border:1px solid rgba(46,204,113,.3);border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:12px;opacity:.7;margin-bottom:6px;">קוד הפעלה — הדבק בתוכנה:</div>
+        <div id="actKeyVal" style="font-family:Consolas,monospace;font-size:15px;font-weight:700;letter-spacing:1px;word-break:break-all;color:#2ecc71;user-select:all;cursor:text;"></div>
+        <button onclick="copyActKey()" id="copyActBtn"
+          style="margin-top:10px;padding:7px 20px;background:#2ecc71;border:none;border-radius:8px;color:#fff;font-weight:700;font-size:13px;cursor:pointer;">
+          &#128203; העתק
+        </button>
+      </div>
+      <div id="actKeyMsg" style="min-height:18px;font-size:13px;margin-top:6px;text-align:center;"></div>
+    </div>
+    <script>
+    async function genActivationKey(tid, apiKey){{
+      var sys = (document.getElementById('sysCodeIn').value||'').trim();
+      var msg = document.getElementById('actKeyMsg');
+      var btn = document.getElementById('genKeyBtn');
+      var res = document.getElementById('actKeyResult');
+      msg.textContent=''; msg.style.color='';
+      res.style.display='none';
+      if(!sys){{ msg.textContent='יש להזין קוד מערכת'; msg.style.color='#e74c3c'; return; }}
+      btn.disabled=true; btn.textContent='מייצר...';
+      try{{
+        var r = await fetch('/api/license/generate',{{
+          method:'POST',
+          headers:{{'Content-Type':'application/json'}},
+          body: JSON.stringify({{tenant_id:tid, api_key:apiKey, system_code:sys}})
+        }});
+        var d = await r.json();
+        if(d.ok){{
+          document.getElementById('actKeyVal').textContent = d.activation_key;
+          res.style.display='block';
+          msg.textContent='הקוד נוצר בהצלחה &#10003;'; msg.style.color='#2ecc71';
+        }}else{{
+          msg.textContent = d.error||'שגיאה'; msg.style.color='#e74c3c';
+        }}
+      }}catch(e){{ msg.textContent='שגיאת תקשורת'; msg.style.color='#e74c3c'; }}
+      btn.disabled=false; btn.textContent='&#9889; צור קוד';
+    }}
+    function copyActKey(){{
+      var txt = document.getElementById('actKeyVal').textContent;
+      navigator.clipboard.writeText(txt).then(function(){{
+        var b=document.getElementById('copyActBtn');
+        b.textContent='&#10003; הועתק!';
+        setTimeout(function(){{b.textContent='&#128203; העתק';}},2000);
+      }});
+    }}
+    </script>'''
 
     # --- Upgrade / change plan section ---
     available = [p for pk, p in plans_map.items()

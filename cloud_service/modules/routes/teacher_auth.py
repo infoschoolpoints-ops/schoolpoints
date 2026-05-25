@@ -36,8 +36,8 @@ def web_signin(request: Request) -> Response:
       <label style="display:block;margin:10px 0 6px;font-weight:800;">קוד מוסד</label>
       <input name="tenant_id" autocomplete="username" pattern="[a-zA-Z0-9_-]+" class="form-input" style="direction:ltr; text-align:left;" required />
       <label style="display:block;margin:10px 0 6px;font-weight:800;">סיסמה</label>
-      <div style="position:relative;"><input id="pw-signin" name="password" type="password" autocomplete="current-password" class="form-input" required style="padding-left:38px;" /><button type="button" onclick="togglePw('pw-signin',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר סיסמה">👁</button></div>
-      <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁':'👁';}}  </script>
+      <div style="display:flex;align-items:center;direction:ltr;"><input id="pw-signin" name="password" type="password" autocomplete="current-password" class="form-input" required style="flex:1;border-radius:8px 0 0 8px;" /><button type="button" onclick="togglePw('pw-signin',this)" style="padding:10px 14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);border-left:none;border-radius:0 8px 8px 0;cursor:pointer;font-size:16px;color:#aaa;white-space:nowrap;" title="הצג/הסתר סיסמה">👁</button></div>
+      <script>function togglePw(id,btn){{var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';btn.textContent=i.type==='password'?'👁':'�';}}</script>
       <div class="actionbar" style="justify-content:flex-start;">
         <button class="green" type="submit">כניסה</button>
         <a class="gray" href="/web/download">הורדה</a>
