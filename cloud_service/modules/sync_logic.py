@@ -124,9 +124,7 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
         if student_id <= 0:
             return
             
-        old_points = int(payload.get('old_points') or 0)
         new_points = int(payload.get('new_points') or 0)
-        delta = int(new_points - old_points)
         reason = str(payload.get('reason') or '').strip()
 
         cur = tconn.cursor()
@@ -144,8 +142,10 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
                 cur_points = int(row[0] or 0)
             except:
                 pass
-                
-        final_points = int(cur_points + delta)
+        
+        # ערך מוחלט (last-write-wins) — תמיד מקבל את הערך שהשולח קבע
+        # תיקון: גישת דלתא גרמה לבלבול נקודות בין תחנות
+        final_points = int(new_points)
         cur.execute(
             sql_placeholder('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
             (final_points, student_id)

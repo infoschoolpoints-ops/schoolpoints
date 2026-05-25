@@ -1755,13 +1755,7 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                 sid = int(entity_id or '0')
                 if sid <= 0:
                     continue
-                old_points = int(payload.get('old_points') or 0)
                 new_points = int(payload.get('new_points') or 0)
-                delta = int(new_points - old_points)
-                if delta == 0:
-                    if event_id:
-                        _mark_event_applied(conn, event_id)
-                    continue
                 cur.execute('SELECT points FROM students WHERE id = ? LIMIT 1', (int(sid),))
                 r0 = cur.fetchone()
                 if not r0:
@@ -1777,8 +1771,9 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                         cur_points = int(r0[0])
                     except Exception:
                         cur_points = 0
-                # תמיד דלתא — מונע אובדן נקודות בעדכונים מקבילים
-                final_points = int(cur_points + delta)
+                # ערך מוחלט (last-write-wins) — תמיד מקבל את הערך שהשולח קבע
+                # תיקון: גישת דלתא גרמה לבלבול נקודות בין תחנות עם ערכי התחלה שונים
+                final_points = int(new_points)
                 if final_points == cur_points:
                     try:
                         print(f"[APPLY] SKIP student_points #{_ev_id_short} sid={sid}: already {cur_points}=={final_points}")

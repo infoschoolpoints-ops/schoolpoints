@@ -1844,7 +1844,7 @@ def web_signin_submit(
         url=(f"/web/bootstrap-choice?next={urllib.parse.quote(nxt, safe='')}") if need_bootstrap else nxt,
         status_code=302
     )
-    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30, path='/')
     return resp
 
 
@@ -1995,7 +1995,7 @@ def web_bootstrap_admin_submit(
             pass
 
     resp = RedirectResponse(url=nxt, status_code=302)
-    resp.set_cookie('web_teacher', str(teacher_id or ''), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
+    resp.set_cookie('web_teacher', str(teacher_id or ''), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7, path='/')
     return resp
 
 
@@ -2060,7 +2060,7 @@ def web_teacher_login_submit(
 
     nxt = _web_next_from_request(request, '/web/admin')
     resp = RedirectResponse(url=nxt, status_code=302)
-    resp.set_cookie('web_teacher', str(teacher_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
+    resp.set_cookie('web_teacher', str(teacher_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7, path='/')
     return resp
 
 
@@ -5883,9 +5883,7 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
         student_id = _safe_int(ch.entity_id, 0)
         if student_id <= 0:
             return
-        old_points = _safe_int(payload.get('old_points'), 0)
         new_points = _safe_int(payload.get('new_points'), 0)
-        delta = int(new_points - old_points)
         reason = _safe_str(payload.get('reason') or '').strip()
 
         cur = tconn.cursor()
@@ -5900,7 +5898,8 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
                 cur_points = _safe_int(row['points'], 0)
             except Exception:
                 cur_points = _safe_int(row[0], 0)
-        final_points = int(cur_points + delta)
+        # ערך מוחלט (last-write-wins) — תמיד מקבל את הערך שהשולח קבע
+        final_points = int(new_points)
         cur.execute(
             _sql_placeholder('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
             (final_points, student_id)
@@ -5913,7 +5912,7 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     '''
                 ),
-                (int(student_id), int(cur_points), int(final_points), int(delta), reason, 'sync', 'sync')
+                (int(student_id), int(cur_points), int(final_points), int(final_points - cur_points), reason, 'sync', 'sync')
             )
         except Exception:
             pass
@@ -14274,14 +14273,14 @@ def admin_institution_login(request: Request, tenant_id: str, next: str = '', ad
         target = '/web/admin'
 
     resp = RedirectResponse(url=target, status_code=302)
-    resp.set_cookie('web_tenant', tenant_id.strip(), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    resp.set_cookie('web_tenant', tenant_id.strip(), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30, path='/')
     resp.delete_cookie('web_teacher')
     try:
         token = _master_token_create(tenant_id.strip(), ttl_sec=60 * 60 * 6)
     except Exception:
         token = ''
     if token:
-        resp.set_cookie('web_master', token, httponly=True, samesite='lax', max_age=60 * 60 * 6)
+        resp.set_cookie('web_master', token, httponly=True, samesite='lax', max_age=60 * 60 * 6, path='/')
     return resp
 
 
@@ -16743,8 +16742,8 @@ def sync_teacher_password(
         'message': 'סיסמת מורה אושרה!',
         'redirect_url': '/web/admin',
     })
-    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60*60*24*7)
-    resp.set_cookie('web_teacher', teacher_id, httponly=True, samesite='lax', max_age=60*60*24*7)
+    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60*60*24*7, path='/')
+    resp.set_cookie('web_teacher', teacher_id, httponly=True, samesite='lax', max_age=60*60*24*7, path='/')
     return resp
 
 
