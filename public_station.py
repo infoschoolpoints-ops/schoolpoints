@@ -5702,6 +5702,131 @@ class PublicStation:
             pass
         return result['mode']
 
+    # ------------------------------------------------------------------
+    # Deployment wizard & cloud credentials dialog
+    # ------------------------------------------------------------------
+
+    def _open_deployment_wizard(self, cfg: dict) -> str:
+        """Ask user: local-network or cloud? Returns 'local' / 'cloud' / ''."""
+        result = {'mode': ''}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("הגדרת עמדה ציבורית — סוג חיבור")
+        dialog.geometry("520x320")
+        dialog.configure(bg='#ecf0f1')
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="ברוכים הבאים לעמדה הציבורית", font=('Arial', 15, 'bold'), bg='#ecf0f1').pack(pady=(20, 6))
+        tk.Label(dialog, text="בחר כיצד לחבר עמדה זו לנתונים:", font=('Arial', 11), bg='#ecf0f1').pack(pady=(0, 14))
+
+        btn_frame = tk.Frame(dialog, bg='#ecf0f1')
+        btn_frame.pack(padx=30, fill=tk.X)
+
+        def choose(mode):
+            result['mode'] = mode
+            dialog.destroy()
+
+        tk.Button(btn_frame, text="🌐  חיבור מקוון (ענן)", font=('Arial', 12, 'bold'),
+                  bg='#2980b9', fg='white', padx=16, pady=10, width=26,
+                  command=lambda: choose('cloud')).pack(pady=4)
+        tk.Label(btn_frame, text="אינטרנט בלבד — ללא רשת מקומית", font=('Arial', 9),
+                 bg='#ecf0f1', fg='#555').pack()
+
+        tk.Button(btn_frame, text="🖧  רשת מקומית (תיקייה משותפת)", font=('Arial', 11),
+                  bg='#7f8c8d', fg='white', padx=16, pady=9, width=26,
+                  command=lambda: choose('local')).pack(pady=(12, 4))
+        tk.Label(btn_frame, text="מחובר לתיקיית רשת משותפת מהמחשב המרכזי", font=('Arial', 9),
+                 bg='#ecf0f1', fg='#555').pack()
+
+        dialog.wait_window()
+        return result['mode']
+
+    def _open_cloud_credentials_dialog(self, cfg: dict) -> bool:
+        """Dialog: import connection JSON file or enter credentials manually.
+        Updates cfg in-place with sync_tenant_id / sync_api_key / sync_push_url.
+        Returns True on success."""
+        result = {'ok': False}
+        dialog = tk.Toplevel(self.root)
+        dialog.title("חיבור לענן — פרטי חיבור")
+        dialog.geometry("640x420")
+        dialog.configure(bg='#ecf0f1')
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="חיבור עמדה ציבורית לענן", font=('Arial', 14, 'bold'), bg='#ecf0f1').pack(pady=(16, 4))
+        tk.Label(dialog, text="ייבא קובץ חיבור שהורדת מאתר הניהול, או הזן פרטים ידנית.",
+                 font=('Arial', 10), bg='#ecf0f1', fg='#555').pack()
+
+        form = tk.Frame(dialog, bg='#ecf0f1')
+        form.pack(fill=tk.X, padx=24, pady=10)
+
+        LW = 22
+        FW = 38
+        tenant_var = tk.StringVar(value=str(cfg.get('sync_tenant_id') or ''))
+        apikey_var  = tk.StringVar(value=str(cfg.get('sync_api_key')   or ''))
+        pushurl_var = tk.StringVar(value=str(cfg.get('sync_push_url')  or ''))
+
+        for label, var in [("קוד מוסד (tenant_id):", tenant_var),
+                            ("מפתח API (api_key):",   apikey_var),
+                            ("Push URL:",              pushurl_var)]:
+            row = tk.Frame(form, bg='#ecf0f1')
+            row.pack(fill=tk.X, pady=2)
+            tk.Label(row, text=fix_rtl_text(label), font=('Arial', 10), bg='#ecf0f1', anchor='e', width=LW).pack(side=tk.RIGHT, padx=4)
+            tk.Entry(row, textvariable=var, font=('Arial', 10), width=FW, justify='left').pack(side=tk.RIGHT, padx=4)
+
+        def browse_file():
+            path = filedialog.askopenfilename(
+                title='ייבוא קובץ הרשמה',
+                filetypes=[('קובץ חיבור SchoolPoints', '*.json'), ('הכל', '*.*')],
+                parent=dialog)
+            if not path:
+                return
+            try:
+                with open(path, 'r', encoding='utf-8') as _f:
+                    creds = json.load(_f)
+                tid  = str(creds.get('sync_tenant_id') or '').strip()
+                akey = str(creds.get('sync_api_key')   or '').strip()
+                purl = str(creds.get('sync_push_url')  or '').strip()
+                base_url = str(creds.get('cloud_base_url') or '').strip()
+                if not (tid and akey and purl):
+                    messagebox.showerror('שגיאה', 'הקובץ לא מכיל פרטי חיבור תקינים.', parent=dialog)
+                    return
+                tenant_var.set(tid)
+                apikey_var.set(akey)
+                pushurl_var.set(purl)
+                if base_url:
+                    cfg['cloud_base_url'] = base_url
+            except Exception as e:
+                messagebox.showerror('שגיאה', f'לא ניתן לקרוא את הקובץ:\n{e}', parent=dialog)
+
+        def save_and_close():
+            tid  = tenant_var.get().strip()
+            akey = apikey_var.get().strip()
+            purl = pushurl_var.get().strip()
+            if not (tid and akey and purl):
+                messagebox.showerror('שגיאה', 'יש למלא את כל השדות (tenant_id, api_key, push_url).', parent=dialog)
+                return
+            cfg['sync_tenant_id'] = tid
+            cfg['sync_api_key']   = akey
+            cfg['sync_push_url']  = purl
+            cfg['deployment_mode'] = 'cloud'
+            result['ok'] = True
+            dialog.destroy()
+
+        btn_row = tk.Frame(dialog, bg='#ecf0f1')
+        btn_row.pack(pady=8)
+        tk.Button(btn_row, text="📂 ייבא קובץ הרשמה", command=browse_file,
+                  font=('Arial', 10), bg='#27ae60', fg='white', padx=12, pady=5).pack(side=tk.RIGHT, padx=6)
+        tk.Button(btn_row, text="✓ שמור וחבר", command=save_and_close,
+                  font=('Arial', 10, 'bold'), bg='#2980b9', fg='white', padx=12, pady=5).pack(side=tk.RIGHT, padx=6)
+        tk.Button(btn_row, text="ביטול", command=dialog.destroy,
+                  font=('Arial', 10), bg='#95a5a6', fg='white', padx=12, pady=5).pack(side=tk.RIGHT, padx=6)
+
+        dialog.wait_window()
+        return result['ok']
+
+    # ------------------------------------------------------------------
+
     def ensure_shared_folder_config(self) -> bool:
         """בדיקה/הגדרה של תיקיית רשת משותפת לפי קובץ ההגדרות החי."""
         try:
@@ -5727,6 +5852,25 @@ class PublicStation:
                     except Exception:
                         pass
                     return True
+
+            # In cloud mode: no shared folder needed — skip folder check
+            if existing_mode in ('cloud', 'hybrid'):
+                tid  = str(cfg.get('sync_tenant_id') or '').strip()
+                akey = str(cfg.get('sync_api_key')   or '').strip()
+                purl = str(cfg.get('sync_push_url')  or '').strip()
+                if tid and akey and purl:
+                    self.app_config = cfg
+                    return True
+                # Credentials missing — re-open credentials dialog
+                try:
+                    ok = self._open_cloud_credentials_dialog(cfg)
+                    if ok:
+                        self.save_app_config(cfg)
+                        self.app_config = cfg
+                        return True
+                except Exception:
+                    pass
+                return False
 
             if shared and not _safe_isdir(shared):
                 try:
@@ -5758,19 +5902,46 @@ class PublicStation:
             return False
 
     def open_public_settings_dialog(self):
-        """פתיחת חלון הגדרות לעמדה הציבורית (לשינוי תיקיית רשת)."""
+        """פתיחת חלון הגדרות לעמדה הציבורית (תיקיית רשת / חיבור ענן)."""
         cfg = self.load_app_config() or {}
-        shared = None
-        try:
-            shared = (cfg or {}).get('shared_folder') or (cfg or {}).get('network_root')
-        except Exception:
-            shared = None
-        self._open_shared_folder_dialog(
-            cfg,
-            first_run=False,
-            previous_shared_folder=shared,
-            previously_configured=bool(shared),
-        )
+        existing_mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("הגדרות עמדה ציבורית")
+        dialog.geometry("420x220")
+        dialog.configure(bg='#ecf0f1')
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="הגדרות חיבור", font=('Arial', 13, 'bold'), bg='#ecf0f1').pack(pady=(16, 6))
+        mode_lbl = "מצב נוכחי: " + ("ענן ☁" if existing_mode in ('cloud', 'hybrid') else "רשת מקומית 🖧")
+        tk.Label(dialog, text=mode_lbl, font=('Arial', 10), bg='#ecf0f1', fg='#555').pack(pady=(0, 10))
+
+        btn_frame = tk.Frame(dialog, bg='#ecf0f1')
+        btn_frame.pack()
+
+        def open_cloud():
+            dialog.destroy()
+            ok = self._open_cloud_credentials_dialog(cfg)
+            if ok:
+                self.save_app_config(cfg)
+                messagebox.showinfo("הצלחה", "פרטי חיבור הענן נשמרו. העמדה תסתנכרן בפעם הבאה.")
+
+        def open_local():
+            dialog.destroy()
+            shared = cfg.get('shared_folder') or cfg.get('network_root')
+            self._open_shared_folder_dialog(cfg, first_run=False,
+                                             previous_shared_folder=shared,
+                                             previously_configured=bool(shared))
+
+        tk.Button(btn_frame, text="🌐  חיבור מקוון (ענן)", font=('Arial', 11, 'bold'),
+                  bg='#2980b9', fg='white', padx=14, pady=8, width=24,
+                  command=open_cloud).pack(pady=4)
+        tk.Button(btn_frame, text="🖧  רשת מקומית (תיקיית שיתוף)", font=('Arial', 10),
+                  bg='#7f8c8d', fg='white', padx=14, pady=7, width=24,
+                  command=open_local).pack(pady=4)
+
+        dialog.wait_window()
 
     def _open_shared_folder_dialog(self, cfg: dict, first_run: bool, previous_shared_folder: str = None, previously_configured: bool = False) -> bool:
         """חלון בחירת תיקיית רשת משותפת. מחזיר True אם נשמרה הגדרה."""

@@ -2520,6 +2520,13 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                             _set_sync_state(conn0, 'bootstrap_snapshot_done', '1')
                         except Exception as e:
                             print(f"[BOOTSTRAP] Apply snapshot failed: {e}")
+                        # Bootstrap file sync: download images/sounds immediately after snapshot
+                        if push_url and api_key and tenant_id:
+                            try:
+                                print("[BOOTSTRAP] Immediate file sync after snapshot...")
+                                sync_files_cycle(str(push_url), str(api_key), str(tenant_id), str(base_dir))
+                            except Exception as _fse:
+                                print(f"[BOOTSTRAP] File sync error: {_fse}")
                     else:
                         print('[BOOTSTRAP] Snapshot pull failed')
                 else:
@@ -2586,7 +2593,7 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 if now - last_file_sync > _file_sync_interval:
                     try:
                         print("[FILE-SYNC] Starting file sync cycle...")
-                        assets_base = os.path.dirname(str(db_path))
+                        assets_base = base_dir  # shared dir for all stations on this machine
                         sync_files_cycle(str(push_url), str(api_key), str(tenant_id), str(assets_base))
                         last_file_sync = now
                         _file_sync_interval = 300  # reset to 5 min on success
