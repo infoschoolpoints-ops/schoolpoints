@@ -424,8 +424,8 @@ def sync_teacher_password(sync_token: str = Form(...), teacher_password: str = F
         'message': 'סיסמת מורה אושרה, ממשיך ללוח הניהול...',
         'redirect_url': '/web/admin'
     })
-    response.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
-    response.set_cookie('web_teacher', str(teacher_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
+    response.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30, path='/')
+    response.set_cookie('web_teacher', str(teacher_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7, path='/')
     return response
 
 def get_server_manifest(tenant_id: str) -> Dict[str, str]:

@@ -419,8 +419,8 @@ def admin_master_login(request: Request, tenant_id: str = Form(...)) -> Response
     token = f"{tenant_id}:{h}"
     
     resp = RedirectResponse(url='/web/admin', status_code=302)
-    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax')
-    resp.set_cookie('web_master', token, httponly=True, samesite='lax')
+    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', path='/')
+    resp.set_cookie('web_master', token, httponly=True, samesite='lax', path='/')
     return resp
 
 # ---------------------------------------------------------------------------

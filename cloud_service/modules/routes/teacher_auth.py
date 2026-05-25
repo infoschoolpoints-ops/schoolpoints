@@ -175,7 +175,7 @@ def web_signin_submit(
 
     target = f"/web/bootstrap-choice?next={urllib.parse.quote(nxt, safe='')}" if need_bootstrap else nxt
     resp = RedirectResponse(url=target, status_code=302)
-    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30)
+    resp.set_cookie('web_tenant', tenant_id, httponly=True, samesite='lax', max_age=60 * 60 * 24 * 30, path='/')
     return resp
 
 @router.get('/web/teacher-login', response_class=HTMLResponse)
