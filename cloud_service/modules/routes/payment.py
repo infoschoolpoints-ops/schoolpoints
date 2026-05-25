@@ -184,13 +184,70 @@ def _record_payment(*, tenant_id: str, email: str, plan: str, amount: int,
         except: pass
 
 
+def _build_installments_selector(safe_email: str, safe_plan: str, plan_name: str, duration: int, total: int) -> str:
+    """Build installment selector page with dropdown for 1-36 payments"""
+    max_inst = min(36, max(duration * 2, 12))
+    opts = [n for n in [1, 2, 3, 4, 6, 8, 10, 12, 18, 24, 36] if n <= max_inst]
+    if 1 not in opts:
+        opts.insert(0, 1)
+    
+    options_html = ''
+    for n in opts:
+        per = total / n
+        per_s = f'{int(per)}' if per == int(per) else f'{per:.2f}'
+        lbl = f'תשלום אחד — ₪{total}' if n == 1 else f'{n} תשלומים של ₪{per_s}'
+        sel = ' selected' if n == duration else ''
+        options_html += f'<option value="{n}"{sel}>{lbl}</option>\n'
+    
+    return f"""
+    <div style="max-width:480px;margin:40px auto;padding:20px;">
+      <h2 style="text-align:center;margin-bottom:6px;">{plan_name}</h2>
+      <p style="text-align:center;opacity:.7;margin-bottom:28px;">
+        גישה מלאה למשך <b>{duration} חודשים</b> | סה"כ <b>₪{total}</b>
+      </p>
+      <div style="background:rgba(255,255,255,.07);border-radius:16px;padding:28px;text-align:center;">
+        <div style="font-size:15px;font-weight:700;margin-bottom:16px;">בחר מספר תשלומים:</div>
+        <select id="inst_sel" onchange="updatePayBtn()"
+          style="width:100%;padding:14px;font-size:18px;border-radius:10px;border:2px solid rgba(102,126,234,.6);background:#1a1a2e;color:#fff;text-align:center;cursor:pointer;">
+          {options_html}
+        </select>
+        <div id="inst_info" style="margin:16px 0;font-size:14px;opacity:.8;min-height:20px;"></div>
+        <a id="pay_btn" href="#"
+           style="display:block;padding:14px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px;">
+          המשך לתשלום
+        </a>
+      </div>
+      <p style="text-align:center;margin-top:20px;"><a href="/web/register" style="opacity:.5;font-size:13px;">חזרה להרשמה</a></p>
+    </div>
+    <script>
+    function updatePayBtn() {{
+      var n = parseInt(document.getElementById('inst_sel').value);
+      var total = {total};
+      var per = Math.round(total / n * 100) / 100;
+      var info = document.getElementById('inst_info');
+      var btn = document.getElementById('pay_btn');
+      if (n <= 1) {{
+        info.textContent = 'תשלום חד-פעמי של ₪' + total;
+        btn.textContent = 'שלם ₪' + total + ' עכשיו';
+      }} else {{
+        var perStr = (per % 1 === 0) ? per.toFixed(0) : per.toFixed(2);
+        info.textContent = '₪' + perStr + ' × ' + n + ' תשלומים = ₪' + total;
+        btn.textContent = 'המשך — ' + n + ' תשלומים של ₪' + perStr;
+      }}
+      btn.href = '/web/payment?reg_email={safe_email}&plan={safe_plan}&installments=' + n;
+    }}
+    updatePayBtn();
+    </script>
+    """
+
+
 # ---------------------------------------------------------------------------
 # Payment page — PayMe Hosted Fields or Mock
 # ---------------------------------------------------------------------------
 @router.get('/web/payment', response_class=HTMLResponse)
 @router.get('/web/payment/mock', response_class=HTMLResponse)
 def web_payment_page(request: Request, reg_email: str = Query(default=''), plan: str = Query(default=''),
-                     payment_type: str = Query(default='')) -> str:
+                     payment_type: str = Query(default=''), installments: int = Query(default=0)) -> str:
     if not reg_email:
         return public_web_shell("תשלום", "<h2>חסר מייל הרשמה</h2><a href='/web/register'>חזרה להרשמה</a>", request=request)
 
@@ -208,54 +265,22 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
     safe_plan = html_mod.escape(plan)
     safe_plan_name = html_mod.escape(plan_name)
 
-    # If plan supports installments and no payment_type chosen yet — show selector
-    if allow_installments and duration > 1 and not payment_type:
-        body = f"""
-        <div style="max-width:560px;margin:40px auto;padding:20px;">
-          <h2 style="text-align:center;margin-bottom:6px;">{safe_plan_name}</h2>
-          <p style="text-align:center;opacity:.7;margin-bottom:28px;">
-            גישה מלאה למשך <b>{duration} חודשים</b> | תמיכה מלאה | עדכונים שוטפים
-          </p>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px;">
-            <!-- Lump sum -->
-            <div style="background:rgba(255,255,255,.07);border:2px solid rgba(102,126,234,.6);border-radius:16px;padding:24px;text-align:center;">
-              <div style="font-size:13px;font-weight:700;color:#a0a0ff;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">תשלום אחד</div>
-              <div style="font-size:42px;font-weight:900;color:#fff;line-height:1;">₪{total}</div>
-              <div style="font-size:13px;opacity:.6;margin:6px 0 16px;">סכום כולל חד-פעמי</div>
-              <div style="font-size:12px;opacity:.5;margin-bottom:16px;">תחסוך את הלחץ של תשלומים חודשיים</div>
-              <a href="/web/payment?reg_email={safe_email}&plan={safe_plan}&payment_type=lump_sum"
-                 style="display:block;padding:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border-radius:8px;text-decoration:none;font-weight:700;">
-                שלם ₪{total} עכשיו
-              </a>
-            </div>
-            <!-- Installments -->
-            <div style="background:rgba(255,255,255,.07);border:2px solid rgba(46,204,113,.5);border-radius:16px;padding:24px;text-align:center;">
-              <div style="font-size:13px;font-weight:700;color:#2ecc71;margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">{duration} תשלומים</div>
-              <div style="font-size:42px;font-weight:900;color:#fff;line-height:1;">₪{price_monthly}</div>
-              <div style="font-size:13px;opacity:.6;margin:6px 0 4px;">לחודש × {duration} חודשים</div>
-              <div style="font-size:13px;color:#2ecc71;margin-bottom:4px;">סה"כ: ₪{total}</div>
-              <div style="font-size:12px;opacity:.5;margin-bottom:16px;">פריסה לכרטיס האשראי</div>
-              <a href="/web/payment?reg_email={safe_email}&plan={safe_plan}&payment_type=installments"
-                 style="display:block;padding:12px;background:linear-gradient(135deg,#27ae60,#2ecc71);color:#fff;border-radius:8px;text-decoration:none;font-weight:700;">
-                ₪{price_monthly} × {duration} תשלומים
-              </a>
-            </div>
-          </div>
-          <div style="background:rgba(255,200,50,.08);border:1px solid rgba(255,200,50,.2);border-radius:10px;padding:12px 16px;font-size:13px;line-height:1.7;opacity:.85;">
-            <b>❓ מה ההבדל?</b><br>
-            בשני המקרים הרישיון פתוח ל-<b>{duration} חודשים</b> מיום התשלום.<br>
-            • <b>תשלום אחד</b> — עסקה אחת של ₪{total}, מבוצעת פעם אחת בלבד.<br>
-            • <b>תשלומים</b> — אותו סכום כולל, נפרס ל-{duration} חיובים חודשיים דרך כרטיס האשראי שלך.
-          </div>
-          <p style="text-align:center;margin-top:20px;"><a href="/web/register" style="opacity:.5;font-size:13px;">חזרה להרשמה</a></p>
-        </div>
-        """
+    # If plan supports installments and no payment_type/installments chosen yet — show selector
+    if allow_installments and total > 0 and not payment_type and installments <= 0:
+        body = _build_installments_selector(safe_email, safe_plan, safe_plan_name, duration, total)
         return public_web_shell('בחירת אופן תשלום', body, request=request)
 
     # Determine installments count
-    installments_count = duration if (payment_type == 'installments' and allow_installments and duration > 1) else 1
+    if installments > 1:
+        installments_count = min(int(installments), 36)
+    elif payment_type == 'installments' and allow_installments and duration > 1:
+        installments_count = duration
+    else:
+        installments_count = 1
+    per_installment = total / installments_count if installments_count > 1 else total
+    per_inst_str = f'{int(per_installment)}' if per_installment == int(per_installment) else f'{per_installment:.2f}'
     price_line = (
-        f'₪{price_monthly}/חודש × {duration} חודשים = <b>₪{total}</b> ({duration} תשלומים)' if installments_count > 1
+        f'₪{per_inst_str} × {installments_count} תשלומים = <b>₪{total}</b>' if installments_count > 1
         else f'<b>₪{total}</b>' + (f' ({duration} חודשים בתשלום אחד)' if duration > 1 else '')
     )
 
@@ -300,7 +325,7 @@ def web_payment_page(request: Request, reg_email: str = Query(default=''), plan:
         """
     else:
         # --- Mock payment (no PayMe credentials) ---
-        pay_label = f'שלם ₪{price_monthly} × {installments_count} תשלומים (בדיקה)' if installments_count > 1 else f'שלם ₪{total} (בדיקה)'
+        pay_label = f'שלם ₪{per_inst_str} × {installments_count} תשלומים (בדיקה)' if installments_count > 1 else f'שלם ₪{total} (בדיקה)'
         body = f"""
         <div style="max-width:500px; margin:40px auto; text-align:center; background:rgba(255,255,255,.06); padding:30px; border-radius:15px; border:1px solid rgba(255,255,255,.15);">
           <h2>תשלום מאובטח</h2>
