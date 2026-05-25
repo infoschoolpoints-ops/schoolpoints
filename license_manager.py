@@ -814,7 +814,8 @@ def import_license_from_cloud(base_dir: str, cloud_lic: Dict[str, Any]) -> bool:
         machines = set(str(m) for m in (cloud_lic.get('machines') or []))
         if OLD_MACHINE_ID in machines:
             machines.discard(OLD_MACHINE_ID)
-        max_stations = int(cloud_lic.get('max_stations') or BASIC_MAX_STATIONS)
+        # אם max_stations לא קיים ברשיון הענן — לא חוסמים (ברירת מחדל: ללא הגבלה)
+        max_stations = int(cloud_lic.get('max_stations') or UNLIMITED_MAX_STATIONS)
 
         if machine_id not in machines:
             if len(machines) >= max_stations:
