@@ -2821,6 +2821,18 @@ class Database:
             cursor.execute('ALTER TABLE students ADD COLUMN is_free_fix_blocked INTEGER DEFAULT 0')
         except:
             pass  # העמודה כבר קיימת
+        
+        # הוספת עמודות תאריך לידה עברי ומגדר
+        for column_def in [
+            ('hebrew_birth_day', 'INTEGER'),
+            ('hebrew_birth_month', 'INTEGER'), 
+            ('hebrew_birth_year', 'INTEGER'),
+            ('gender', 'TEXT')
+        ]:
+            try:
+                cursor.execute(f'ALTER TABLE students ADD COLUMN {column_def[0]} {column_def[1]}')
+            except:
+                pass  # העמודה כבר קיימת
 
         # מונה תיקופים מצטבר — נשמר לנצח גם כש-swipe_log מתנקה
         try:
