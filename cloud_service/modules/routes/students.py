@@ -304,7 +304,7 @@ def web_students(request: Request):
                 rowsEl.innerHTML = '';
                 try {
                     const q = encodeURIComponent(searchEl.value);
-                    const resp = await fetch('/api/students?q=' + q);
+                    const resp = await fetch('/api/students?q=' + q, {credentials: 'include'});
                     const data = await resp.json();
                     
                     if (!data.items || data.items.length === 0) {
@@ -356,7 +356,7 @@ def web_students(request: Request):
                 document.getElementById('s_modal_title').textContent = 'עריכת תלמיד ' + selectedId;
                 
                 try {
-                    const resp = await fetch('/api/students/' + selectedId);
+                    const resp = await fetch('/api/students/' + selectedId, {credentials: 'include'});
                     const s = await resp.json();
                     
                     mId.value = s.id;
@@ -402,6 +402,7 @@ def web_students(request: Request):
                     const resp = await fetch('/api/students/save', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
+                        credentials: 'include',
                         body: JSON.stringify(payload)
                     });
                     
@@ -426,6 +427,7 @@ def web_students(request: Request):
                     const resp = await fetch('/api/students/delete', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
+                        credentials: 'include',
                         body: JSON.stringify({student_id: selectedId})
                     });
                     
@@ -466,6 +468,7 @@ def web_students(request: Request):
                     const resp = await fetch('/api/students/quick-points', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
+                        credentials: 'include',
                         body: JSON.stringify({student_id: selectedId, delta: delta, reason: reason})
                     });
                     if (!resp.ok) { alert('שגיאה בעדכון'); return; }
@@ -501,7 +504,7 @@ def web_students(request: Request):
                 if(mode==='serial_range'){body.serial_from=parseInt(document.getElementById('bk_from').value)||0;body.serial_to=parseInt(document.getElementById('bk_to').value)||0;}
                 document.getElementById('bk_status').textContent='מעדכן...';
                 try {
-                    const r = await fetch('/api/students/bulk-quick-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+                    const r = await fetch('/api/students/bulk-quick-update',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'include',body:JSON.stringify(body)});
                     const d = await r.json();
                     if(d.ok){document.getElementById('bk_status').textContent='עודכנו '+d.updated+' תלמידים';setTimeout(()=>{closeBulk();load();},1200);}
                     else{document.getElementById('bk_status').textContent='שגיאה: '+(d.detail||'');}
