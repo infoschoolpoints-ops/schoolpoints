@@ -236,7 +236,7 @@ def web_teacher_login_submit(
             
             nxt = web_next_from_request(request, '/web/admin')
             resp = RedirectResponse(url=nxt, status_code=302)
-            resp.set_cookie('web_teacher', str(t_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
+            resp.set_cookie('web_teacher', str(t_id), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7, path='/')
             return resp
         except Exception as e:
              return HTMLResponse(public_web_shell('שגיאה', f'<h2>שגיאה</h2><p>תקלה בבסיס הנתונים: {e}</p>', request=request))
@@ -406,7 +406,7 @@ def web_bootstrap_admin_submit(
         except: pass
 
     resp = RedirectResponse(url=nxt, status_code=302)
-    resp.set_cookie('web_teacher', str(teacher_id or ''), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7)
+    resp.set_cookie('web_teacher', str(teacher_id or ''), httponly=True, samesite='lax', max_age=60 * 60 * 24 * 7, path='/')
     return resp
 
 @router.get('/web/whoami')
@@ -453,4 +453,23 @@ def web_whoami(request: Request) -> Dict[str, Any]:
         'teacher_id': teacher_id,
         'teacher_name': teacher_name,
         'is_admin': is_admin
+    }
+
+@router.get('/api/auth/debug')
+def auth_debug(request: Request) -> Dict[str, Any]:
+    """Debug endpoint to check authentication status and cookies"""
+    cookies = dict(request.cookies)
+    tenant_id = web_tenant_from_cookie(request)
+    teacher_id = web_teacher_from_cookie(request)
+    
+    return {
+        'auth_status': {
+            'tenant_id': tenant_id,
+            'teacher_id': teacher_id,
+            'is_authenticated': bool(tenant_id and teacher_id)
+        },
+        'cookies_present': {
+            'web_tenant': 'web_tenant' in cookies,
+            'web_teacher': 'web_teacher' in cookies
+        }
     }
