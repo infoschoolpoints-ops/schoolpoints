@@ -179,7 +179,27 @@ def api_sync_diagnostic(request: Request) -> Dict[str, Any]:
                     raw = (row['value'] if isinstance(row, dict) else row[0]) or ''
                     diag[f'setting:{key}'] = raw[:200] if raw else '(empty)'
                 else:
-                    diag[f'setting:{key}'] = '(not found)'
+                    if key == 'holidays':
+                        # Auto-populate from public_closures table if it has data
+                        try:
+                            cur.execute('SELECT name, start_date, end_date FROM public_closures LIMIT 200')
+                            pc_rows = cur.fetchall() or []
+                            if pc_rows:
+                                items = []
+                                for pr in pc_rows:
+                                    pd2 = dict(pr) if isinstance(pr, dict) else {k: pr[k] for k in pr.keys()}
+                                    items.append({'name': pd2.get('name',''), 'start_date': str(pd2.get('start_date',''))[:10], 'end_date': str(pd2.get('end_date',''))[:10]})
+                                import json as _j2
+                                hval = _j2.dumps({'items': items}, ensure_ascii=False)
+                                cur.execute(sql_placeholder("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)"), ('holidays', hval))
+                                conn.commit()
+                                diag[f'setting:{key}'] = f'{len(items)} חגים (הועתק מ-public_closures)'
+                            else:
+                                diag[f'setting:{key}'] = '(not found)'
+                        except Exception:
+                            diag[f'setting:{key}'] = '(not found)'
+                    else:
+                        diag[f'setting:{key}'] = '(not found)'
             except Exception as e:
                 diag[f'setting:{key}'] = f'error: {e}'
         return diag
@@ -2644,6 +2664,11 @@ def web_sync_status(request: Request):
     if guard: return guard
     html_content = """
     <h2 style="margin-bottom:16px;">מצב סנכרון</h2>
+    <div class="card" style="padding:20px;margin-bottom:14px;">
+      <h3 style="margin-top:0;">קובץ חיבור</h3>
+      <p style="color:#666;font-size:14px;margin-bottom:12px;">הורד קובץ JSON עם פרטי החיבור לענן. ניתן לייבא אותו בתוכנת ניהול (<b>הגדרות → חיבור ענן → ייבוא קובץ הרשמה</b>) להגדרה מהירה של עמדה חדשה.</p>
+      <a href="/api/sync/export-credentials" download class="btn-primary" style="display:inline-block;padding:8px 20px;text-decoration:none;">הורד קובץ חיבור (JSON)</a>
+    </div>
     <div class="card" style="padding:20px;">
       <div id="diag-loading" style="color:#888;">טוען נתונים...</div>
       <div id="diag-result" style="display:none;"></div>

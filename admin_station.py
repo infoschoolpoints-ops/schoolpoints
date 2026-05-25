@@ -13573,6 +13573,72 @@ class AdminStation:
             )
             connect_btn.pack(side=tk.RIGHT, padx=5)
 
+            def _import_connection_file():
+                path = filedialog.askopenfilename(
+                    title='ייבוא קובץ הרשמה',
+                    filetypes=[('קובץ חיבור SchoolPoints', '*.json'), ('הכל', '*.*')],
+                    parent=dialog2
+                )
+                if not path:
+                    return
+                try:
+                    with open(path, 'r', encoding='utf-8') as _f:
+                        creds = json.load(_f)
+                except Exception as e:
+                    messagebox.showerror('שגיאה', f'לא ניתן לקרוא את הקובץ:\n{e}', parent=dialog2)
+                    return
+                tid = str(creds.get('sync_tenant_id') or '').strip()
+                akey = str(creds.get('sync_api_key') or '').strip()
+                purl = str(creds.get('sync_push_url') or '').strip()
+                base_url = str(creds.get('cloud_base_url') or '').strip()
+                if not tid or not akey or not purl:
+                    messagebox.showerror('שגיאה', 'הקובץ לא מכיל פרטי חיבור תקינים (חסר tenant_id / api_key / push_url)', parent=dialog2)
+                    return
+                try:
+                    cfg1 = self.load_app_config() or {}
+                except Exception:
+                    cfg1 = {}
+                cfg1['sync_tenant_id'] = tid
+                cfg1['sync_api_key'] = akey
+                cfg1['sync_push_url'] = purl
+                if base_url:
+                    cfg1['cloud_base_url'] = base_url
+                try:
+                    pull_url = str(creds.get('sync_pull_url') or '').strip()
+                    if pull_url:
+                        cfg1['sync_pull_url'] = pull_url
+                    snap_url = str(creds.get('sync_snapshot_url') or '').strip()
+                    if snap_url:
+                        cfg1['sync_snapshot_url'] = snap_url
+                except Exception:
+                    pass
+                try:
+                    self.save_app_config(cfg1)
+                except Exception as e:
+                    messagebox.showerror('שגיאה', f'לא ניתן לשמור הגדרות:\n{e}', parent=dialog2)
+                    return
+                try:
+                    tenant_id_var.set(tid)
+                except Exception:
+                    pass
+                try:
+                    _refresh_cloud_ui()
+                except Exception:
+                    pass
+                inst = str(creds.get('_institution') or tid)
+                messagebox.showinfo('הצלחה', f'החיבור לענן הוגדר בהצלחה!\nמוסד: {inst}', parent=dialog2)
+
+            tk.Button(
+                btn_frame,
+                text='📂 ייבוא קובץ הרשמה',
+                command=_import_connection_file,
+                font=('Arial', 9, 'bold'),
+                bg='#27ae60',
+                fg='white',
+                padx=10,
+                pady=5
+            ).pack(side=tk.RIGHT, padx=5)
+
             disconnect_btn = tk.Button(
                 btn_frame,
                 text='התנתק',

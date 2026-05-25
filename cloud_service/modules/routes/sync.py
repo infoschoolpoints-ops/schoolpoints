@@ -837,6 +837,48 @@ async def sync_files_upload_ep(
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 
+@router.get('/api/sync/export-credentials')
+def api_sync_export_credentials(request: Request) -> Response:
+    """Return a downloadable JSON file with sync connection credentials for the logged-in institution."""
+    from ..auth import web_tenant_from_cookie, web_require_admin_teacher
+    guard = web_require_admin_teacher(request)
+    if guard:
+        raise HTTPException(status_code=401, detail='Login required')
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail='Missing tenant')
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder('SELECT api_key, name FROM institutions WHERE tenant_id = ? LIMIT 1'), (tenant_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='Institution not found')
+        api_key = str((row['api_key'] if isinstance(row, dict) else row[0]) or '').strip()
+        name = str((row['name'] if isinstance(row, dict) else row[1]) or tenant_id).strip()
+    finally:
+        try: conn.close()
+        except: pass
+    base = str(request.base_url).rstrip('/')
+    creds = {
+        '_comment': 'SchoolPoints connection file — import via Settings → Cloud Connection',
+        '_institution': name,
+        'sync_tenant_id': tenant_id,
+        'sync_api_key': api_key,
+        'sync_push_url': f'{base}/sync/push',
+        'sync_pull_url': f'{base}/sync/pull',
+        'sync_snapshot_url': f'{base}/sync/snapshot',
+        'cloud_base_url': base,
+    }
+    content = json.dumps(creds, ensure_ascii=False, indent=2)
+    filename = f'schoolpoints_connection_{tenant_id}.json'
+    return Response(
+        content=content,
+        media_type='application/json',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+    )
+
+
 @router.get('/sync/files/list')
 def sync_files_list_ep(request: Request) -> Dict[str, Any]:
     api_key = request.headers.get('api-key')

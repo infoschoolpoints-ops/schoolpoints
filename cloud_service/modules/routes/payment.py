@@ -442,8 +442,20 @@ async def api_payment_webhook_payme(request: Request) -> Dict[str, Any]:
 
     email = str(payload.get('buyer_email') or payload.get('payer_email') or '').strip()
     sale_id = str(payload.get('sale_payme_id') or payload.get('payme_sale_id') or '').strip()
-    amount_raw = payload.get('sale_paid_amount') or payload.get('sale_total') or payload.get('price') or payload.get('amount') or 0
-    amount_shekels = int(round(int(float(amount_raw or 0)) / 100)) if int(float(amount_raw or 0)) >= 100 else int(float(amount_raw or 0))
+    # PayMe sends amounts in agorot (×100). Check all known field names.
+    amount_raw = (payload.get('sale_paid_amount') or payload.get('sale_price')
+                  or payload.get('sale_total') or payload.get('price')
+                  or payload.get('amount') or payload.get('total') or 0)
+    try:
+        amount_agorot = int(float(str(amount_raw or 0)))
+    except Exception:
+        amount_agorot = 0
+    # Convert agorot→shekels if value looks like agorot (≥100 and divisible by 100 OR >1000)
+    if amount_agorot >= 100:
+        amount_shekels = int(round(amount_agorot / 100))
+    else:
+        amount_shekels = amount_agorot
+    logger.info(f"[PAYME-IPN] amount_raw={amount_raw!r} → amount_shekels={amount_shekels}")
 
     if email:
         _record_payment(
