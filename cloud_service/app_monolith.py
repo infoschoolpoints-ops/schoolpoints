@@ -5992,6 +5992,11 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
         if at in ('create', 'update'):
             if not payload:
                 return
+            # נקודות תלמיד עוברות רק דרך student_points/update —
+            # אסור לעדכן points דרך generic upsert כי ה-payload מועשר
+            # מהמקור ועלול להכיל ערך ישן/שגוי.
+            if et == 'student' and at == 'update' and 'points' in payload:
+                payload = {k: v for k, v in payload.items() if k != 'points'}
             _generic_upsert_monolith(tconn, table, pk_col, eid, payload)
             return
 

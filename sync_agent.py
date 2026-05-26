@@ -2536,6 +2536,7 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                 if _is_db_empty_for_bootstrap(conn0):
                     print(f"[BOOTSTRAP] First run — local DB empty (new machine), skipping push to avoid overwriting cloud data")
                     _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
+                    _set_sync_state(conn0, 'snapshot_source', 'pull')
                 else:
                     # Primary machine with data: push full snapshot so cloud has everything
                     print(f"[BOOTSTRAP] First run — pushing full snapshot to cloud for tenant {tenant_id}")
@@ -2560,6 +2561,7 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                     except Exception as _fre:
                         print(f"[BOOTSTRAP] First-run snapshot error: {_fre}")
                     _set_sync_state(conn0, 'last_synced_tenant_id', tenant_id)
+                    _set_sync_state(conn0, 'snapshot_source', 'local')
 
             done = str(_get_sync_state(conn0, 'bootstrap_snapshot_done', '0') or '0').strip()
             should_run = force_bootstrap or (done != '1')
@@ -2572,6 +2574,7 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                             res = apply_snapshot(conn0, resp)
                             print(f"[BOOTSTRAP] Applied snapshot (teachers={res.get('tables',{}).get('teachers',0)} students={res.get('tables',{}).get('students',0)})")
                             _set_sync_state(conn0, 'bootstrap_snapshot_done', '1')
+                            _set_sync_state(conn0, 'snapshot_source', 'pull')
                         except Exception as e:
                             print(f"[BOOTSTRAP] Apply snapshot failed: {e}")
                         # Bootstrap file sync: download images/sounds immediately after snapshot
@@ -2819,7 +2822,19 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         try:
             now_sp = time.time()
             if snapshot_url and api_key and tenant_id and (now_sp - last_snapshot_push > _snapshot_push_interval):
-                if not (local_sync_enabled and local_sync_role == 'client'):
+                # רק תחנה ראשית (שיצרה את הנתונים מקומית) דוחפת snapshot.
+                # תחנה שקיבלה נתונים מ-bootstrap pull לא דוחפת snapshot מלא —
+                # זה מונע דריסה של נתונים נכונים בענן ע"י עותק ישן/שגוי.
+                _is_bootstrap_receiver = False
+                try:
+                    _sp_check_conn = _connect(db_path)
+                    _bs_done = str(_get_sync_state(_sp_check_conn, 'bootstrap_snapshot_done', '0') or '0').strip()
+                    _bs_source = str(_get_sync_state(_sp_check_conn, 'snapshot_source', '') or '').strip()
+                    _sp_check_conn.close()
+                    _is_bootstrap_receiver = (_bs_done == '1' and _bs_source == 'pull')
+                except Exception:
+                    pass
+                if not (local_sync_enabled and local_sync_role == 'client') and not _is_bootstrap_receiver:
                     print("[SNAPSHOT-PERIODIC] Pushing full snapshot to cloud...")
                     _sp_conn = _connect(db_path)
                     try:
