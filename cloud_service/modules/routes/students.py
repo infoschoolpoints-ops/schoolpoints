@@ -754,6 +754,10 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
         new_points = old_points + delta
 
         cur.execute(sql_placeholder("UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"), (new_points, sid))
+        
+        # Verify update succeeded
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=500, detail="Failed to update student points")
 
         # Log to points_log if table exists
         try:
@@ -767,10 +771,15 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
                     "INSERT INTO points_log (student_id, points_change, reason, source, created_at) VALUES (?,?,?,?,datetime('now'))",
                     (sid, delta, reason or 'עדכון מהיר מהאתר', 'web')
                 )
-        except Exception:
-            pass
+        except Exception as log_err:
+            print(f"[QUICK-POINTS] points_log insert failed: {log_err}")
 
-        conn.commit()
+        try:
+            conn.commit()
+            print(f"[QUICK-POINTS] Commit successful: student {sid}: {old_points} -> {new_points} (delta={delta})")
+        except Exception as commit_err:
+            print(f"[QUICK-POINTS] COMMIT FAILED: {commit_err}")
+            raise HTTPException(status_code=500, detail=f"Database commit failed: {commit_err}")
 
         record_sync_event(
             tenant_id=tenant_id,
@@ -778,7 +787,12 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
             entity_type='student_points',
             entity_id=str(sid),
             action_type='update',
-            payload={'student_id': sid, 'old_points': old_points, 'new_points': new_points, 'delta': delta, 'reason': reason or 'עדכון מהיר מהאתר'}
+            payload={
+                'old_points': int(old_points),
+                'new_points': int(new_points),
+                'reason': reason or 'עדכון מהיר מהאתר',
+                'added_by': 'web'
+            }
         )
 
         return {'ok': True, 'new_points': new_points}
