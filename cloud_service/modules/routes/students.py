@@ -773,6 +773,15 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
                 )
         except Exception as log_err:
             print(f"[QUICK-POINTS] points_log insert failed: {log_err}")
+            # In PostgreSQL, failed query aborts transaction - must rollback before continuing
+            if USE_POSTGRES:
+                try:
+                    conn.rollback()
+                    # Re-execute the points update after rollback
+                    cur.execute(sql_placeholder("UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"), (new_points, sid))
+                except Exception as rb_err:
+                    print(f"[QUICK-POINTS] Rollback/retry failed: {rb_err}")
+                    raise
 
         try:
             conn.commit()
