@@ -7,7 +7,7 @@ import traceback
 
 from ..ui import basic_web_shell
 from ..auth import web_require_admin_teacher, web_tenant_from_cookie, web_current_teacher
-from ..db import tenant_db_connection, sql_placeholder
+from ..db import tenant_db_connection, sql_placeholder, insert_points_log
 from ..sync_logic import record_sync_event
 
 router = APIRouter()
@@ -236,12 +236,9 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                         params.append(points)
                         # Log points change
                         delta = points - current_points
+                        insert_points_log(conn, sid, delta, old_points=current_points, new_points=points, reason="ייבוא מ-Excel", actor_name=teacher_name, action_type="import")
+                        # Sync event for points
                         try:
-                            cur.execute(
-                                sql_placeholder('INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)'),
-                                (sid, current_points, points, delta, "ייבוא מ-Excel", teacher_name, "import")
-                            )
-                            # Sync event for points
                             record_sync_event(
                                 tenant_id=tenant_id,
                                 station_id='web',
@@ -311,12 +308,9 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                     
                     # Log initial points if > 0
                     if points > 0 and new_sid:
+                        insert_points_log(conn, new_sid, points, old_points=0, new_points=points, reason="ייבוא מ-Excel", actor_name=teacher_name, action_type="import")
+                        # Sync event
                         try:
-                            cur.execute(
-                                sql_placeholder('INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type) VALUES (?, ?, ?, ?, ?, ?, ?)'),
-                                (new_sid, 0, points, points, "ייבוא מ-Excel", teacher_name, "import")
-                            )
-                            # Sync event
                             record_sync_event(
                                 tenant_id=tenant_id,
                                 station_id='web',

@@ -75,6 +75,92 @@ def _table_columns_postgres(conn, table: str) -> List[str]:
     except Exception:
         return []
 
+def _points_log_columns(conn) -> Set[str]:
+    """Return the actual column set of the points_log table for the CURRENT tenant.
+    For Postgres this is scoped to current_schema() so it never mixes columns
+    from other tenant schemas (information_schema lists every schema)."""
+    try:
+        cur = conn.cursor()
+        if USE_POSTGRES:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'points_log' AND table_schema = current_schema()"
+            )
+            rows = cur.fetchall() or []
+            return {r['column_name'] for r in rows}
+        else:
+            cur.execute("PRAGMA table_info(points_log)")
+            rows = cur.fetchall() or []
+            return {str(r['name']) for r in rows}
+    except Exception:
+        return set()
+
+
+def insert_points_log(conn, student_id, delta, old_points=None, new_points=None,
+                      reason=None, actor_name=None, action_type='quick_update') -> bool:
+    """Best-effort write to points_log that ADAPTS to whatever schema the table has.
+
+    Three historical schemas exist (modular: points/teacher_name, monolith:
+    old_points/new_points/delta/actor_name/action_type, legacy: points_change/source).
+    We detect the real columns and only insert those that exist.
+
+    In Postgres the insert is wrapped in a SAVEPOINT so that a schema mismatch can
+    NEVER abort the caller's outer transaction (which previously caused
+    'current transaction is aborted' and blocked the actual points update)."""
+    cols = _points_log_columns(conn)
+    if not cols or 'student_id' not in cols:
+        return False
+    name = actor_name or 'web'
+    candidates = [
+        ('student_id', student_id),
+        ('points', delta),
+        ('points_change', delta),
+        ('delta', delta),
+        ('old_points', old_points),
+        ('new_points', new_points),
+        ('reason', reason),
+        ('teacher_name', name),
+        ('actor_name', name),
+        ('source', 'web'),
+        ('action_type', action_type),
+    ]
+    fields, values = [], []
+    for col, val in candidates:
+        if col in cols:
+            fields.append(col)
+            values.append(val)
+    if not fields:
+        return False
+    ph = '%s' if USE_POSTGRES else '?'
+    placeholders = ','.join([ph] * len(fields))
+    col_sql = ','.join(fields)
+    if 'created_at' in cols:
+        col_sql += ',created_at'
+        placeholders += ',CURRENT_TIMESTAMP' if USE_POSTGRES else ",datetime('now')"
+    sql = f"INSERT INTO points_log ({col_sql}) VALUES ({placeholders})"
+    cur = conn.cursor()
+    if USE_POSTGRES:
+        try:
+            cur.execute('SAVEPOINT sp_points_log')
+            cur.execute(sql, tuple(values))
+            cur.execute('RELEASE SAVEPOINT sp_points_log')
+            return True
+        except Exception as e:
+            try:
+                cur.execute('ROLLBACK TO SAVEPOINT sp_points_log')
+                cur.execute('RELEASE SAVEPOINT sp_points_log')
+            except Exception:
+                pass
+            logger.warning(f"points_log insert skipped (schema mismatch): {e}")
+            return False
+    try:
+        cur.execute(sql, tuple(values))
+        return True
+    except Exception as e:
+        logger.warning(f"points_log insert skipped: {e}")
+        return False
+
+
 def ensure_tenant_db_exists(tenant_id: str) -> str:
     """Ensure tenant DB exists (Schema for PG, File for SQLite). Returns path or schema."""
     if USE_POSTGRES:

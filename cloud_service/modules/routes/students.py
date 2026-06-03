@@ -5,7 +5,7 @@ import json
 
 from ..ui import basic_web_shell
 from ..auth import web_require_teacher, web_tenant_from_cookie, safe_int, web_current_teacher
-from ..db import tenant_db_connection, sql_placeholder, table_columns
+from ..db import tenant_db_connection, sql_placeholder, table_columns, insert_points_log
 from ..config import USE_POSTGRES
 from ..models import StudentSavePayload, StudentDeletePayload, StudentManualArrivalPayload
 from ..sync_logic import record_sync_event, apply_change_to_tenant_db
@@ -759,36 +759,18 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
         if cur.rowcount == 0:
             raise HTTPException(status_code=500, detail="Failed to update student points")
 
-        # Log to points_log if table exists
-        try:
-            if USE_POSTGRES:
-                cur.execute(
-                    "INSERT INTO points_log (student_id, points_change, reason, source, created_at) VALUES (%s,%s,%s,%s,CURRENT_TIMESTAMP)",
-                    (sid, delta, reason or 'עדכון מהיר מהאתר', 'web')
-                )
-            else:
-                cur.execute(
-                    "INSERT INTO points_log (student_id, points_change, reason, source, created_at) VALUES (?,?,?,?,datetime('now'))",
-                    (sid, delta, reason or 'עדכון מהיר מהאתר', 'web')
-                )
-        except Exception as log_err:
-            print(f"[QUICK-POINTS] points_log insert failed: {log_err}")
-            # In PostgreSQL, failed query aborts transaction - must rollback before continuing
-            if USE_POSTGRES:
-                try:
-                    conn.rollback()
-                    # Re-execute the points update after rollback
-                    cur.execute(sql_placeholder("UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"), (new_points, sid))
-                except Exception as rb_err:
-                    print(f"[QUICK-POINTS] Rollback/retry failed: {rb_err}")
-                    raise
+        # Best-effort history log — adapts to the real points_log schema and uses a
+        # SAVEPOINT so a schema mismatch can never abort the points UPDATE above.
+        teacher = web_current_teacher(request) or {}
+        insert_points_log(
+            conn, sid, delta,
+            old_points=old_points, new_points=new_points,
+            reason=reason or 'עדכון מהיר מהאתר',
+            actor_name=str(teacher.get('name') or 'web'),
+            action_type='quick_update',
+        )
 
-        try:
-            conn.commit()
-            print(f"[QUICK-POINTS] Commit successful: student {sid}: {old_points} -> {new_points} (delta={delta})")
-        except Exception as commit_err:
-            print(f"[QUICK-POINTS] COMMIT FAILED: {commit_err}")
-            raise HTTPException(status_code=500, detail=f"Database commit failed: {commit_err}")
+        conn.commit()
 
         record_sync_event(
             tenant_id=tenant_id,

@@ -4,7 +4,7 @@ import secrets
 import logging
 from typing import Dict, Any, List, Optional
 
-from .db import get_db_connection, sql_placeholder, table_columns, tenant_db_connection, integrity_errors
+from .db import get_db_connection, sql_placeholder, table_columns, tenant_db_connection, integrity_errors, insert_points_log
 from .utils import time_to_minutes
 from .config import USE_POSTGRES
 
@@ -150,15 +150,7 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
             sql_placeholder('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
             (final_points, student_id)
         )
-        try:
-            cur.execute(
-                sql_placeholder(
-                    'INSERT INTO points_log (student_id, points, reason, teacher_name) VALUES (?, ?, ?, ?)'
-                ),
-                (student_id, final_points, reason, 'Sync')
-            )
-        except Exception:
-            pass
+        insert_points_log(tconn, student_id, final_points - cur_points, old_points=cur_points, new_points=final_points, reason=reason, actor_name='Sync', action_type='sync')
         tconn.commit()
         return
 

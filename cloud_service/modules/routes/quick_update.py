@@ -4,7 +4,7 @@ from fastapi.responses import HTMLResponse
 from typing import Dict, Any
 from ..ui import basic_web_shell
 from ..auth import web_require_teacher, web_tenant_from_cookie, web_current_teacher
-from ..db import tenant_db_connection, sql_placeholder
+from ..db import tenant_db_connection, sql_placeholder, insert_points_log
 from ..config import USE_POSTGRES
 from ..sync_logic import record_sync_event
 
@@ -46,7 +46,7 @@ def api_bulk_qu(request: Request, payload: Dict[str, Any] = Body(...)):
             old = int((row['points'] if isinstance(row, dict) else row[0]) or 0)
             nw = _calc(op, old, pts)
             cur.execute(sql_placeholder("UPDATE students SET points=?, updated_at=CURRENT_TIMESTAMP WHERE id=?"), (nw, s))
-            _log(cur, s, old, nw, rsn)
+            insert_points_log(conn, s, nw - old, old_points=old, new_points=nw, reason=rsn, actor_name='web', action_type='quick_update')
             record_sync_event(
                 tenant_id=tid, station_id='web',
                 entity_type='student_points', entity_id=str(s),
@@ -98,22 +98,6 @@ def _calc(op, old, pts):
     elif op == 'subtract':
         return max(0, old - abs(pts))
     return max(0, pts)
-
-
-def _log(cur, sid, old, nw, rsn):
-    try:
-        if USE_POSTGRES:
-            cur.execute(
-                "INSERT INTO points_log(student_id,old_points,new_points,delta,reason,actor_name,action_type,created_at)"
-                " VALUES(%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)",
-                (sid, old, nw, nw - old, rsn, 'web', 'quick_update'))
-        else:
-            cur.execute(
-                "INSERT INTO points_log(student_id,old_points,new_points,delta,reason,actor_name,action_type,created_at)"
-                " VALUES(?,?,?,?,?,?,?,datetime('now'))",
-                (sid, old, nw, nw - old, rsn, 'web', 'quick_update'))
-    except Exception:
-        pass
 
 
 @router.get("/web/quick-update", response_class=HTMLResponse)
