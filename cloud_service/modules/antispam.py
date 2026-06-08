@@ -163,7 +163,7 @@ def verify_form_token(token: Any, min_age: int = TOKEN_MIN_AGE,
         return False
 
 
-def form_token_html(field_name: str = "_ft") -> str:
+def form_token_html(field_name: str = "ft") -> str:
     return f'<input type="hidden" name="{field_name}" value="{make_form_token()}" />'
 
 
@@ -211,11 +211,11 @@ def captcha_html() -> str:
         '<label style="display:block;font-weight:600;margin-bottom:8px;font-size:15px;">'
         f'\U0001F512 \u05d0\u05d9\u05de\u05d5\u05ea \u05d0\u05e0\u05d5\u05e9\u05d9: \u05db\u05de\u05d4 \u05d6\u05d4 '
         f'<b>{question}</b>? <span style="color:#e74c3c;">*</span></label>'
-        '<input name="_cap_ans" required inputmode="numeric" autocomplete="off" '
+        '<input name="cap_ans" required inputmode="numeric" autocomplete="off" '
         'placeholder="\u05d4\u05e7\u05dc\u05d9\u05d3\u05d5 \u05d0\u05ea \u05d4\u05ea\u05d5\u05e6\u05d0\u05d4" '
         'style="width:100%;padding:12px 14px;font-size:15px;border:1.5px solid rgba(255,255,255,.22);'
         'border-radius:9px;background:rgba(255,255,255,.06);color:inherit;box-sizing:border-box;" />'
-        f'<input type="hidden" name="_cap" value="{token}" />'
+        f'<input type="hidden" name="cap" value="{token}" />'
         '</div>'
     )
 
@@ -258,11 +258,11 @@ def screen_submission(request: Any, payload: Dict[str, Any], *,
         logger.warning("antispam[%s]: honeypot triggered ip=%s", kind, ip)
         return "honeypot"
 
-    if require_token and not verify_form_token(payload.get("_ft")):
+    if require_token and not verify_form_token(payload.get("ft")):
         logger.warning("antispam[%s]: bad/missing form token ip=%s", kind, ip)
         return "token"
 
-    if require_captcha and not verify_captcha(payload.get("_cap"), payload.get("_cap_ans")):
+    if require_captcha and not verify_captcha(payload.get("cap"), payload.get("cap_ans")):
         logger.warning("antispam[%s]: captcha failed ip=%s", kind, ip)
         return "captcha"
 

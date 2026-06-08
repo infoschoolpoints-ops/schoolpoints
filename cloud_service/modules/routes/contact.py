@@ -198,9 +198,9 @@ def web_contact_submit(
     subject: str = Form(default=''),
     message: str = Form(default=''),
     company_url: str = Form(default=''),
-    _ft: str = Form(default=''),
-    _cap: str = Form(default=''),
-    _cap_ans: str = Form(default=''),
+    ft: str = Form(default=''),
+    cap: str = Form(default=''),
+    cap_ans: str = Form(default=''),
 ) -> Response:
     name = str(name or '').strip()
     email = str(email or '').strip()
@@ -213,8 +213,8 @@ def web_contact_submit(
 
     # --- Anti-spam screening ---
     _spam = screen_submission(
-        request, {'company_url': company_url, '_ft': _ft,
-                  '_cap': _cap, '_cap_ans': _cap_ans}, kind='contact',
+        request, {'company_url': company_url, 'ft': ft,
+                  'cap': cap, 'cap_ans': cap_ans}, kind='contact',
         max_hits=5, window_sec=3600, require_token=True, require_captcha=True,
         check_email=True, email_value=email,
     )
@@ -329,9 +329,9 @@ def web_callback_submit(
     num_classes: str = Form(default=''),
     software_type: str = Form(default=''),
     company_url: str = Form(default=''),
-    _ft: str = Form(default=''),
-    _cap: str = Form(default=''),
-    _cap_ans: str = Form(default=''),
+    ft: str = Form(default=''),
+    cap: str = Form(default=''),
+    cap_ans: str = Form(default=''),
 ) -> Response:
     school_name = str(school_name or '').strip()
     contact_name = str(contact_name or '').strip()
