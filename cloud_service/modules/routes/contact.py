@@ -342,8 +342,8 @@ def web_callback_submit(
 
     # --- Anti-spam screening (email optional here, so skip email check) ---
     _spam = screen_submission(
-        request, {'company_url': company_url, '_ft': _ft,
-                  '_cap': _cap, '_cap_ans': _cap_ans}, kind='callback',
+        request, {'company_url': company_url, 'ft': ft,
+                  'cap': cap, 'cap_ans': cap_ans}, kind='callback',
         max_hits=5, window_sec=3600, require_token=True, require_captcha=True,
         check_email=False,
     )
