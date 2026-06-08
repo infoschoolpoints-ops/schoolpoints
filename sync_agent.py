@@ -2626,7 +2626,7 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
     last_config_bridge = 0.0
     _config_bridge_interval = 300  # 5 minutes
     last_snapshot_push = 0.0
-    _snapshot_push_interval = 30 * 60  # full snapshot push every 30 minutes
+    _snapshot_push_interval = 6 * 60 * 60  # full snapshot push every 6 hours (incremental sync covers real-time; this is a safety net only)
     # בעמדה ראשית (master) עם local sync, cloud pull/push פועל רגיל עם cloud credentials
     pull_enabled = bool(pull_url and api_key and tenant_id)
     try:

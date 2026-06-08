@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+import threading
 from typing import Any, List, Dict, Tuple, Set
 
 try:
@@ -13,6 +14,14 @@ except ImportError:
 from .config import USE_POSTGRES, DATABASE_URL, DATA_DIR, DB_PATH
 
 logger = logging.getLogger("schoolpoints.db")
+
+# Process-level cache of tenants whose schema/tables have already been ensured
+# in THIS worker process. Running the full CREATE TABLE + ALTER migration suite
+# (~46 + ~30 statements) on EVERY tenant_db_connection() call caused severe
+# slowness and lock/timeout errors (web point updates hanging, slow login).
+# The schema is idempotent, so once ensured per process we can safely skip it.
+_ENSURED_TENANTS: Set[str] = set()
+_ENSURED_LOCK = threading.Lock()
 
 def get_db_connection():
     """Get a database connection (Postgres or SQLite)."""
@@ -165,6 +174,9 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
     """Ensure tenant DB exists (Schema for PG, File for SQLite). Returns path or schema."""
     if USE_POSTGRES:
         schema = tenant_schema(tenant_id)
+        # Fast path: schema already ensured in this process — skip all DDL/migrations.
+        if schema in _ENSURED_TENANTS:
+            return schema
         conn = get_db_connection()
         try:
             cur = conn.cursor()
@@ -676,6 +688,8 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
                     pass
             
             conn.commit()
+            with _ENSURED_LOCK:
+                _ENSURED_TENANTS.add(schema)
             return schema
         finally:
             conn.close()
@@ -684,6 +698,9 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
         # SQLite
         os.makedirs(DATA_DIR, exist_ok=True)
         db_path = os.path.join(DATA_DIR, f"{tenant_id}.db")
+        # Fast path: tables already ensured in this process — skip DDL/migrations.
+        if db_path in _ENSURED_TENANTS and os.path.exists(db_path):
+            return db_path
         is_new_db = not os.path.exists(db_path)
         
         conn = sqlite3.connect(db_path)
@@ -1394,6 +1411,8 @@ def ensure_tenant_db_exists(tenant_id: str) -> str:
 
         conn.commit()
         conn.close()
+        with _ENSURED_LOCK:
+            _ENSURED_TENANTS.add(db_path)
         return db_path
 
 def generate_numeric_tenant_id(conn) -> str:
