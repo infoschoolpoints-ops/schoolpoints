@@ -2674,8 +2674,14 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                         assets_base = base_dir  # shared dir for all stations on this machine
                         # Normalize logo/photos into images/ before pushing
                         try:
-                            from sync_file_module import normalize_assets_for_sync, apply_pulled_assets
+                            from sync_file_module import normalize_assets_for_sync, apply_pulled_assets, normalize_db_image_assets
                             normalize_assets_for_sync(assets_base, cfg)
+                            # Mirror product/ad/closure images (absolute paths) into images/
+                            # and rewrite the DB column to a relative path so they sync.
+                            try:
+                                normalize_db_image_assets(str(db_path), assets_base)
+                            except Exception as _dbe:
+                                print(f"[FILE-SYNC] normalize_db_image_assets warning: {_dbe}")
                         except Exception as _nae:
                             print(f"[FILE-SYNC] normalize_assets warning: {_nae}")
                         sync_files_cycle(str(push_url), str(api_key), str(tenant_id), str(assets_base))

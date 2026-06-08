@@ -2860,6 +2860,11 @@ class PublicStation:
         title = str((closure or {}).get('title') or '').strip()
         subtitle = str((closure or {}).get('subtitle') or '').strip()
         img_path = str((closure or {}).get('image_path') or '').strip()
+        # Resolve relative (synced) or legacy absolute path to an existing file
+        try:
+            img_path = self._get_ads_image_abs_path(img_path) or img_path
+        except Exception:
+            pass
 
         try:
             w = int(self._closure_overlay.winfo_width() or self.root.winfo_screenwidth() or 1920)

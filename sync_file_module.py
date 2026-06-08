@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import hashlib
 import secrets
@@ -82,6 +83,103 @@ def normalize_assets_for_sync(base_dir: str, config: dict) -> dict:
         except Exception as e:
             print(f"[ASSET-SYNC] Photos copy failed: {e}")
 
+    return updated
+
+
+def normalize_db_image_assets(db_path: str, base_dir: str) -> int:
+    """Mirror product/ad/closure image files that are stored with absolute local
+    paths into base_dir/images/<category>/ and rewrite the DB column to a relative
+    path (images/<category>/<file>). This makes the files discoverable by the file
+    sync (which uploads the images/ tree) and portable across stations and the cloud.
+
+    Backward compatible:
+      - Rows already relative (start with 'images/' or 'ads_media/') are skipped.
+      - Absolute paths whose file is missing are left untouched.
+      - A plain UPDATE fires the existing change_log triggers so the new relative
+        path syncs to the cloud and other stations (also carried by full snapshot).
+
+    Returns the number of rows updated.
+    """
+    import sqlite3 as _sql
+    import shutil as _shutil
+
+    if not db_path or not os.path.isfile(db_path):
+        return 0
+
+    images_dir = os.path.join(base_dir, 'images')
+    # (table, column, category subfolder under images/)
+    targets = [
+        ('products', 'image_path', 'products'),
+        ('ads_items', 'image_path', 'ads'),
+        ('public_closures', 'image_path_portrait', 'closures'),
+        ('public_closures', 'image_path_landscape', 'closures'),
+    ]
+
+    updated = 0
+    try:
+        conn = _sql.connect(db_path)
+    except Exception:
+        return 0
+    try:
+        conn.row_factory = _sql.Row
+        cur = conn.cursor()
+        for table, col, category in targets:
+            try:
+                cur.execute(
+                    f'SELECT id, {col} AS v FROM {table} '
+                    f'WHERE {col} IS NOT NULL AND {col} != ""'
+                )
+                rows = cur.fetchall()
+            except Exception:
+                # Table or column does not exist in this DB — skip
+                continue
+
+            dest_dir = os.path.join(images_dir, category)
+            for r in rows:
+                try:
+                    rid = r['id']
+                    val = str(r['v'] or '').strip()
+                except Exception:
+                    continue
+                if not val:
+                    continue
+                norm = val.replace('\\', '/').lower()
+                # Already a synced relative path
+                if norm.startswith('images/') or norm.startswith('ads_media/'):
+                    continue
+                # Only mirror absolute paths that point to an existing file
+                if not (os.path.isabs(val) and os.path.isfile(val)):
+                    continue
+                try:
+                    base_name = os.path.basename(val)
+                    safe = re.sub(r'[^0-9A-Za-z._-]', '_', base_name) or 'img'
+                    fname = f"{category}_{rid}_{safe}"
+                    os.makedirs(dest_dir, exist_ok=True)
+                    dest = os.path.join(dest_dir, fname)
+                    src_hash = _calc_file_hash(val)
+                    dst_hash = _calc_file_hash(dest) if os.path.exists(dest) else ''
+                    if src_hash != dst_hash:
+                        _shutil.copy2(val, dest)
+                    rel = f"images/{category}/{fname}"
+                    try:
+                        cur.execute(
+                            f'UPDATE {table} SET {col} = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                            (rel, rid))
+                    except Exception:
+                        cur.execute(f'UPDATE {table} SET {col} = ? WHERE id = ?', (rel, rid))
+                    updated += 1
+                    print(f"[ASSET-SYNC] Mirrored {table}.{col} id={rid} -> {rel}")
+                except Exception as e:
+                    print(f"[ASSET-SYNC] mirror failed {table} id={rid}: {e}")
+        if updated:
+            conn.commit()
+    except Exception as e:
+        print(f"[ASSET-SYNC] normalize_db_image_assets error: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
     return updated
 
 
