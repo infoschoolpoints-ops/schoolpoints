@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from ..ui import public_web_shell
 from ..db import get_db_connection, sql_placeholder
 from ..email import send_contact_email, send_email
+from ..antispam import honeypot_html, form_token_html, captcha_html, screen_submission
 
 router = APIRouter()
 
@@ -151,6 +152,7 @@ def web_contact() -> str:
   </div>
 
   <form method="post" action="/web/contact">
+    __ANTISPAM__
     <div class="contact-card">
       <div class="contact-grid">
         <div class="form-group">
@@ -171,6 +173,8 @@ def web_contact() -> str:
         </div>
       </div>
 
+      <div class="form-group contact-full">__CAPTCHA__</div>
+
       <div class="contact-actions">
         <a class="btn-glass" href="/web">ביטול וחזרה</a>
         <button class="btn-primary" type="submit">שליחת הודעה</button>
@@ -184,14 +188,19 @@ def web_contact() -> str:
   </div>
 </div>
 """
-    return public_web_shell('צור קשר', body)
+    return public_web_shell('צור קשר', body.replace('__ANTISPAM__', honeypot_html() + form_token_html()).replace('__CAPTCHA__', captcha_html()))
 
 @router.post('/web/contact', response_class=HTMLResponse)
 def web_contact_submit(
+    request: Request,
     name: str = Form(default=''),
     email: str = Form(default=''),
     subject: str = Form(default=''),
     message: str = Form(default=''),
+    company_url: str = Form(default=''),
+    _ft: str = Form(default=''),
+    _cap: str = Form(default=''),
+    _cap_ans: str = Form(default=''),
 ) -> Response:
     name = str(name or '').strip()
     email = str(email or '').strip()
@@ -200,6 +209,27 @@ def web_contact_submit(
     
     if not name or not email or not message:
         body = "<h2>צור קשר</h2><p>חסרים פרטים.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/contact\">חזרה</a></div>"
+        return HTMLResponse(public_web_shell('צור קשר', body), status_code=400)
+
+    # --- Anti-spam screening ---
+    _spam = screen_submission(
+        request, {'company_url': company_url, '_ft': _ft,
+                  '_cap': _cap, '_cap_ans': _cap_ans}, kind='contact',
+        max_hits=5, window_sec=3600, require_token=True, require_captcha=True,
+        check_email=True, email_value=email,
+    )
+    if _spam == 'honeypot':
+        # Tarpit: pretend success, silently drop (false-positive risk ~0)
+        body = "<h2>תודה!</h2><p>ההודעה נשלחה בהצלחה.</p><div class=\"actionbar\"><a class=\"blue\" href=\"/web\">דף הבית</a></div>"
+        return HTMLResponse(public_web_shell('צור קשר', body), status_code=200)
+    if _spam == 'captcha':
+        body = "<h2>צור קשר</h2><p>תשובת האימות שגויה. חזרו ונסו שוב.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/contact\">חזרה</a></div>"
+        return HTMLResponse(public_web_shell('צור קשר', body), status_code=400)
+    if _spam == 'rate_limit':
+        body = "<h2>צור קשר</h2><p>נשלחו יותר מדי הודעות מכתובת זו. נסו שוב בעוד כשעה.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web\">דף הבית</a></div>"
+        return HTMLResponse(public_web_shell('צור קשר', body), status_code=429)
+    if _spam:
+        body = "<h2>צור קשר</h2><p>לא ניתן לשלוח את ההודעה כעת. רעננו את הדף ונסו שוב.</p><div class=\"actionbar\"><a class=\"gray\" href=\"/web/contact\">חזרה</a></div>"
         return HTMLResponse(public_web_shell('צור קשר', body), status_code=400)
     
     # Save to DB
@@ -246,6 +276,7 @@ def _callback_form_html(error: str = '') -> str:
 <p class="sub">מלאו את הפרטים ונחזור אליכם בהקדם עם כל המידע.</p>
 {err}
 <form method="post" action="/web/callback">
+{honeypot_html()}{form_token_html()}
 <div class="cbcard">
 <div class="cbgrid">
 <div class="fl cbfull"><label>שם בית הספר / המוסד <span class="cb-req">*</span></label><input name="school_name" required placeholder='לדוגמה: בי"ס אורט רמת גן' /></div>
@@ -271,6 +302,7 @@ def _callback_form_html(error: str = '') -> str:
 <label><input type="radio" name="software_type" value="מקוונת"> מקוונת</label>
 </div></div>
 </div>
+{captcha_html()}
 <div style="margin-top:22px;text-align:center;">
 <button type="submit" style="padding:14px 52px;font-size:18px;font-weight:800;border-radius:12px;background:linear-gradient(135deg,#f7971e,#ffd200);border:none;color:#1a1a2e;cursor:pointer;transition:opacity .2s;">שלח פנייה</button>
 </div>
@@ -284,6 +316,7 @@ def web_callback() -> str:
 
 @router.post('/web/callback', response_class=HTMLResponse)
 def web_callback_submit(
+    request: Request,
     school_name: str = Form(default=''),
     contact_name: str = Form(default=''),
     contact_phone: str = Form(default=''),
@@ -295,6 +328,10 @@ def web_callback_submit(
     num_students: str = Form(default=''),
     num_classes: str = Form(default=''),
     software_type: str = Form(default=''),
+    company_url: str = Form(default=''),
+    _ft: str = Form(default=''),
+    _cap: str = Form(default=''),
+    _cap_ans: str = Form(default=''),
 ) -> Response:
     school_name = str(school_name or '').strip()
     contact_name = str(contact_name or '').strip()
@@ -302,6 +339,23 @@ def web_callback_submit(
     contact_email = str(contact_email or '').strip()
     if not school_name or not contact_name or not contact_phone:
         return HTMLResponse(public_web_shell('תחזרו אלי', _callback_form_html('נא למלא את כל השדות החובה')), status_code=400)
+
+    # --- Anti-spam screening (email optional here, so skip email check) ---
+    _spam = screen_submission(
+        request, {'company_url': company_url, '_ft': _ft,
+                  '_cap': _cap, '_cap_ans': _cap_ans}, kind='callback',
+        max_hits=5, window_sec=3600, require_token=True, require_captcha=True,
+        check_email=False,
+    )
+    if _spam == 'honeypot':
+        ok = '<div style="text-align:center;padding:40px 20px;"><div style="font-size:52px;margin-bottom:16px;">✅</div><h2 style="font-size:28px;font-weight:900;">קיבלנו את הפנייה!</h2><a href="/web" class="btn-glass primary" style="padding:14px 36px;font-size:17px;">חזרה לדף הבית</a></div>'
+        return HTMLResponse(public_web_shell('תחזרו אלי', ok), status_code=200)
+    if _spam == 'captcha':
+        return HTMLResponse(public_web_shell('תחזרו אלי', _callback_form_html('תשובת האימות שגויה. נסו שוב.')), status_code=400)
+    if _spam == 'rate_limit':
+        return HTMLResponse(public_web_shell('תחזרו אלי', _callback_form_html('נשלחו יותר מדי פניות מכתובת זו. נסו שוב בעוד כשעה.')), status_code=429)
+    if _spam:
+        return HTMLResponse(public_web_shell('תחזרו אלי', _callback_form_html('לא ניתן לשלוח כעת. רעננו את הדף ונסו שוב.')), status_code=400)
     lines = [
         f'<b>בית הספר:</b> {school_name}',
         f'<b>איש קשר:</b> {contact_name} | טלפון: {contact_phone}' + (f' | דוא"ל: {contact_email}' if contact_email else ''),

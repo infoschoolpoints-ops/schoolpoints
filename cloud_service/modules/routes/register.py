@@ -12,6 +12,7 @@ from ..config import USE_POSTGRES, REGISTRATION_NOTIFY_EMAIL
 from ..auth import pbkdf2_hash, check_password_hash
 from ..email import send_email
 from ..ui import public_web_shell
+from ..antispam import honeypot_html, form_token_html, captcha_html, screen_submission, get_client_ip, rate_limited
 
 router = APIRouter()
 logger = logging.getLogger("schoolpoints.register")
@@ -112,6 +113,7 @@ _REG_FORM_TEMPLATE = """
 <h2>פתיחת חשבון מוסד</h2>
 <p>הצטרפו למערכת ניהול הנקודות המתקדמת בישראל</p></div>
 <form id="regForm" onsubmit="submitReg(event)"><div class="rc">
+__ANTISPAM__
 
 <div class="st">בחרו מסלול</div>
 <input type="hidden" name="plan" id="planInput" value="__PLAN__"/>
@@ -133,6 +135,7 @@ _REG_FORM_TEMPLATE = """
 <div class="fg"><label>אימות סיסמה *</label><div style="position:relative;"><input id="pw-r2" name="password2" type="password" class="ri" required minlength="4" placeholder="הזן שוב" style="padding-left:38px;"/><button type="button" onclick="togglePwR('pw-r2',this)" style="position:absolute;left:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:18px;line-height:1;color:#888;" title="הצג/הסתר">👁</button></div></div>
 <script>function togglePwR(id,btn){var i=document.getElementById(id);i.type=i.type==='password'?'text':'password';}</script>
 
+__CAPTCHA__
 <div class="cb"><input type="checkbox" id="terms" name="terms" required><label for="terms">קראתי ואני מסכים/ה ל<a href="/web/terms" target="_blank">תנאי השימוש</a></label></div>
 <div id="regMsg"></div>
 <div class="ss"><button type="submit" class="bp" id="submitBtn">פתיחת חשבון</button></div>
@@ -181,7 +184,14 @@ async function submitReg(e){
 def web_register(request: Request) -> str:
     plan = request.query_params.get('plan', '')
     plan_cards = _build_plan_cards_html()
-    body = _FORM_CSS + _REG_FORM_TEMPLATE.replace('__PLAN__', html_mod.escape(plan)).replace('__PLAN_CARDS__', plan_cards)
+    body = (
+        _FORM_CSS
+        + _REG_FORM_TEMPLATE
+        .replace('__PLAN__', html_mod.escape(plan))
+        .replace('__PLAN_CARDS__', plan_cards)
+        .replace('__ANTISPAM__', honeypot_html() + form_token_html())
+        .replace('__CAPTCHA__', captcha_html())
+    )
     return public_web_shell("\u05e4\u05ea\u05d9\u05d7\u05ea \u05d7\u05e9\u05d1\u05d5\u05df", body, request=request)
 
 def _plan_requires_payment(plan: str) -> bool:
@@ -214,6 +224,21 @@ def api_register(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[
     password  = str(payload.get('password') or '').strip()
     plan      = str(payload.get('plan') or 'basic').strip()
     terms_ok  = payload.get('terms')
+    # --- Anti-spam screening (blocks bots before any DB write / email) ---
+    _spam = screen_submission(
+        request, payload, kind='register',
+        max_hits=4, window_sec=3600,
+        require_token=True, require_captcha=True,
+        check_email=True, email_value=email,
+    )
+    if _spam == 'captcha':
+        raise HTTPException(400, detail='\u05ea\u05e9\u05d5\u05d1\u05ea \u05d4\u05d0\u05d9\u05de\u05d5\u05ea \u05e9\u05d2\u05d5\u05d9\u05d4. \u05d0\u05e0\u05d0 \u05e4\u05ea\u05e8\u05d5 \u05d0\u05ea \u05ea\u05e8\u05d2\u05d9\u05dc \u05d4\u05d7\u05e9\u05d1\u05d5\u05df \u05e9\u05d5\u05d1.')
+    if _spam == 'rate_limit':
+        raise HTTPException(429, detail='\u05d9\u05d5\u05ea\u05e8 \u05de\u05d3\u05d9 \u05d1\u05e7\u05e9\u05d5\u05ea \u05de\u05db\u05ea\u05d5\u05d1\u05ea \u05d6\u05d5. \u05e0\u05e1\u05d5 \u05e9\u05d5\u05d1 \u05d1\u05e2\u05d5\u05d3 \u05db\u05e9\u05e2\u05d4.')
+    if _spam == 'email':
+        raise HTTPException(400, detail='\u05db\u05ea\u05d5\u05d1\u05ea \u05d4\u05d0\u05d9\u05de\u05d9\u05d9\u05dc \u05d0\u05d9\u05e0\u05d4 \u05ea\u05e7\u05d9\u05e0\u05d4. \u05d0\u05e0\u05d0 \u05d4\u05d6\u05d9\u05e0\u05d5 \u05db\u05ea\u05d5\u05d1\u05ea \u05d0\u05d9\u05de\u05d9\u05d9\u05dc \u05ea\u05e7\u05d9\u05e0\u05d4.')
+    if _spam:
+        raise HTTPException(400, detail='\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d4\u05e9\u05dc\u05d9\u05dd \u05d0\u05ea \u05d4\u05d4\u05e8\u05e9\u05de\u05d4 \u05db\u05e2\u05ea. \u05e8\u05e2\u05e0\u05e0\u05d5 \u05d0\u05ea \u05d4\u05d3\u05e3 \u05d5\u05e0\u05e1\u05d5 \u05e9\u05d5\u05d1.')
     # Validate plan against DB plan_config + always allow 'trial'
     valid_plans = {'trial'}
     _plans_loaded = False
@@ -404,6 +429,11 @@ def api_forgot_password(request: Request, payload: Dict[str, Any] = Body(...)) -
     email = str(payload.get('email') or '').strip()
     if not email:
         raise HTTPException(400, detail="Missing email")
+    # Anti-abuse: cap reset requests per IP (anti email-bombing). Always return
+    # the same generic message so existence of accounts is never revealed.
+    _generic = '\u05d0\u05dd \u05d4\u05d0\u05d9\u05de\u05d9\u05d9\u05dc \u05e7\u05d9\u05d9\u05dd, \u05e0\u05e9\u05dc\u05d7 \u05e7\u05d9\u05e9\u05d5\u05e8 \u05d0\u05d9\u05e4\u05d5\u05e1.'
+    if rate_limited(get_client_ip(request), key='forgot', max_hits=5, window_sec=3600):
+        return {'ok': True, 'message': _generic}
     conn = get_db_connection()
     try:
         cur = conn.cursor()
