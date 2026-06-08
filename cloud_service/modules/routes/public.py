@@ -2,11 +2,38 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response, FileResponse
 from ..ui import public_web_shell, basic_web_shell
 from ..utils import read_text_file, replace_guide_base64_images
-from ..config import ROOT_DIR
+from ..config import ROOT_DIR, DATA_DIR
 import os
 import re
 
 router = APIRouter()
+
+_TENANT_ASSET_EXTS = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.wav', '.mp3', '.ogg')
+
+
+@router.get('/tenant-asset/{tenant_id}/{rel_path:path}', include_in_schema=False)
+def tenant_asset(tenant_id: str, rel_path: str) -> Response:
+    """Serve a synced tenant asset (product/ad/closure image, sound) to the browser.
+
+    Files live under DATA_DIR/tenants_assets/{tenant_id}/<rel> with a fallback to
+    the universal DATA_DIR/shared_assets/<rel>. Only media extensions are served.
+    """
+    tid = str(tenant_id or '').strip()
+    rel = str(rel_path or '').replace('\\', '/').lstrip('/')
+    if not tid or not rel or '..' in rel or '..' in tid:
+        raise HTTPException(status_code=404, detail='Not found')
+    if not rel.lower().endswith(_TENANT_ASSET_EXTS):
+        raise HTTPException(status_code=404, detail='Not found')
+
+    # Per-tenant assets first, then universal shared assets
+    candidates = [
+        os.path.join(DATA_DIR, 'tenants_assets', tid, rel),
+        os.path.join(DATA_DIR, 'shared_assets', rel),
+    ]
+    for full_path in candidates:
+        if os.path.isfile(full_path):
+            return FileResponse(full_path)
+    raise HTTPException(status_code=404, detail='Not found')
 
 @router.get('/web/assets/{asset_path:path}', include_in_schema=False)
 def web_assets(asset_path: str) -> Response:

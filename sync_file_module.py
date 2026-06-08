@@ -183,6 +183,75 @@ def normalize_db_image_assets(db_path: str, base_dir: str) -> int:
     return updated
 
 
+def collect_referenced_image_assets(db_path: str) -> List[str]:
+    """Return the set of relative asset paths (images/... or ads_media/...) currently
+    referenced by products/ads/closures. Used to garbage-collect orphaned cloud files.
+    Returns [] if the DB cannot be read (so GC is skipped rather than over-deleting).
+    """
+    import sqlite3 as _sql
+    refs = set()
+    if not db_path or not os.path.isfile(db_path):
+        return []
+    try:
+        conn = _sql.connect(db_path)
+    except Exception:
+        return []
+    try:
+        cur = conn.cursor()
+        queries = [
+            ('products', ['image_path']),
+            ('ads_items', ['image_path']),
+            ('public_closures', ['image_path_portrait', 'image_path_landscape']),
+        ]
+        for table, cols in queries:
+            for col in cols:
+                try:
+                    cur.execute(
+                        f'SELECT {col} FROM {table} '
+                        f'WHERE {col} IS NOT NULL AND {col} != ""'
+                    )
+                    for row in cur.fetchall():
+                        v = str(row[0] or '').replace('\\', '/').strip().lstrip('/')
+                        if v.lower().startswith(('images/', 'ads_media/')):
+                            refs.add(v)
+                except Exception:
+                    continue
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return sorted(refs)
+
+
+def gc_cloud_files(push_url: str, api_key: str, tenant_id: str, keep_list: List[str]):
+    """Ask the cloud to delete orphaned attachment files not in keep_list.
+    keep_list must be authoritative (read from a complete local DB).
+    """
+    if not push_url or not api_key or not tenant_id:
+        return None
+    base_sync_url = push_url.replace('/sync/push', '/sync/files')
+    if base_sync_url == push_url:
+        base_sync_url = push_url.rstrip('/') + '/files'
+    gc_url = f"{base_sync_url}/gc"
+    body = json.dumps({
+        'keep': list(keep_list or []),
+        'managed_dirs': ['images/products', 'images/ads', 'images/closures', 'ads_media'],
+        'authoritative': True,
+    }).encode('utf-8')
+    req = urllib.request.Request(
+        gc_url,
+        data=body,
+        headers={'Content-Type': 'application/json', 'api-key': api_key, 'x-tenant-id': tenant_id}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except Exception as e:
+        print(f"[FILE-GC] {e}")
+        return None
+
+
 def apply_pulled_assets(base_dir: str) -> dict:
     """After a file-sync pull, detect images/logo/ and images/photos/ and return
     config values that should be written to local config (for new stations).

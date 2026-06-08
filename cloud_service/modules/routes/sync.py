@@ -908,6 +908,57 @@ def api_sync_export_credentials(request: Request) -> Response:
     )
 
 
+_GC_MANAGED_DIRS = ('images/products', 'images/ads', 'images/closures', 'ads_media')
+
+
+@router.post('/sync/files/gc')
+def sync_files_gc_ep(request: Request, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Delete orphaned attachment files (product/ad/closure images) from the cloud
+    to free space. Only operates inside managed folders, and only when the client
+    explicitly marks the keep-list as authoritative (i.e. read from a complete DB).
+    Student photos, logo and sounds are never touched.
+    """
+    api_key = request.headers.get('api-key')
+    tenant_id = request.headers.get('x-tenant-id')
+    if not verify_sync_auth(api_key, tenant_id):
+        raise HTTPException(status_code=401, detail='Invalid auth')
+
+    if not bool(payload.get('authoritative')):
+        return {'ok': False, 'error': 'not authoritative', 'deleted': 0}
+
+    from ..config import DATA_DIR
+    base = os.path.join(DATA_DIR, 'tenants_assets', str(tenant_id))
+    keep = set(
+        str(p or '').replace('\\', '/').lstrip('/')
+        for p in (payload.get('keep') or [])
+    )
+    req_dirs = payload.get('managed_dirs') or list(_GC_MANAGED_DIRS)
+
+    deleted = 0
+    deleted_list: List[str] = []
+    for md in req_dirs:
+        md_norm = str(md or '').replace('\\', '/').strip('/')
+        # Safety: only ever prune our known managed subfolders
+        if md_norm not in _GC_MANAGED_DIRS:
+            continue
+        abs_dir = os.path.join(base, *md_norm.split('/'))
+        if not os.path.isdir(abs_dir):
+            continue
+        for root, _, files in os.walk(abs_dir):
+            for name in files:
+                full = os.path.join(root, name)
+                rel = os.path.relpath(full, base).replace('\\', '/')
+                if rel not in keep:
+                    try:
+                        os.remove(full)
+                        deleted += 1
+                        if len(deleted_list) < 100:
+                            deleted_list.append(rel)
+                    except Exception:
+                        pass
+    return {'ok': True, 'deleted': deleted, 'files': deleted_list}
+
+
 @router.get('/sync/files/list')
 def sync_files_list_ep(request: Request) -> Dict[str, Any]:
     api_key = request.headers.get('api-key')

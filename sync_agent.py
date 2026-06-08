@@ -2644,6 +2644,8 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
 
     last_file_sync = 0.0
     _file_sync_interval = 300  # 5 minutes normally; grows on 404
+    last_gc = 0.0
+    _gc_interval = 60 * 60  # garbage-collect orphaned cloud attachments hourly (master only)
     last_config_bridge = 0.0
     _config_bridge_interval = 300  # 5 minutes
     last_snapshot_push = 0.0
@@ -2704,6 +2706,29 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                             print(f"[FILE-SYNC] apply_pulled_assets warning: {_aae}")
                         last_file_sync = now
                         _file_sync_interval = 300  # reset to 5 min on success
+                        # --- GARBAGE COLLECT orphaned cloud attachments (master only, hourly) ---
+                        try:
+                            if (now - last_gc > _gc_interval) and not (local_sync_enabled and local_sync_role == 'client'):
+                                # Only a master/source station prunes — never a station that
+                                # pulled its DB from the cloud (could over-delete on a partial DB).
+                                _gc_receiver = False
+                                try:
+                                    _gc_conn = _connect(db_path)
+                                    _gc_bs_done = str(_get_sync_state(_gc_conn, 'bootstrap_snapshot_done', '0') or '0').strip()
+                                    _gc_bs_src = str(_get_sync_state(_gc_conn, 'snapshot_source', '') or '').strip()
+                                    _gc_conn.close()
+                                    _gc_receiver = (_gc_bs_done == '1' and _gc_bs_src == 'pull')
+                                except Exception:
+                                    pass
+                                if not _gc_receiver:
+                                    from sync_file_module import collect_referenced_image_assets, gc_cloud_files
+                                    _keep = collect_referenced_image_assets(str(db_path))
+                                    _gc_res = gc_cloud_files(str(push_url), str(api_key), str(tenant_id), _keep)
+                                    if isinstance(_gc_res, dict) and _gc_res.get('ok'):
+                                        print(f"[FILE-GC] Deleted {_gc_res.get('deleted', 0)} orphaned cloud file(s)")
+                                    last_gc = now
+                        except Exception as _gce:
+                            print(f"[FILE-GC] warning: {_gce}")
                     except Exception as e:
                         last_file_sync = now
                         _err_msg = str(e)
