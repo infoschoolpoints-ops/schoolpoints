@@ -756,6 +756,16 @@ _JSON_SETTINGS_TO_CONFIG = {
     'anti_spam_config': ['anti_spam_enabled', 'anti_spam_rules'],
 }
 
+# Default values used to seed a JSON blob setting in the cloud when a station has
+# never explicitly configured it (config.json lacks the keys AND the DB settings
+# table has no row). This guarantees the web/cloud always shows a valid state
+# instead of "not found" — e.g. anti-spam which is only written when the dialog
+# is saved. Defaults reflect the app's effective behavior.
+_JSON_SETTINGS_DEFAULTS = {
+    'quiet_mode_config': {'quiet_mode_enabled': False},
+    'anti_spam_config': {'anti_spam_enabled': True, 'anti_spam_rules': []},
+}
+
 
 def _apply_cloud_settings_to_config(db_path: str, base_dir: str) -> int:
     """Read settings from DB and merge into config.json. Returns keys updated."""
@@ -1011,19 +1021,30 @@ def _push_config_to_db_settings(db_path: str, base_dir: str) -> int:
             for ck in config_keys:
                 if ck in cfg:
                     val[ck] = cfg[ck]
-            if not val:
-                continue
+            # Read any existing DB value so we never lose a previously-saved setting
+            existing = None
             try:
                 cur.execute('SELECT value FROM settings WHERE key=? LIMIT 1', (db_key,))
                 row = cur.fetchone()
                 if row:
                     raw = row['value'] if isinstance(row, dict) else row[0]
-                    existing = json.loads(str(raw or '{}'))
-                    if isinstance(existing, dict):
-                        existing.update(val)
-                        val = existing
+                    parsed = json.loads(str(raw or '{}'))
+                    if isinstance(parsed, dict):
+                        existing = parsed
             except Exception:
-                pass
+                existing = None
+            # If config.json has nothing AND there is no existing DB value, seed a
+            # sensible default so the cloud/web always shows a valid state
+            # (instead of "not found"). e.g. anti-spam never saved via dialog.
+            if not val and not existing:
+                val = dict(_JSON_SETTINGS_DEFAULTS.get(db_key) or {})
+                if not val:
+                    continue
+            # Merge config.json values over any existing DB value
+            if isinstance(existing, dict) and existing:
+                merged = dict(existing)
+                merged.update(val)
+                val = merged
             jv = json.dumps(val, ensure_ascii=False)
             try:
                 cur.execute(
