@@ -1332,6 +1332,9 @@ class Database:
                         try:
                             sync_agent._ensure_sync_state(conn)
                             sync_agent._set_sync_state(conn, 'bootstrap_snapshot_done', '1')
+                            # עמדה זו קיבלה את נתוניה מ-pull — סמן כמקבל-bootstrap
+                            # (defense-in-depth: לקוח LAN ממילא לא דוחף snapshot)
+                            sync_agent._set_sync_state(conn, 'snapshot_source', 'pull')
                         except Exception:
                             pass
                     finally:

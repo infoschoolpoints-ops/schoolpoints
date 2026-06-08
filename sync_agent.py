@@ -2816,9 +2816,11 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
             except Exception:
                 pass
 
-        # --- PERIODIC FULL SNAPSHOT PUSH (every 6 hours) ---
+        # --- PERIODIC FULL SNAPSHOT PUSH (every 30 minutes — see _snapshot_push_interval) ---
         # Ensures ALL tables (settings, time_bonus, anti_spam, etc.) reach the cloud
-        # even if change_log entries were already marked as synced
+        # even if change_log entries were already marked as synced.
+        # רק תחנה ראשית (snapshot_source='local') דוחפת — תחנה שמשכה מהענן (snapshot_source='pull')
+        # לא דוחפת snapshot מלא כדי לא לדרוס נתונים נכונים בענן.
         try:
             now_sp = time.time()
             if snapshot_url and api_key and tenant_id and (now_sp - last_snapshot_push > _snapshot_push_interval):

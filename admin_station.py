@@ -10487,6 +10487,20 @@ class AdminStation:
                         push_ok = bool(sync_agent.push_snapshot(snapshot_url, snap, api_key=key, tenant_id=tid, station_id=_socket.gethostname()))
                     except Exception:
                         pass
+                if push_ok:
+                    # תחנה זו היא המקור הסמכותי (דחפה את נתוניה לענן) — סמן כ-primary
+                    # כדי שתמשיך לדחוף snapshot תקופתי ולא תיחשב כמקבל-bootstrap
+                    try:
+                        _cs_conn = sync_agent._connect(_db_path)
+                        try:
+                            sync_agent._ensure_sync_state(_cs_conn)
+                            sync_agent._set_sync_state(_cs_conn, 'snapshot_source', 'local')
+                            sync_agent._set_sync_state(_cs_conn, 'bootstrap_snapshot_done', '1')
+                            sync_agent._set_sync_state(_cs_conn, 'last_synced_tenant_id', tid)
+                        finally:
+                            _cs_conn.close()
+                    except Exception:
+                        pass
                 _status('הנתונים נשלחו לענן בהצלחה.' if push_ok else 'שליחת הנתונים נכשלה.')
                 return
 
@@ -10516,6 +10530,9 @@ class AdminStation:
                             # סמן שה-bootstrap כבר בוצע — יימנע דחיפת DB ריק לענן
                             sync_agent._set_sync_state(conn, 'bootstrap_snapshot_done', '1')
                             sync_agent._set_sync_state(conn, 'last_synced_tenant_id', tid)
+                            # תחנה זו קיבלה את נתוניה מהענן (pull) — סמן כמקבל-bootstrap
+                            # כדי שלא תדחוף snapshot מלא ותדרוס את הענן (מונע השחתת נתונים בין מחשבים)
+                            sync_agent._set_sync_state(conn, 'snapshot_source', 'pull')
                         finally:
                             conn.close()
                         total_rows = sum(snap_summary.values()) if snap_summary else 0
