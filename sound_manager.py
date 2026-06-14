@@ -26,6 +26,40 @@ except ImportError:
     print("⚠️ pygame לא זמין, משתמש ב-winsound (תמיכה מוגבלת ל-WAV בלבד)")
 
 
+def _dir_has_sounds(d: str) -> bool:
+    try:
+        if not d or not os.path.isdir(d):
+            return False
+        for _root, _, files in os.walk(d):
+            for f in (files or []):
+                if str(f).lower().endswith(('.wav', '.mp3', '.ogg')):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def resolve_install_sounds_dir(base_dir: str) -> str:
+    """Resolve the best local sounds directory for a station.
+
+    Prefers <base_dir>/sounds (dev / standalone). If that holds no audio files,
+    falls back to a sibling shared folder <parent>/sounds — the installed layout
+    where sounds are bundled ONCE under {app}\\sounds and shared by the Admin
+    ({app}\\Admin) and Public ({app}\\Public) stations to keep the EXE small.
+    Always returns a path (defaults to <base_dir>/sounds) even if none exist yet.
+    """
+    local = os.path.join(base_dir, 'sounds')
+    if _dir_has_sounds(local):
+        return local
+    try:
+        parent_shared = os.path.join(os.path.dirname(os.path.abspath(base_dir)), 'sounds')
+        if _dir_has_sounds(parent_shared):
+            return parent_shared
+    except Exception:
+        pass
+    return local
+
+
 class SoundManager:
     """מנהל השמעת צלילים"""
     

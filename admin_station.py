@@ -3884,7 +3884,11 @@ class AdminStation:
             shared = ''
         if shared and os.path.isdir(shared):
             return os.path.join(shared, 'sounds')
-        return os.path.join(self.base_dir, 'sounds')
+        try:
+            from sound_manager import resolve_install_sounds_dir
+            return resolve_install_sounds_dir(self.base_dir)
+        except Exception:
+            return os.path.join(self.base_dir, 'sounds')
 
     def _list_sound_keys_in_folder(self, folder_parts) -> list:
         base = os.path.join(self._get_shared_sounds_dir(), *(folder_parts or []))

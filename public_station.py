@@ -24,7 +24,7 @@ import urllib.request
 import urllib.parse
 from license_manager import LicenseManager
 from datetime import date, datetime
-from sound_manager import SoundManager, USE_PYGAME
+from sound_manager import SoundManager, USE_PYGAME, resolve_install_sounds_dir
 
 try:
     from ui_icons import normalize_ui_icons as _normalize_ui_icons
@@ -641,7 +641,8 @@ class PublicStation:
         if sounds_root:
             self._sounds_root_dir = sounds_root
         else:
-            self._sounds_root_dir = os.path.join(self.base_dir, 'sounds')
+            # אין cache/רשת — נשתמש בצלילים המקומיים, ובהתקנה גם בתיקייה המשותפת ({app}\sounds)
+            self._sounds_root_dir = resolve_install_sounds_dir(self.base_dir)
         try:
             _debug_log(
                 f"sounds_init cache_dir={self._sounds_cache_dir} net_dir={getattr(self, '_sounds_network_dir', None)} chosen={self._sounds_root_dir}"

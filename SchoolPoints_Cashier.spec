@@ -38,10 +38,8 @@ except Exception:
     _exe_icon = None
 
 
-# סאונדים נדרשים (שיתוף תשתיות)
-_add_data_dir_if_exists('sounds', 'sounds')
-_add_data_dir_if_exists('sounds/‏‏תיקיה חדשה/קצר וטוב', 'sounds/‏‏תיקיה חדשה/קצר וטוב')
-_add_data_dir_if_exists('sounds/‏‏תיקיה חדשה/הראשונים לבונוס', 'sounds/‏‏תיקיה חדשה/הראשונים לבונוס')
+# הערה: עמדת הקופה אינה משמיעה צלילים (אין SoundManager) — לא אורזים את תיקיית
+# sounds כדי לצמצם את נפח ה-EXE. צלילים מסתנכרנים בעת הצורך מהענן/תיקייה משותפת.
 _add_data_dir_if_exists('icons/cashier.ico', 'icons')
 
 a = Analysis(
