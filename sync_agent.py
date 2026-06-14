@@ -2153,6 +2153,55 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                     except Exception:
                         pass
                 applied += 1
+
+                # Mirror time_bonus_<id> settings into the local time_bonus_schedules
+                # table (upsert or delete), matching the cloud-side behavior. Without
+                # this, deleting a time-bonus row on the master never removes it on a
+                # station that only pulls from the cloud (bug: "can't delete a row").
+                if key.startswith('time_bonus_'):
+                    try:
+                        tb = json.loads(value) if value else {}
+                    except Exception:
+                        tb = {}
+                    if isinstance(tb, dict):
+                        if tb.get('deleted') and tb.get('id'):
+                            try:
+                                cur.execute('DELETE FROM time_bonus_schedules WHERE id = ?', (int(tb['id']),))
+                            except Exception:
+                                pass
+                        elif tb.get('id') and str(tb.get('name') or '').strip():
+                            try:
+                                _tb_id = int(tb['id'])
+                                _vals = (
+                                    str(tb.get('name') or '').strip(),
+                                    str(tb.get('group_name') or '').strip(),
+                                    str(tb.get('start_time') or '').strip(),
+                                    str(tb.get('end_time') or '').strip(),
+                                    int(tb.get('bonus_points') or tb.get('points') or 0),
+                                    int(tb.get('is_active') if tb.get('is_active') is not None else 1),
+                                    int(tb.get('is_general') if tb.get('is_general') is not None else 1),
+                                    str(tb.get('classes') or '').strip(),
+                                    str(tb.get('days_of_week') or '').strip(),
+                                    str(tb.get('sound_key') or '').strip(),
+                                    int(tb.get('is_shown_public') if tb.get('is_shown_public') is not None else 1),
+                                )
+                                cur.execute('SELECT id FROM time_bonus_schedules WHERE id = ?', (_tb_id,))
+                                if cur.fetchone():
+                                    cur.execute(
+                                        'UPDATE time_bonus_schedules SET name=?,group_name=?,start_time=?,end_time=?,'
+                                        'bonus_points=?,is_active=?,is_general=?,classes=?,days_of_week=?,sound_key=?,'
+                                        'is_shown_public=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                                        _vals + (_tb_id,)
+                                    )
+                                else:
+                                    cur.execute(
+                                        'INSERT INTO time_bonus_schedules (name,group_name,start_time,end_time,'
+                                        'bonus_points,is_active,is_general,classes,days_of_week,sound_key,is_shown_public,id) '
+                                        'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                                        _vals + (_tb_id,)
+                                    )
+                            except Exception:
+                                pass
             
             # Handle all table-mapped entities (messages, bonuses, activities, etc.)
             table_map = {

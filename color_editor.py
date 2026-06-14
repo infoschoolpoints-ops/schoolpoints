@@ -705,13 +705,21 @@ class ColorEditor:
         # כותרות
         headers = tk.Frame(ranges_frame, bg='#ecf0f1')
         headers.pack(fill=tk.X, pady=5)
-        
-        # חשוב: pack(side=RIGHT) מצייר את הפריטים בסדר הפוך. לכן סדר יצירה מותאם לתצוגה.
-        tk.Label(headers, text="מינימום", font=('Arial', 10, 'bold'), bg='#ecf0f1', width=10).pack(side=tk.RIGHT, padx=5)
-        tk.Label(headers, text="מקסימום", font=('Arial', 10, 'bold'), bg='#ecf0f1', width=10).pack(side=tk.RIGHT, padx=5)
-        tk.Label(headers, text="שם", font=('Arial', 10, 'bold'), bg='#ecf0f1', width=10).pack(side=tk.RIGHT, padx=5)
-        tk.Label(headers, text="צבע", font=('Arial', 10, 'bold'), bg='#ecf0f1', width=10).pack(side=tk.RIGHT, padx=5)
-        tk.Label(headers, text="צליל", font=('Arial', 10, 'bold'), bg='#ecf0f1', width=12).pack(side=tk.RIGHT, padx=5)
+
+        # חשוב: הכותרות חייבות לשקף בדיוק את סדר ה-pack והרוחב של create_range_row
+        # (אחרת הכותרת לא תשב מעל העמודה הנכונה). סדר התצוגה מימין לשמאל:
+        # [🗑️ בשמאל] ... 📁 | ▶ | שם | מקסימום | מינימום | צבע | צליל
+        _hf = ('Arial', 10, 'bold')
+        # מעל כפתור המחיקה (שמאל)
+        tk.Label(headers, text="מחק", font=_hf, bg='#ecf0f1', width=3).pack(side=tk.LEFT, padx=5)
+        # קבוצת ימין — באותו סדר pack בדיוק כמו בשורת הנתונים
+        tk.Label(headers, text="", font=_hf, bg='#ecf0f1', width=3).pack(side=tk.RIGHT, padx=5)       # 📁
+        tk.Label(headers, text="השמעה", font=_hf, bg='#ecf0f1', width=7).pack(side=tk.RIGHT, padx=0)   # ▶
+        tk.Label(headers, text="שם", font=_hf, bg='#ecf0f1', width=12).pack(side=tk.RIGHT, padx=5)
+        tk.Label(headers, text="מקסימום", font=_hf, bg='#ecf0f1', width=10).pack(side=tk.RIGHT, padx=5)
+        tk.Label(headers, text="מינימום", font=_hf, bg='#ecf0f1', width=10).pack(side=tk.RIGHT, padx=5)
+        tk.Label(headers, text="צבע", font=_hf, bg='#ecf0f1', width=10).pack(side=tk.RIGHT, padx=5)
+        tk.Label(headers, text="צליל", font=_hf, bg='#ecf0f1', width=12).pack(side=tk.RIGHT, padx=5)
         
         # אזור גלילה לטווחים
         canvas = tk.Canvas(ranges_frame, bg='#ecf0f1', highlightthickness=0)
