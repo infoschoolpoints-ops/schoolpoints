@@ -5840,6 +5840,15 @@ class PublicStation:
             shared = cfg.get('shared_folder') or cfg.get('network_root')
             previously_configured = bool(shared)
 
+            # #2: נסה לבסס חיבור SMB לתיקייה המשותפת (UNC) באופן אוטומטי, כדי
+            # שלא יהיה צורך לפתוח אותה ידנית ולאשר התחברות אחרי כל אתחול מחשב.
+            try:
+                if shared and str(shared).replace('/', '\\').startswith('\\\\'):
+                    import sync_agent as _sa
+                    _sa.ensure_shared_folder_connected_from_cfg(cfg)
+            except Exception:
+                pass
+
             # wizard סוג התקנה — רק בפעם הראשונה
             existing_mode = str(cfg.get('deployment_mode') or '').strip().lower()
             if not existing_mode and not shared:
@@ -5853,8 +5862,8 @@ class PublicStation:
                     pass
                 if chosen in ('hybrid', 'cloud'):
                     try:
-                        self._open_cloud_credentials_dialog(cfg)
-                        self.save_app_config(cfg)
+                        if self._open_cloud_credentials_dialog(cfg):
+                            self.save_app_config(cfg)
                     except Exception:
                         pass
                     return True

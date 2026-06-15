@@ -191,6 +191,87 @@ def _unc_host(path: str) -> str:
         return ''
 
 
+def ensure_unc_connected(unc_path: str, username: str = '', password: str = '', timeout: float = 8.0) -> bool:
+    """Best-effort: establish an SMB session to the host of a UNC shared folder
+    via `net use`, so the share is reachable without manually opening it in
+    Explorer after every reboot. Windows-only; returns True if a connection was
+    established (or already existed). On non-Windows or non-UNC paths it is a no-op.
+
+    Optional username/password (from config keys share_username/share_password)
+    are used first; otherwise the current logon credentials are attempted.
+    """
+    try:
+        p = str(unc_path or '').replace('/', '\\').strip()
+    except Exception:
+        p = ''
+    if not p.startswith('\\\\'):
+        return False
+    if os.name != 'nt':
+        return False
+
+    host = _unc_host(p)
+    if not host:
+        return False
+
+    # Resolve the \\host\share root (first two path components).
+    rest = p[2:]
+    parts = [x for x in rest.split('\\') if x != '']
+    if len(parts) >= 2:
+        target = f"\\\\{parts[0]}\\{parts[1]}"
+    else:
+        target = f"\\\\{parts[0]}\\IPC$"
+
+    try:
+        import subprocess
+    except Exception:
+        return False
+
+    try:
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    except Exception:
+        creationflags = 0
+
+    attempts = []
+    u = str(username or '').strip()
+    if u:
+        # net use <target> <password> /user:<user> /persistent:yes
+        attempts.append(['net', 'use', target, str(password or ''), '/user:' + u, '/persistent:yes'])
+    # Fallback: use current logon credentials / existing session
+    attempts.append(['net', 'use', target, '/persistent:yes'])
+
+    for args in attempts:
+        try:
+            r = subprocess.run(
+                args,
+                timeout=timeout,
+                creationflags=creationflags,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            if getattr(r, 'returncode', 1) == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def ensure_shared_folder_connected_from_cfg(cfg: Dict[str, Any], timeout: float = 8.0) -> bool:
+    """Convenience wrapper: read the shared folder + optional credentials from a
+    config dict and attempt to mount it. Returns True if connected."""
+    try:
+        if not isinstance(cfg, dict):
+            return False
+        shared = str(cfg.get('shared_folder') or cfg.get('network_root') or '').strip()
+        if not shared:
+            return False
+        user = str(cfg.get('share_username') or '').strip()
+        pwd = str(cfg.get('share_password') or '')
+        return ensure_unc_connected(shared, username=user, password=pwd, timeout=timeout)
+    except Exception:
+        return False
+
+
 def _local_sync_enabled_from_cfg(cfg: Dict[str, Any]) -> bool:
     try:
         if 'local_sync_enabled' in cfg:

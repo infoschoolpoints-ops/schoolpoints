@@ -11039,6 +11039,15 @@ class AdminStation:
 
         previously_configured = bool(shared)
 
+        # #2: נסה לבסס חיבור SMB לתיקייה המשותפת (UNC) באופן אוטומטי, כדי
+        # שלא יהיה צורך לפתוח אותה ידנית ולאשר התחברות אחרי כל אתחול מחשב.
+        try:
+            if shared and str(shared).replace('/', '\\').startswith('\\\\'):
+                import sync_agent as _sa
+                _sa.ensure_shared_folder_connected_from_cfg(cfg)
+        except Exception:
+            pass
+
         # הסתרת חלון הטעינה כדי שדיאלוגים יהיו גלויים (root מוסתר → transient children גם מוסתרים)
         _loading_win = None
         try:
@@ -12720,6 +12729,93 @@ class AdminStation:
         dlg.wait_window()
         return result
 
+    def _open_cloud_credentials_dialog(self, cfg: dict) -> bool:
+        """דיאלוג לאיסוף פרטי חיבור לענן (ייבוא קובץ הרשמה או הזנה ידנית).
+        מעדכן את cfg עם sync_tenant_id / sync_api_key / sync_push_url ומחזיר True אם נשמר."""
+        result = {'ok': False}
+        try:
+            dialog = tk.Toplevel(self.root)
+            dialog.title("חיבור לענן — פרטי חיבור")
+            dialog.geometry("640x420")
+            dialog.configure(bg='#ecf0f1')
+            dialog.transient(self.root)
+            dialog.grab_set()
+
+            tk.Label(dialog, text="חיבור עמדת ניהול לענן", font=('Arial', 14, 'bold'), bg='#ecf0f1').pack(pady=(16, 4))
+            tk.Label(dialog, text="ייבא קובץ חיבור שהורדת מאתר הניהול, או הזן פרטים ידנית.",
+                     font=('Arial', 10), bg='#ecf0f1', fg='#555').pack()
+
+            form = tk.Frame(dialog, bg='#ecf0f1')
+            form.pack(fill=tk.X, padx=24, pady=10)
+
+            LW = 22
+            FW = 38
+            tenant_var = tk.StringVar(value=str(cfg.get('sync_tenant_id') or ''))
+            apikey_var = tk.StringVar(value=str(cfg.get('sync_api_key') or ''))
+            pushurl_var = tk.StringVar(value=str(cfg.get('sync_push_url') or ''))
+
+            for label, var in [("קוד מוסד (tenant_id):", tenant_var),
+                                ("מפתח API (api_key):", apikey_var),
+                                ("Push URL:", pushurl_var)]:
+                row = tk.Frame(form, bg='#ecf0f1')
+                row.pack(fill=tk.X, pady=2)
+                tk.Label(row, text=label, font=('Arial', 10), bg='#ecf0f1', anchor='e', width=LW).pack(side=tk.RIGHT, padx=4)
+                tk.Entry(row, textvariable=var, font=('Arial', 10), width=FW, justify='left').pack(side=tk.RIGHT, padx=4)
+
+            def browse_file():
+                path = filedialog.askopenfilename(
+                    title='ייבוא קובץ הרשמה',
+                    filetypes=[('קובץ חיבור SchoolPoints', '*.json'), ('הכל', '*.*')],
+                    parent=dialog)
+                if not path:
+                    return
+                try:
+                    with open(path, 'r', encoding='utf-8') as _f:
+                        creds = json.load(_f)
+                    tid = str(creds.get('sync_tenant_id') or '').strip()
+                    akey = str(creds.get('sync_api_key') or '').strip()
+                    purl = str(creds.get('sync_push_url') or '').strip()
+                    base_url = str(creds.get('cloud_base_url') or '').strip()
+                    if not (tid and akey and purl):
+                        messagebox.showerror('שגיאה', 'הקובץ לא מכיל פרטי חיבור תקינים.', parent=dialog)
+                        return
+                    tenant_var.set(tid)
+                    apikey_var.set(akey)
+                    pushurl_var.set(purl)
+                    if base_url:
+                        cfg['cloud_base_url'] = base_url
+                except Exception as e:
+                    messagebox.showerror('שגיאה', f'לא ניתן לקרוא את הקובץ:\n{e}', parent=dialog)
+
+            def save_and_close():
+                tid = tenant_var.get().strip()
+                akey = apikey_var.get().strip()
+                purl = pushurl_var.get().strip()
+                if not (tid and akey and purl):
+                    messagebox.showerror('שגיאה', 'יש למלא את כל השדות (tenant_id, api_key, push_url).', parent=dialog)
+                    return
+                cfg['sync_tenant_id'] = tid
+                cfg['sync_api_key'] = akey
+                cfg['sync_push_url'] = purl
+                if 'deployment_mode' not in cfg or not cfg['deployment_mode']:
+                    cfg['deployment_mode'] = 'cloud'
+                result['ok'] = True
+                dialog.destroy()
+
+            btn_row = tk.Frame(dialog, bg='#ecf0f1')
+            btn_row.pack(pady=8)
+            tk.Button(btn_row, text="📂 ייבא קובץ הרשמה", command=browse_file,
+                      font=('Arial', 10), bg='#27ae60', fg='white', padx=12, pady=5).pack(side=tk.RIGHT, padx=6)
+            tk.Button(btn_row, text="✓ שמור וחבר", command=save_and_close,
+                      font=('Arial', 10, 'bold'), bg='#2980b9', fg='white', padx=12, pady=5).pack(side=tk.RIGHT, padx=6)
+            tk.Button(btn_row, text="ביטול", command=dialog.destroy,
+                      font=('Arial', 10), bg='#95a5a6', fg='white', padx=12, pady=5).pack(side=tk.RIGHT, padx=6)
+
+            self.root.wait_window(dialog)
+        except Exception:
+            pass
+        return result['ok']
+
     def open_system_settings(self):
         """חלון הגדרות מערכת (תיקיית רשת, לוגו, שם מבצע)"""
         # רק למנהלים
@@ -13928,6 +14024,30 @@ class AdminStation:
         init_btn_row.columnconfigure(0, weight=1)
         init_btn_row.columnconfigure(1, weight=1)
         init_btn_row.columnconfigure(2, weight=1)
+        
+        def _open_cloud_conn_dialog():
+            _cfg2 = self.load_app_config() or {}
+            if self._open_cloud_credentials_dialog(_cfg2):
+                try:
+                    self.save_app_config(_cfg2)
+                    messagebox.showinfo('נשמר',
+                        'פרטי חיבור הענן נשמרו.\nהפעל מחדש את עמדת הניהול כדי להתחיל סנכרון.',
+                        parent=dialog)
+                except Exception:
+                    pass
+        
+        tk.Button(
+            init_btn_row,
+            text="☁ הגדרות חיבור לענן",
+            command=_open_cloud_conn_dialog,
+            font=('Arial', 10, 'bold'),
+            bg='#2980b9',
+            fg='white',
+            width=BUTTON_WIDTH + 6,
+            padx=6,
+            pady=4
+        ).grid(row=0, column=0, sticky='n', padx=3)
+        
         tk.Button(
             init_btn_row,
             text="פתח הגדרות ראשוניות",
