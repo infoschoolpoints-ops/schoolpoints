@@ -1,6 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
 import os
 
 _manifest_path = os.path.abspath('dpi_per_monitor_v2.manifest')
@@ -13,6 +12,12 @@ datas = [
     ('_clean_install/db_path.txt', '.'),
     ('_clean_install/excel_path.txt', '.'),
     ('_clean_install/master_card.txt', '.'),
+    ('guide_index.html', '.'),
+    ('guide_admin.html', '.'),
+    ('guide_teacher.html', '.'),
+    ('guide_user.html', '.'),
+    ('guide_user_embedded.html', '.'),
+    ('הוראות התקנה ראשוניות.html', '.'),
     # פונט ותמונות רקע ברירת-מחדל לעמדה הציבורית
     ('Gan CLM Bold.otf', '.'),
     ('תמונות/רקע בהיר לאורך.png', 'תמונות'),
@@ -32,7 +37,7 @@ def _add_data_dir_if_exists(src: str, dest: str) -> None:
 
 _exe_icon = None
 try:
-    _icon_path = os.path.abspath(os.path.join('icons', 'public.ico'))
+    _icon_path = os.path.abspath(os.path.join('icons', 'admin.ico'))
     if os.path.exists(_icon_path):
         _exe_icon = _icon_path
 except Exception:
@@ -43,10 +48,13 @@ except Exception:
 _add_data_dir_if_exists('sounds', 'sounds')
 _add_data_dir_if_exists('sounds/‏‏תיקיה חדשה/קצר וטוב', 'sounds/‏‏תיקיה חדשה/קצר וטוב')
 _add_data_dir_if_exists('sounds/‏‏תיקיה חדשה/הראשונים לבונוס', 'sounds/‏‏תיקיה חדשה/הראשונים לבונוס')
+_add_data_dir_if_exists('תמונות/להוראות', 'תמונות/להוראות')
+_add_data_dir_if_exists('icons/admin.ico', 'icons')
 _add_data_dir_if_exists('icons/public.ico', 'icons')
+_add_data_dir_if_exists('icons/cashier.ico', 'icons')
 
 a = Analysis(
-    ['run_public.pyw'],
+    ['run_admin.pyw', 'run_public.pyw', 'run_cashier.pyw'],
     pathex=[],
     binaries=[],
     datas=datas,
@@ -69,12 +77,13 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-exe = EXE(
+# EXE לעמדת ניהול
+exe_admin = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
-    name='SchoolPoints_Public',
+    name='SchoolPoints_Admin',
     icon=_exe_icon,
     debug=False,
     bootloader_ignore_signals=False,
@@ -86,7 +95,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # צמצום שפות ואזורי זמן מיותרים
     tcl_exclude=[
         'tzdata/*',
         'tzdata/Africa/*',
@@ -104,12 +112,88 @@ exe = EXE(
         'msgs/*',
     ],
 )
+
+# EXE לעמדה ציבורית
+exe_public = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='SchoolPoints_Public',
+    icon=os.path.abspath(os.path.join('icons', 'public.ico')) if os.path.exists(os.path.join('icons', 'public.ico')) else _exe_icon,
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    tcl_exclude=[
+        'tzdata/*',
+        'tzdata/Africa/*',
+        'tzdata/America/*',
+        'tzdata/Antarctica/*',
+        'tzdata/Arctic/*',
+        'tzdata/Asia/*',
+        'tzdata/Atlantic/*',
+        'tzdata/Australia/*',
+        'tzdata/Europe/*',
+        'tzdata/Indian/*',
+        'tzdata/Pacific/*',
+        'tzdata/*/*',
+        'msgcat',
+        'msgs/*',
+    ],
+)
+
+# EXE לעמדת קופה
+exe_cashier = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='SchoolPoints_Cashier',
+    icon=os.path.abspath(os.path.join('icons', 'cashier.ico')) if os.path.exists(os.path.join('icons', 'cashier.ico')) else _exe_icon,
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=False,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    tcl_exclude=[
+        'tzdata/*',
+        'tzdata/Africa/*',
+        'tzdata/America/*',
+        'tzdata/Antarctica/*',
+        'tzdata/Arctic/*',
+        'tzdata/Asia/*',
+        'tzdata/Atlantic/*',
+        'tzdata/Australia/*',
+        'tzdata/Europe/*',
+        'tzdata/Indian/*',
+        'tzdata/Pacific/*',
+        'tzdata/*/*',
+        'msgcat',
+        'msgs/*',
+    ],
+)
+
+# איסוף כל הקבצים לתיקייה אחת
 coll = COLLECT(
-    exe,
+    exe_admin,
+    exe_public,
+    exe_cashier,
     a.binaries,
     a.datas,
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='SchoolPoints_Public',
+    name='SchoolPoints_All',
 )

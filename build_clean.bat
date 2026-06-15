@@ -18,7 +18,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-python -m pip install -U pip setuptools wheel --disable-pip-version-check --log "%PIP_LOG%"
+REM python -m pip install -U pip setuptools wheel --disable-pip-version-check --log "%PIP_LOG%"
 python -m pip install -r requirements.txt -v --timeout 30 --retries 2 --progress-bar off --disable-pip-version-check --only-binary=:all: --log "%PIP_LOG%"
 if %errorlevel% neq 0 (
     echo ❌ שגיאה בהתקנת תלויות!
@@ -37,32 +37,24 @@ echo.
 echo תיקיית עבודה: %CD%
 echo.
 
-echo [1/3] בונה עמדת ניהול...
-pyinstaller SchoolPoints_Admin.spec --clean
+echo [1/1] בונה חבילה משולבת (כל 3 העמדות)...
+pyinstaller SchoolPoints_All.spec --clean
 if %errorlevel% neq 0 (
-    echo ❌ שגיאה בבניית עמדת ניהול!
+    echo ❌ שגיאה בבניית החבילה המשולבת!
     pause
     exit /b 1
 )
-echo ✓ עמדת ניהול נבנתה בהצלחה
+echo ✓ חבילה משולבת נבנתה בהצלחה
 echo.
 
-echo [2/3] בונה עמדה ציבורית...
-pyinstaller SchoolPoints_Public.spec --clean
-if %errorlevel% neq 0 (
-    echo ❌ שגיאה בבניית עמדה ציבורית!
-    pause
-    exit /b 1
-)
-echo ✓ עמדה ציבורית נבנתה בהצלחה
+echo סיכום:
+echo ✓ כל 3 העמדות נבנו בהצלחה בתיקייה אחת!
 echo.
-
-echo [3/3] סיכום...
-echo ✓ שתי העמדות נבנו בהצלחה עם קבצים נקיים!
-echo.
-echo מיקומים:
-echo   - עמדת ניהול: dist\SchoolPoints_Admin\
-echo   - עמדה ציבורית: dist\SchoolPoints_Public\
+echo מיקום:
+echo   - dist\SchoolPoints_All\
+echo     * SchoolPoints_Admin.exe
+echo     * SchoolPoints_Public.exe
+echo     * SchoolPoints_Cashier.exe
 echo.
 
 echo יוצר version.json לעדכון...
