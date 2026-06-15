@@ -74,6 +74,7 @@ exe = EXE(
     name='SchoolPoints_Cashier',
     icon=_exe_icon,
     debug=False,
+    version='1.6.5',
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,

@@ -113,6 +113,7 @@ def normalize_db_image_assets(db_path: str, base_dir: str) -> int:
         ('ads_items', 'image_path', 'ads'),
         ('public_closures', 'image_path_portrait', 'closures'),
         ('public_closures', 'image_path_landscape', 'closures'),
+        ('students', 'photo_path', 'photos'),
     ]
 
     updated = 0
@@ -202,6 +203,7 @@ def collect_referenced_image_assets(db_path: str) -> List[str]:
             ('products', ['image_path']),
             ('ads_items', ['image_path']),
             ('public_closures', ['image_path_portrait', 'image_path_landscape']),
+            ('students', ['photo_path']),
         ]
         for table, cols in queries:
             for col in cols:
@@ -236,7 +238,7 @@ def gc_cloud_files(push_url: str, api_key: str, tenant_id: str, keep_list: List[
     gc_url = f"{base_sync_url}/gc"
     body = json.dumps({
         'keep': list(keep_list or []),
-        'managed_dirs': ['images/products', 'images/ads', 'images/closures', 'ads_media'],
+        'managed_dirs': ['images/products', 'images/ads', 'images/closures', 'images/photos', 'ads_media'],
         'authoritative': True,
     }).encode('utf-8')
     req = urllib.request.Request(
@@ -250,6 +252,57 @@ def gc_cloud_files(push_url: str, api_key: str, tenant_id: str, keep_list: List[
     except Exception as e:
         print(f"[FILE-GC] {e}")
         return None
+
+
+def resolve_image_path_local(rel_or_abs: str, base_dir: str) -> str:
+    """Resolve an image path for local/hybrid stations. Supports both:
+    1. New relative paths (images/..., ads_media/...) — resolved from base_dir
+    2. Old absolute paths — used as-is if file exists
+    
+    Returns the absolute path to the file if it exists, or empty string.
+    Backward compatible: old installations with absolute paths continue working.
+    """
+    if not rel_or_abs:
+        return ''
+    
+    val = str(rel_or_abs).strip()
+    norm = val.replace('\\', '/').lower()
+    
+    # New relative path — resolve from base_dir/images or base_dir/ads_media
+    if norm.startswith('images/') or norm.startswith('ads_media/'):
+        candidate = os.path.join(base_dir, val.replace('/', os.sep))
+        if os.path.isfile(candidate):
+            return candidate
+        return ''
+    
+    # Old absolute path — use as-is if exists
+    if os.path.isabs(val) and os.path.isfile(val):
+        return val
+    
+    return ''
+
+
+def resolve_image_path_cloud(rel_or_abs: str, cloud_base_url: str, tenant_id: str) -> str:
+    """Resolve an image path for cloud-only stations (no local shared folder).
+    Returns a cloud URL for serving the asset from tenants_assets/{tenant_id}/
+    
+    Only works for new relative paths (images/..., ads_media/...).
+    Old absolute paths cannot be served from cloud (returns empty).
+    """
+    if not rel_or_abs or not cloud_base_url or not tenant_id:
+        return ''
+    
+    val = str(rel_or_abs).strip()
+    norm = val.replace('\\', '/').lower()
+    
+    # Only relative paths can be served from cloud
+    if norm.startswith('images/') or norm.startswith('ads_media/'):
+        # URL encode the path
+        encoded = urllib.parse.quote(val.replace('\\', '/'))
+        return f"{cloud_base_url.rstrip('/')}/assets/{tenant_id}/{encoded}"
+    
+    # Absolute paths cannot be served from cloud
+    return ''
 
 
 def apply_pulled_assets(base_dir: str) -> dict:
