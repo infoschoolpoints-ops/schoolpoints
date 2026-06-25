@@ -1491,6 +1491,8 @@ class PublicStation:
             # אם לא נבחרה תמונת ברירת-מחדל עבור template1 – נשתמש בתמונה שהוגדרה בקובץ
             if not image_path:
                 image_path = getattr(self, 'app_config', {}).get('background_image_path') if hasattr(self, 'app_config') else None
+                # נתיב יחסי מסונכרן (images/background/...) → פתרון לנתיב מקומי מוחלט
+                image_path = self._resolve_bg_path(image_path)
 
             try:
                 _debug_log(f'bg_image_path chosen={image_path} exists={bool(image_path and os.path.exists(image_path))}')
@@ -1531,6 +1533,8 @@ class PublicStation:
                     print(f"שגיאה בטעינת תמונת רקע: {e}")
         elif bg_mode == 'slideshow':
             folder = getattr(self, 'app_config', {}).get('background_folder') if hasattr(self, 'app_config') else None
+            # נתיב יחסי מסונכרן (images/background_slideshow) → פתרון לנתיב מקומי מוחלט
+            folder = self._resolve_bg_path(folder)
             if folder and os.path.isdir(folder):
                 exts = ('.png', '.jpg', '.jpeg', '.bmp', '.gif')
                 try:
@@ -5016,6 +5020,38 @@ class PublicStation:
         # איפוס התצוגה אחרי 10 שניות
         self._schedule_hide_info(10000, reset_name_color=True)
     
+    def _resolve_bg_path(self, val):
+        """פתרון נתיב רקע (תמונה/תיקייה) שעשוי להיות יחסי מסונכרן (images/...) או מוחלט.
+
+        נתיב יחסי המתחיל ב-images/ נפתר מול base_dir של ההתקנה, ואז מול תיקיית
+        הרשת המשותפת (אם הוגדרה). נתיב מוחלט/ישן מוחזר כמות שהוא (תאימות לאחור).
+        """
+        try:
+            v = str(val or '').strip()
+        except Exception:
+            return val
+        if not v:
+            return val
+        norm = v.replace('\\', '/')
+        if not norm.lower().startswith('images/'):
+            return v  # מוחלט/ישן — ללא שינוי
+        shared = ''
+        try:
+            cfg = getattr(self, 'app_config', {}) or {}
+            shared = str(cfg.get('shared_folder') or cfg.get('network_root') or '').strip()
+        except Exception:
+            shared = ''
+        for root in (getattr(self, 'base_dir', ''), shared):
+            if not root:
+                continue
+            try:
+                cand = os.path.join(root, norm.replace('/', os.sep))
+                if os.path.exists(cand):
+                    return cand
+            except Exception:
+                continue
+        return v
+
     def load_master_card(self):
         """טעינת כרטיס מאסטר מקובץ"""
         # 1. קובץ משותף בתיקיית הרשת (אם הוגדרה)

@@ -86,6 +86,105 @@ def normalize_assets_for_sync(base_dir: str, config: dict) -> dict:
     return updated
 
 
+def normalize_background_assets_for_sync(base_dir: str, config: dict) -> dict:
+    """Mirror the public-station background image (and slideshow folder) into
+    base_dir/images/background/ and return RELATIVE paths so the background is
+    portable across stations (including cloud-only) and syncs via the file-sync.
+
+    Handles two config keys:
+      - background_image_path : single background image (absolute -> images/background/<file>)
+      - background_folder     : slideshow folder (absolute -> images/background_slideshow/)
+
+    Backward compatible:
+      - Values already relative (start with 'images/') are returned as-is/skipped.
+      - Absolute paths whose file/folder is missing are left untouched.
+
+    Returns a dict with updated RELATIVE values for any key that was normalized.
+    """
+    import shutil as _shutil
+    images_dir = os.path.join(base_dir, 'images')
+    updated: dict = {}
+
+    exts = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp')
+
+    # --- Single background image ---
+    bg_path = str((config or {}).get('background_image_path') or '').strip()
+    if bg_path:
+        norm = bg_path.replace('\\', '/').lower()
+        if norm.startswith('images/'):
+            updated['background_image_path'] = bg_path.replace('\\', '/')
+        elif os.path.isabs(bg_path) and os.path.isfile(bg_path):
+            try:
+                dest_dir = os.path.join(images_dir, 'background')
+                os.makedirs(dest_dir, exist_ok=True)
+                base_name = os.path.basename(bg_path)
+                safe = re.sub(r'[^0-9A-Za-z._-]', '_', base_name) or 'bg'
+                dest = os.path.join(dest_dir, safe)
+                src_hash = _calc_file_hash(bg_path)
+                dst_hash = _calc_file_hash(dest) if os.path.exists(dest) else ''
+                if src_hash != dst_hash:
+                    _shutil.copy2(bg_path, dest)
+                    print(f"[ASSET-SYNC] Copied background image to images/background/{safe}")
+                updated['background_image_path'] = f"images/background/{safe}"
+            except Exception as e:
+                print(f"[ASSET-SYNC] background image copy failed: {e}")
+
+    # --- Slideshow folder ---
+    bg_folder = str((config or {}).get('background_folder') or '').strip()
+    if bg_folder:
+        norm = bg_folder.replace('\\', '/').lower()
+        if norm.startswith('images/'):
+            updated['background_folder'] = bg_folder.replace('\\', '/')
+        elif os.path.isabs(bg_folder) and os.path.isdir(bg_folder):
+            try:
+                dest_dir = os.path.join(images_dir, 'background_slideshow')
+                os.makedirs(dest_dir, exist_ok=True)
+                if not os.path.abspath(bg_folder).startswith(os.path.abspath(dest_dir) + os.sep):
+                    copied = 0
+                    for fname in os.listdir(bg_folder):
+                        if fname.lower().endswith(exts):
+                            src = os.path.join(bg_folder, fname)
+                            if not os.path.isfile(src):
+                                continue
+                            safe = re.sub(r'[^0-9A-Za-z._-]', '_', fname) or 'bg'
+                            dst = os.path.join(dest_dir, safe)
+                            src_hash = _calc_file_hash(src)
+                            dst_hash = _calc_file_hash(dst) if os.path.exists(dst) else ''
+                            if src_hash != dst_hash:
+                                _shutil.copy2(src, dst)
+                                copied += 1
+                    if copied > 0:
+                        print(f"[ASSET-SYNC] Copied {copied} slideshow image(s) to images/background_slideshow/")
+                updated['background_folder'] = "images/background_slideshow"
+            except Exception as e:
+                print(f"[ASSET-SYNC] slideshow folder copy failed: {e}")
+
+    return updated
+
+
+def resolve_background_path_local(rel_or_abs: str, base_dir: str, shared_folder: str = '') -> str:
+    """Resolve a background image/folder path that may be relative (images/...) or
+    absolute. Checks base_dir/images first, then the shared folder if provided.
+    Returns an existing absolute path, or '' if not found.
+    """
+    val = str(rel_or_abs or '').strip()
+    if not val:
+        return ''
+    norm = val.replace('\\', '/')
+    if norm.lower().startswith('images/'):
+        for root in (base_dir, str(shared_folder or '').strip()):
+            if not root:
+                continue
+            cand = os.path.join(root, norm.replace('/', os.sep))
+            if os.path.exists(cand):
+                return cand
+        return ''
+    # Absolute legacy path — use as-is if it exists
+    if os.path.isabs(val) and os.path.exists(val):
+        return val
+    return ''
+
+
 def normalize_db_image_assets(db_path: str, base_dir: str) -> int:
     """Mirror product/ad/closure image files that are stored with absolute local
     paths into base_dir/images/<category>/ and rewrite the DB column to a relative

@@ -37,24 +37,43 @@ echo.
 echo תיקיית עבודה: %CD%
 echo.
 
-echo [1/1] בונה חבילה משולבת (כל 3 העמדות)...
-pyinstaller SchoolPoints_All.spec --clean
+echo [1/3] בונה עמדת ניהול...
+pyinstaller SchoolPoints_Admin.spec --clean
 if %errorlevel% neq 0 (
-    echo ❌ שגיאה בבניית החבילה המשולבת!
+    echo ❌ שגיאה בבניית עמדת ניהול!
     pause
     exit /b 1
 )
-echo ✓ חבילה משולבת נבנתה בהצלחה
+echo ✓ עמדת ניהול נבנתה בהצלחה
+echo.
+
+echo [2/3] בונה עמדה ציבורית...
+pyinstaller SchoolPoints_Public.spec --clean
+if %errorlevel% neq 0 (
+    echo ❌ שגיאה בבניית עמדה ציבורית!
+    pause
+    exit /b 1
+)
+echo ✓ עמדה ציבורית נבנתה בהצלחה
+echo.
+
+echo [3/3] בונה עמדת קופה...
+pyinstaller SchoolPoints_Cashier.spec --clean
+if %errorlevel% neq 0 (
+    echo ❌ שגיאה בבניית עמדת קופה!
+    pause
+    exit /b 1
+)
+echo ✓ עמדת קופה נבנתה בהצלחה
 echo.
 
 echo סיכום:
-echo ✓ כל 3 העמדות נבנו בהצלחה בתיקייה אחת!
+echo ✓ כל 3 העמדות נבנו בהצלחה (כל אחת בתיקייה נפרדת)!
 echo.
-echo מיקום:
-echo   - dist\SchoolPoints_All\
-echo     * SchoolPoints_Admin.exe
-echo     * SchoolPoints_Public.exe
-echo     * SchoolPoints_Cashier.exe
+echo מיקומים:
+echo   - עמדת ניהול: dist\SchoolPoints_Admin\
+echo   - עמדה ציבורית: dist\SchoolPoints_Public\
+echo   - עמדת קופה: dist\SchoolPoints_Cashier\
 echo.
 
 echo יוצר version.json לעדכון...

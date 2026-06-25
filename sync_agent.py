@@ -172,6 +172,67 @@ def _get_config_file_path(base_dir: str) -> str:
     return os.path.join(base_dir, 'config.json')
 
 
+def _ensure_unique_station_id(base_dir: str, cfg: Dict[str, Any]) -> str:
+    """מחזיר station_id ייחודי וקבוע לתחנה זו.
+
+    קריטי: make_event_id משתמש ב-station_id ליצירת event_id. אם station_id ריק,
+    ה-event_id הופך ל-"unknown:{local_id}" ושתי תחנות שונות מייצרות אותו event_id
+    עבור שינויים שונים → השרת (INSERT OR IGNORE על (tenant_id, event_id)) מתעלם
+    מה-event של התחנה השנייה → תחנות לא מקבלות עדכונים אחת מהשנייה.
+
+    ה-station_id נשמר בקובץ local-only (ליד config המקומי) ולא ב-config.json
+    המשותף, כדי שכל מחשב יקבל מזהה שונה (כתיבה ל-shared הייתה משכפלת אותו מזהה).
+    """
+    try:
+        existing = str((cfg or {}).get('sync_station_id') or '').strip()
+    except Exception:
+        existing = ''
+    if existing:
+        return existing
+
+    # קובץ local-only ליד ה-config המקומי
+    try:
+        sid_path = os.path.join(os.path.dirname(_get_config_file_path(base_dir)) or base_dir, 'station_id.txt')
+    except Exception:
+        sid_path = os.path.join(base_dir, 'station_id.txt')
+
+    # נסה לקרוא מזהה קיים
+    try:
+        if os.path.isfile(sid_path):
+            with open(sid_path, 'r', encoding='utf-8') as f:
+                sid = str(f.read() or '').strip()
+            if sid:
+                try:
+                    cfg['sync_station_id'] = sid
+                except Exception:
+                    pass
+                return sid
+    except Exception:
+        pass
+
+    # ייצר מזהה חדש: hostname + סיומת אקראית (ייחודי לכל מחשב)
+    try:
+        host = str(socket.gethostname() or 'station').strip() or 'station'
+    except Exception:
+        host = 'station'
+    try:
+        sid = f"{host}-{uuid.uuid4().hex[:6]}"
+    except Exception:
+        sid = host
+
+    try:
+        os.makedirs(os.path.dirname(sid_path) or '.', exist_ok=True)
+        with open(sid_path, 'w', encoding='utf-8') as f:
+            f.write(sid)
+    except Exception:
+        pass
+    try:
+        cfg['sync_station_id'] = sid
+    except Exception:
+        pass
+    return sid
+
+
 def _is_unc_path(path: str) -> bool:
     try:
         p = str(path or '')
@@ -829,6 +890,16 @@ _SETTINGS_TO_CONFIG = {
     'system_settings': ['logo_path', 'campaign_name', 'photos_folder', 'show_stats', 'show_student_photo'],
     'display_settings': ['title_text', 'subtitle_text', 'logo_url', 'background_url', 'refresh_interval', 'font_size', 'dark_mode', 'show_clock', 'show_qr'],
     'upgrades_settings': ['auto_update', 'channel'],
+    # הגדרות תצוגה של העמדה הציבורית (רקע, פריסה, אוריינטציה) — מסונכרנות בין כל
+    # העמדות כולל עמדות מקוונות-בלבד. background_image_path/background_folder
+    # מומרים לנתיב יחסי (images/background/...) ע"י normalize_background_assets_for_sync
+    # כך שהם ניידים בין מחשבים והקובץ עצמו מסתנכרן דרך file-sync.
+    'public_display_settings': [
+        'theme', 'background_mode', 'background_layout', 'screen_orientation',
+        'background_template', 'background_color', 'panel_style',
+        'slideshow_display_mode', 'slideshow_grid_cols',
+        'background_image_path', 'background_folder',
+    ],
 }
 
 # Settings stored as JSON blobs in the settings table that map directly to config.json keys
@@ -2583,6 +2654,18 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
         # push_url, api_key, tenant_id already set from cloud config above
         print(f"[SYNC] Master mode: cloud sync with tenant_id={tenant_id}")
     station_id = str(cfg.get('sync_station_id') or '').strip()
+    # קריטי לסנכרון רב-תחנתי: ודא station_id ייחודי. אם ריק → event_id מתנגש בין
+    # מחשבים ("unknown:{local_id}") והשרת מתעלם מ-events כפולים, כך שתחנות לא
+    # מקבלות עדכונים אחת מהשנייה (הבאג שדווח: מחשב ראשי לא קולט שינויים).
+    if not station_id:
+        try:
+            station_id = _ensure_unique_station_id(base_dir, cfg)
+            print(f"[SYNC] Using station_id={station_id}")
+        except Exception:
+            try:
+                station_id = str(socket.gethostname() or 'station').strip() or 'station'
+            except Exception:
+                station_id = 'station'
     pull_url = _pull_url_from_push(push_url, cfg)
 
     snapshot_url = _snapshot_url_from_push(push_url, cfg)
@@ -2806,8 +2889,26 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                         assets_base = base_dir  # shared dir for all stations on this machine
                         # Normalize logo/photos into images/ before pushing
                         try:
-                            from sync_file_module import normalize_assets_for_sync, apply_pulled_assets, normalize_db_image_assets
+                            from sync_file_module import normalize_assets_for_sync, apply_pulled_assets, normalize_db_image_assets, normalize_background_assets_for_sync
                             normalize_assets_for_sync(assets_base, cfg)
+                            # Mirror the public-station background image / slideshow folder
+                            # into images/ and rewrite config to a RELATIVE path so it is
+                            # portable across stations (incl. cloud-only) and syncs via files.
+                            try:
+                                _bg_upd = normalize_background_assets_for_sync(assets_base, cfg)
+                                if isinstance(_bg_upd, dict) and _bg_upd:
+                                    _bg_cfg = _load_config(base_dir)
+                                    _bg_changed = False
+                                    for _bk, _bv in _bg_upd.items():
+                                        if str(_bg_cfg.get(_bk) or '') != str(_bv):
+                                            _bg_cfg[_bk] = _bv
+                                            cfg[_bk] = _bv
+                                            _bg_changed = True
+                                    if _bg_changed:
+                                        _save_config(base_dir, _bg_cfg)
+                                        print(f"[FILE-SYNC] Normalized background paths to relative: {_bg_upd}")
+                            except Exception as _bge:
+                                print(f"[FILE-SYNC] normalize_background warning: {_bge}")
                             # Mirror product/ad/closure images (absolute paths) into images/
                             # and rewrite the DB column to a relative path so they sync.
                             try:

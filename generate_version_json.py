@@ -2,7 +2,7 @@ import json
 import os
 from datetime import datetime
 
-APP_VERSION = "1.6.4"
+APP_VERSION = "1.6.5"
 
 
 def main():
@@ -17,7 +17,7 @@ def main():
         'version': APP_VERSION,
         'generated_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'download_url': '',
-        'message': 'עדכון גרסה 1.6.2: מניעת פתיחות כפולות, עיצוב חלון התחברות, בדיקת תוקף רישיון חודשי.'
+        'message': 'עדכון גרסה 1.6.5: תיקון סנכרון דו-כיווני בין עמדות (מזהה תחנה ייחודי), סנכרון הגדרות רקע/תצוגה לעמדות מקוונות, ותיקון הפעלת עמדה ציבורית.'
     }
 
     with open(out_path, 'w', encoding='utf-8') as f:
