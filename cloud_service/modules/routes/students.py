@@ -232,7 +232,7 @@ def web_students(request: Request):
 
         <script>
             let selectedId = null;
-            let _sortCol = 'class_name', _sortDir = 1;  // 1=asc, -1=desc
+            let _sortCol = null, _sortDir = 1;  // null = server order (serial, class, name)
             const rowsEl = document.getElementById('s_rows');
             const statusEl = document.getElementById('s_status');
             const searchEl = document.getElementById('s_search');
@@ -270,12 +270,13 @@ def web_students(request: Request):
             }
             function renderRows() {
                 if (!_allStudents || !_allStudents.length) return;
-                const sorted = [..._allStudents].sort((a,b) => {
+                const sorted = _sortCol ? [..._allStudents].sort((a,b) => {
                     let va = a[_sortCol], vb = b[_sortCol];
                     if (va == null) va = ''; if (vb == null) vb = '';
+                    if (_sortCol === 'serial_number') return _sortDir * ((parseInt(va)||0) - (parseInt(vb)||0));
                     if (typeof va === 'number' && typeof vb === 'number') return _sortDir*(va-vb);
                     return _sortDir * String(va).localeCompare(String(vb), 'he');
-                });
+                }) : _allStudents;
                 rowsEl.innerHTML = sorted.map((s,i) => `
                     <tr data-id="${s.id}" onclick="setSelected(${s.id})" class="${selectedId == s.id ? 'selected' : ''}">
                         <td class="stu-small" style="text-align:center; opacity:0.6;">${i+1}</td>
