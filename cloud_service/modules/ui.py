@@ -201,15 +201,43 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
         }
 
         .sidebar {
-          width: 260px;
-          min-width: 260px;
-          position: sticky;
-          top: 88px;
+          width: 280px;
+          min-width: 280px;
+          position: fixed;
+          top: 0;
+          right: 0;
+          height: 100vh;
+          overflow-y: auto;
           padding: 16px;
-          border-radius: 18px;
+          border-radius: 0;
+          transform: translateX(110%);
           transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-          z-index: 200;
+          z-index: 300;
+          margin: 0;
+          background: linear-gradient(180deg, #203a43, #2c5364);
         }
+        .sidebar.open { transform: translateX(0); }
+        #sidebar-backdrop {
+          display: none;
+          position: fixed;
+          inset: 0;
+          background: rgba(0,0,0,0.5);
+          z-index: 250;
+        }
+        .menu-toggle {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 42px;
+          height: 42px;
+          border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.2);
+          background: rgba(255,255,255,0.1);
+          color: #fff;
+          font-size: 20px;
+          cursor: pointer;
+        }
+        .menu-toggle:hover { background: rgba(255,255,255,0.2); }
         .side-title { font-weight: 950; opacity: .95; margin-bottom: 10px; }
         .side-links { display: flex; flex-direction: column; gap: 8px; }
         .s-tile {
@@ -235,7 +263,7 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
         .s-tile .icon { font-size: 20px; }
 
         /* Main Content */
-        .main-content { flex: 1; min-width: 0; max-width: 800px; }
+        .main-content { flex: 1; min-width: 0; width: 100%; }
         
         .page-card {
           background: var(--glass-bg);
@@ -347,7 +375,7 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
 
         @media (max-width: 900px) {
           .layout-container { flex-direction: column; align-items: center; }
-          .sidebar { width: 100%; min-width: 0; position: static; margin-bottom: 20px; }
+          .sidebar { width: min(320px, 90vw); min-width: 0; }
           .main-content { width: 100%; }
         }
       </style>
@@ -394,8 +422,13 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
         sidebar_block = ""
     else:
         sidebar_block = f"""
-          <aside class="sidebar glass">
-            <div class="side-title">תפריט</div>
+          <div id="sidebar-backdrop" onclick="toggleSidebar()"></div>
+          <aside id="app-sidebar" class="sidebar glass">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <div class="side-title" style="margin-bottom:0;">תפריט</div>
+              <button class="menu-toggle" onclick="toggleSidebar()" aria-label="סגור תפריט">✕</button>
+            </div>
+            <div style="margin:10px 0; border-top:1px solid rgba(255,255,255,0.1);"></div>
             <div class="side-links">
               {sidebar_html}
               <div style="margin:10px 0; border-top:1px solid rgba(255,255,255,0.1);"></div>
@@ -431,6 +464,7 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
             </div>
           </a>
           <div class="top-nav">
+            {'<button class="menu-toggle" onclick="toggleSidebar()" aria-label="פתח תפריט">☰</button>' if (custom_sidebar is None and not hide_sidebar) else ''}
             <a href="/web" class="btn-glass">אתר ראשי</a>
             <a href="/web/logout" class="btn-glass primary">יציאה</a>
           </div>
@@ -471,6 +505,13 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
       ['mousemove','keydown','click','scroll','touchstart'].forEach(function(e){{document.addEventListener(e,reset,{{passive:true}});}});
       reset();
     }})();
+    function toggleSidebar() {{
+      var sb = document.getElementById('app-sidebar');
+      var bd = document.getElementById('sidebar-backdrop');
+      if (!sb) return;
+      var open = sb.classList.toggle('open');
+      if (bd) bd.style.display = open ? 'block' : 'none';
+    }}
     </script>
     </body>
     </html>

@@ -28,7 +28,7 @@ def web_students(request: Request):
         <style>
         .stu-toolbar {
             position: sticky;
-            top: 0;
+            top: 64px;
             z-index: 50;
             background: rgba(15, 32, 39, 0.95);
             backdrop-filter: blur(12px);
@@ -39,7 +39,7 @@ def web_students(request: Request):
             flex-wrap: wrap;
             align-items: center;
             justify-content: space-between;
-            margin: -16px -16px 14px -16px;
+            margin: -24px -24px 14px -24px;
         }
         .stu-toolbar-left, .stu-toolbar-right { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
         .stu-btn {
