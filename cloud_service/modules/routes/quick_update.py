@@ -51,7 +51,7 @@ def api_bulk_qu(request: Request, payload: Dict[str, Any] = Body(...)):
                 tenant_id=tid, station_id='web',
                 entity_type='student_points', entity_id=str(s),
                 action_type='update',
-                payload={'student_id': s, 'old_points': old, 'new_points': nw, 'delta': nw - old, 'reason': rsn}
+                payload={'student_id': s, 'old_points': old, 'new_points': nw, 'delta': nw - old, 'reason': rsn, 'added_by': 'web', 'log_action_type': 'עדכון מהיר'}
             )
             upd += 1
         conn.commit()
@@ -76,8 +76,15 @@ def _collect(cur, mode, cn, si, sf, st2, ia):
     elif mode == 'students' and si:
         ids = [int(x) for x in si if int(x) > 0]
     elif mode == 'serial_range' and sf > 0 and st2 >= sf:
-        cur.execute(sql_placeholder("SELECT id FROM students WHERE serial_number>=? AND serial_number<=?"), (sf, st2))
-        ids = [int((r['id'] if isinstance(r, dict) else r[0])) for r in (cur.fetchall() or [])]
+        # Filter in Python to avoid PostgreSQL text-vs-integer comparison errors.
+        cur.execute("SELECT id, serial_number FROM students")
+        for r in (cur.fetchall() or []):
+            try:
+                sn = int((r['serial_number'] if isinstance(r, dict) else r[1]) or 0)
+            except Exception:
+                continue
+            if sf <= sn <= st2:
+                ids.append(int((r['id'] if isinstance(r, dict) else r[0])))
     elif mode == 'all_school' and ia:
         cur.execute("SELECT id FROM students")
         ids = [int((r['id'] if isinstance(r, dict) else r[0])) for r in (cur.fetchall() or [])]

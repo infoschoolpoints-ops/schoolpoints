@@ -5257,12 +5257,6 @@ class PublicStation:
         if local_sync_enabled and not local_sync_url and mode not in ('hybrid', 'cloud'):
             return
 
-        if mode == 'local' and local_sync_enabled and local_sync_role != 'client':
-            return
-
-        if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
-            return
-
         try:
             tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
         except Exception:
@@ -5275,9 +5269,18 @@ class PublicStation:
             push_url = str(cfg.get('sync_push_url') or '').strip()
         except Exception:
             push_url = ''
+        has_cloud_creds = bool(tenant_id and api_key and push_url)
+
+        # תחנה ראשית (master) עם local sync: לחסום רק אם אין בכלל פרטי ענן
+        # מוגדרים — אחרת התחנה הראשית לעולם לא תתעדכן מהענן (ראו admin_station.py).
+        if mode == 'local' and local_sync_enabled and local_sync_role != 'client' and not has_cloud_creds:
+            return
+
+        if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
+            return
 
         if not local_sync_enabled:
-            if not (tenant_id and api_key and push_url):
+            if not has_cloud_creds:
                 return
 
         try:

@@ -827,8 +827,13 @@ class AdminStation:
             btn = getattr(self, '_sync_btn', None)
             cfg = self.load_app_config() or {}
             mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
-            if mode not in ('hybrid', 'cloud'):
-                # מצב מקומי — כפתור Excel רגיל
+            has_cloud = bool(
+                str(cfg.get('sync_tenant_id') or '').strip() and
+                str(cfg.get('sync_api_key') or '').strip() and
+                str(cfg.get('sync_push_url') or '').strip()
+            )
+            if mode not in ('hybrid', 'cloud') and not has_cloud:
+                # מצב מקומי לגמרי — כפתור סנכרון רגיל
                 if btn:
                     btn.configure(text='🔄 סינכרון', bg='#9b59b6')
                 try:
@@ -861,11 +866,15 @@ class AdminStation:
             pass
 
     def _manual_cloud_sync(self) -> None:
-        """סנכרון ענן ידני מהאינדיקטור."""
+        """סנכרון ענן ידני מהאינדיקטור — פועל גם בתחנת ראשית עם local sync אם יש קרדנציאלס ענן."""
         try:
             cfg = self.load_app_config() or {}
-            mode = str(cfg.get('deployment_mode') or 'local').strip().lower()
-            if mode not in ('hybrid', 'cloud'):
+            has_cloud = bool(
+                str(cfg.get('sync_tenant_id') or '').strip() and
+                str(cfg.get('sync_api_key') or '').strip() and
+                str(cfg.get('sync_push_url') or '').strip()
+            )
+            if not has_cloud:
                 return
         except Exception:
             return
@@ -1074,14 +1083,6 @@ class AdminStation:
             print("[ADMIN] Returning: local_sync_enabled but no local_sync_url and mode is local")
             return
 
-        if mode == 'local' and local_sync_enabled and local_sync_role != 'client':
-            print(f"[ADMIN] Returning: mode=local, local_sync_enabled=True, but role={local_sync_role} != client")
-            return
-
-        if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
-            print("[ADMIN] Returning: mode not hybrid/cloud and local_sync not enabled")
-            return
-
         try:
             tenant_id = str(cfg.get('sync_tenant_id') or '').strip()
         except Exception:
@@ -1094,9 +1095,22 @@ class AdminStation:
             push_url = str(cfg.get('sync_push_url') or '').strip()
         except Exception:
             push_url = ''
+        has_cloud_creds = bool(tenant_id and api_key and push_url)
+
+        # תחנה ראשית (master) עם local sync: אם מוגדרים פרטי ענן, יש להריץ את
+        # sync_agent גם עבורה (main_loop יודע לשמור קרדנציאלס ענן ל-master
+        # ולבצע push/pull מול הענן, במקביל לשרת ה-local sync). לחסום רק אם
+        # אין בכלל פרטי ענן מוגדרים — אחרת התחנה הראשית לעולם לא תתעדכן מהענן.
+        if mode == 'local' and local_sync_enabled and local_sync_role != 'client' and not has_cloud_creds:
+            print(f"[ADMIN] Returning: mode=local, local_sync_enabled=True, role={local_sync_role} != client, and no cloud credentials configured")
+            return
+
+        if mode not in ('hybrid', 'cloud') and not local_sync_enabled:
+            print("[ADMIN] Returning: mode not hybrid/cloud and local_sync not enabled")
+            return
 
         if not local_sync_enabled:
-            if not (tenant_id and api_key and push_url):
+            if not has_cloud_creds:
                 return
 
         try:
@@ -3236,9 +3250,17 @@ class AdminStation:
             hb_str = ''
             if _hbd and _hbm:
                 _hm_names = {1:'ניסן',2:'אייר',3:'סיון',4:'תמוז',5:'אב',6:'אלול',7:'תשרי',8:'חשון',9:'כסלו',10:'טבת',11:'שבט',12:'אדר',13:"אדר ב'"}
-                hb_str = f"{_hbd} {_hm_names.get(int(_hbm), str(_hbm))}"
+                try:
+                    _hbd_disp = hebrew_day_display_list()[int(_hbd)] if 0 < int(_hbd) <= 30 else str(_hbd)
+                except Exception:
+                    _hbd_disp = str(_hbd)
+                hb_str = f"{_hbd_disp} {_hm_names.get(int(_hbm), str(_hbm))}"
                 if _hby:
-                    hb_str += f" {_hby}"
+                    try:
+                        _hby_disp = hebrew_year_display(int(_hby)) or str(_hby)
+                    except Exception:
+                        _hby_disp = str(_hby)
+                    hb_str += f" {_hby_disp}"
 
             item_id = self.tree.insert('', tk.END, values=(
                 student['points'],
@@ -5496,6 +5518,8 @@ class AdminStation:
 
         mode_var = tk.StringVar(value="regular")
         date_var = tk.StringVar(value=date.today().strftime("%d.%m.%Y"))
+        range_start_var = tk.StringVar(value=date.today().replace(day=1).strftime("%d.%m.%Y"))
+        range_end_var = tk.StringVar(value=date.today().strftime("%d.%m.%Y"))
         bonus_var = tk.StringVar(value="בחר בונוס")
         student_var = tk.StringVar(value="בחר תלמיד")
         teacher_var = tk.StringVar(value="בחר מורה")
@@ -5635,6 +5659,15 @@ class AdminStation:
         )
         rb_bonus.pack(anchor='w')
 
+        rb_bonus_range = tk.Radiobutton(
+            mode_frame,
+            text="נוכחות לפי בונוס נבחר (טווח תאריכים)",
+            variable=mode_var,
+            value="bonus_range",
+            bg='#f0f0f0'
+        )
+        rb_bonus_range.pack(anchor='w')
+
         rb_all = tk.Radiobutton(
             mode_frame,
             text="כל הבונוסים וכל ההיסטוריה (גליון נפרד לכל בונוס)",
@@ -5699,6 +5732,13 @@ class AdminStation:
         )
         bonus_combo.pack(side=tk.RIGHT, padx=(0, 5))
         bonus_combo.set("בחר בונוס" if bonus_choices else "אין בונוסים")
+
+        # טווח תאריכים (למצב 'נוכחות לפי בונוס נבחר - טווח תאריכים')
+        range_frame = tk.Frame(details_frame, bg='#f0f0f0')
+        tk.Label(range_frame, text="עד (DD.MM.YYYY):", bg='#f0f0f0').pack(side=tk.RIGHT)
+        tk.Entry(range_frame, textvariable=range_end_var, width=12, justify='right').pack(side=tk.RIGHT, padx=(0, 5))
+        tk.Label(range_frame, text="מתאריך (DD.MM.YYYY):", bg='#f0f0f0').pack(side=tk.RIGHT, padx=(10, 0))
+        tk.Entry(range_frame, textvariable=range_start_var, width=12, justify='right').pack(side=tk.RIGHT, padx=(0, 5))
 
         # בחירת תלמיד (להיסטוריית נקודות)
         student_frame = tk.Frame(details_frame, bg='#f0f0f0')
@@ -5981,11 +6021,18 @@ class AdminStation:
                 teacher_frame.pack_forget()
             except Exception:
                 pass
+            try:
+                range_frame.pack_forget()
+            except Exception:
+                pass
 
             if m == 'day':
                 date_frame.pack(fill=tk.X, pady=(4, 4))
             elif m == 'bonus':
                 bonus_frame.pack(fill=tk.X, pady=(4, 4))
+            elif m == 'bonus_range':
+                bonus_frame.pack(fill=tk.X, pady=(4, 4))
+                range_frame.pack(fill=tk.X, pady=(4, 4))
             elif m == 'points_history':
                 student_frame.pack(fill=tk.X, pady=(4, 4))
             elif m == 'teacher_actions':
@@ -6008,20 +6055,22 @@ class AdminStation:
         mode_var.trace_add('write', _set_visibility)
         _set_visibility()
 
-        result = {'mode': None, 'date_iso': None, 'bonus_id': None, 'student_id': None, 'teacher_id': None, 'output_type': None}
+        result = {'mode': None, 'date_iso': None, 'bonus_id': None, 'student_id': None, 'teacher_id': None, 'output_type': None, 'start_date_iso': None, 'end_date_iso': None}
 
-        def _parse_date_iso():
+        def _parse_dmy(txt):
             try:
-                txt = (date_var.get() or '').strip()
+                txt = (txt or '').strip()
             except Exception:
                 txt = ''
             if not txt:
                 return None
             try:
-                dt = datetime.strptime(txt, '%d.%m.%Y').date()
-                return dt.isoformat()
+                return datetime.strptime(txt, '%d.%m.%Y').date().isoformat()
             except Exception:
                 return None
+
+        def _parse_date_iso():
+            return _parse_dmy(date_var.get())
 
         def _resolve_bonus_id():
             try:
@@ -6092,6 +6141,22 @@ class AdminStation:
                     return
                 result['mode'] = m
                 result['bonus_id'] = bid
+            elif m == 'bonus_range':
+                bid = _resolve_bonus_id()
+                if not bid:
+                    messagebox.showerror("שגיאה", "יש לבחור בונוס")
+                    return
+                s_iso = _parse_dmy(range_start_var.get())
+                e_iso = _parse_dmy(range_end_var.get())
+                if not s_iso or not e_iso:
+                    messagebox.showerror("שגיאה", "טווח תאריכים לא תקין. יש להזין בפורמט DD.MM.YYYY")
+                    return
+                if s_iso > e_iso:
+                    s_iso, e_iso = e_iso, s_iso
+                result['mode'] = m
+                result['bonus_id'] = bid
+                result['start_date_iso'] = s_iso
+                result['end_date_iso'] = e_iso
             elif m == 'points_history':
                 sid = _resolve_student_id()
                 if not sid:
@@ -6130,8 +6195,8 @@ class AdminStation:
 
         self.root.wait_window(dialog)
         if result['mode'] is None:
-            return None, None, None, None, None, None
-        return result['mode'], result['date_iso'], result['bonus_id'], result['student_id'], result['teacher_id'], result['output_type']
+            return None, None, None, None, None, None, None, None
+        return result['mode'], result['date_iso'], result['bonus_id'], result['student_id'], result['teacher_id'], result['output_type'], result['start_date_iso'], result['end_date_iso']
     
     def _ask_export_options_old2(self):
         dialog = tk.Toplevel(self.root)
@@ -6310,7 +6375,7 @@ class AdminStation:
             except Exception:
                 allowed_classes = []
 
-        mode, target_date_iso, bonus_id, student_id, teacher_id, output_type = self.ask_export_options()
+        mode, target_date_iso, bonus_id, student_id, teacher_id, output_type, start_date_iso, end_date_iso = self.ask_export_options()
         if mode is None:
             return
 
@@ -6338,7 +6403,7 @@ class AdminStation:
                 student_name_for_file = ''
 
         bonus_name_for_file = ''
-        if mode == "bonus" and bonus_id:
+        if mode in ("bonus", "bonus_range") and bonus_id:
             try:
                 bonuses = self.db.get_all_time_bonuses() or []
                 b = next((x for x in bonuses if int(x.get('id', 0) or 0) == int(bonus_id)), None)
@@ -6373,6 +6438,22 @@ class AdminStation:
             base = "נוכחות לפי בונוס"
             if bonus_name_for_file:
                 base = f"{base} - {bonus_name_for_file}"
+            initial_name = f"{base}.xlsx"
+        elif mode == "bonus_range":
+            base = "נוכחות לפי בונוס"
+            if bonus_name_for_file:
+                base = f"{base} - {bonus_name_for_file}"
+            def _fmt_dmy(d_iso):
+                try:
+                    if d_iso and len(d_iso) >= 10:
+                        return f"{d_iso[8:10]}.{d_iso[5:7]}.{d_iso[0:4]}"
+                except Exception:
+                    pass
+                return ""
+            s_part = _fmt_dmy(start_date_iso)
+            e_part = _fmt_dmy(end_date_iso)
+            if s_part and e_part:
+                base = f"{base} ({s_part} - {e_part})"
             initial_name = f"{base}.xlsx"
         elif mode == "points_history":
             base = "היסטוריית נקודות"
@@ -6651,7 +6732,9 @@ class AdminStation:
                 mode=mode,
                 target_date_iso=target_date_iso,
                 bonus_id=bonus_id,
-                allowed_classes=allowed_classes
+                allowed_classes=allowed_classes,
+                start_date_iso=start_date_iso,
+                end_date_iso=end_date_iso
             )
 
         if success and mode == "regular" and not is_preview:
@@ -7215,8 +7298,38 @@ class AdminStation:
             import traceback
             safe_print(traceback.format_exc())
     
+    def _get_db_change_signature(self) -> str:
+        """Return a lightweight signature of recent DB changes for auto-refresh detection."""
+        try:
+            db_path = getattr(self.db, 'db_path', None)
+            if not db_path:
+                return ''
+            import sqlite3
+            conn = sqlite3.connect(db_path, timeout=3)
+            try:
+                cur = conn.cursor()
+                max_change = 0
+                max_student_ts = ''
+                try:
+                    cur.execute('SELECT MAX(id) FROM change_log')
+                    r = cur.fetchone()
+                    max_change = int(r[0] or 0)
+                except Exception:
+                    pass
+                try:
+                    cur.execute("SELECT MAX(updated_at) FROM students")
+                    r = cur.fetchone()
+                    max_student_ts = str(r[0] or '')
+                except Exception:
+                    pass
+                return f"{max_change}:{max_student_ts}"
+            finally:
+                conn.close()
+        except Exception:
+            return ''
+
     def auto_refresh_table(self):
-        """רענון אוטומטי של הטבלה כל 5 דקות (לקליטת עדכונים מהעמדה הציבורית)"""
+        """רענון אוטומטי של הטבלה כל 5 שניות (לקליטת עדכונים מתחנות אחרות ומהענן)"""
         try:
             inline_editor = getattr(self, 'inline_editor', None)
             search_active = False
@@ -7229,18 +7342,23 @@ class AdminStation:
             except Exception:
                 search_active = False
             if inline_editor is None and not search_active:
-                self.load_students(keep_selection=True)
-                # שחזור מיון נוכחי אם קיים
-                try:
-                    sort_col = getattr(self, '_current_sort_col', None)
-                    if sort_col:
-                        sort_rev = getattr(self, '_current_sort_reverse', False)
-                        self._apply_sort(sort_col, sort_rev)
-                except Exception:
-                    pass
+                # רענן רק אם ה-DB השתנה (חיסכון בביצועים ובהבהובי מסך)
+                sig = self._get_db_change_signature()
+                last_sig = getattr(self, '_last_db_change_signature', None)
+                if sig and sig != last_sig:
+                    self._last_db_change_signature = sig
+                    self.load_students(keep_selection=True)
+                    # שחזור מיון נוכחי אם קיים
+                    try:
+                        sort_col = getattr(self, '_current_sort_col', None)
+                        if sort_col:
+                            sort_rev = getattr(self, '_current_sort_reverse', False)
+                            self._apply_sort(sort_col, sort_rev)
+                    except Exception:
+                        pass
         except Exception as e:
             safe_print(f"⚠️ שגיאה ברענון אוטומטי: {e}")
-        
+
         # קביעת הרענון הבא
         try:
             self.auto_refresh_job = self.root.after(self.auto_refresh_interval, self.auto_refresh_table)
@@ -25866,8 +25984,8 @@ class AdminStation:
         except Exception:
             _start_background_sync()
 
-        # רענון אוטומטי של הטבלה כל 5 דקות (לעדכונים מהעמדה הציבורית)
-        self.auto_refresh_interval = 300000  # 5 דקות
+        # רענון אוטומטי של הטבלה כל 5 שניות (לעדכונים מתחנות אחרות ומהענן)
+        self.auto_refresh_interval = 5000  # 5 שניות
         try:
             self.auto_refresh_job = self.root.after(self.auto_refresh_interval, self.auto_refresh_table)
         except Exception:

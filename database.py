@@ -535,7 +535,16 @@ class Database:
         default_user_db = None
         # ברירת מחדל: איתור קובץ ה-DB לפי הגדרות רשת/קובץ, ואם אין – תיקיית נתונים למשתמש
         if db_path is None:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
+            # בבילד frozen (PyInstaller) – נשתמש בתיקיית קובץ ה-EXE ולא בתיקיית __file__
+            # (ב-onefile תיקיית __file__ היא תיקיית _MEIPASS זמנית שנמחקת בכל הרצה → אובדן נתונים)
+            import sys as _sys
+            try:
+                if bool(getattr(_sys, 'frozen', False)):
+                    base_dir = os.path.dirname(os.path.abspath(_sys.executable))
+                else:
+                    base_dir = os.path.dirname(os.path.abspath(__file__))
+            except Exception:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
 
             # קריאת הגדרות מ-config.json "חי" (אם קיים) במיקום כתיב, עם נפילה חזרה לקובץ המובנה
             config_db_path = None
@@ -5065,7 +5074,12 @@ class Database:
                         entity_type='student_points',
                         entity_id=str(student_id or ''),
                         action_type='update',
-                        payload={'old_points': int(old_points), 'new_points': int(new_points), 'reason': 'קניה בקופה'}
+                        payload={
+                            'old_points': int(old_points),
+                            'new_points': int(new_points),
+                            'reason': 'קניה בקופה',
+                            'log_action_type': 'purchase'
+                        }
                     )
                 except Exception:
                     pass
@@ -5925,7 +5939,12 @@ class Database:
                         entity_type='student_points',
                         entity_id=str(sid),
                         action_type='update',
-                        payload={'old_points': int(old_points), 'new_points': int(new_points), 'reason': 'ביטול קנייה'}
+                        payload={
+                        'old_points': int(old_points),
+                        'new_points': int(new_points),
+                        'reason': 'ביטול קנייה',
+                        'log_action_type': 'purchase'
+                    }
                     )
                 except Exception:
                     pass
@@ -6181,7 +6200,12 @@ class Database:
                         entity_type='student_points',
                         entity_id=str(student_id or ''),
                         action_type='update',
-                        payload={'old_points': int(old_points), 'new_points': int(new_points), 'reason': 'קניה בקופה'}
+                        payload={
+                            'old_points': int(old_points),
+                            'new_points': int(new_points),
+                            'reason': 'קניה בקופה',
+                            'log_action_type': 'purchase'
+                        }
                     )
                 except Exception:
                     pass
@@ -7098,7 +7122,12 @@ class Database:
                         entity_type='student_points',
                         entity_id=str(student_id or ''),
                         action_type='update',
-                        payload={'old_points': int(old_points), 'new_points': int(new_points), 'reason': 'קניה בקופה'}
+                        payload={
+                            'old_points': int(old_points),
+                            'new_points': int(new_points),
+                            'reason': 'קניה בקופה',
+                            'log_action_type': 'purchase'
+                        }
                     )
                 except Exception:
                     pass
@@ -7798,7 +7827,8 @@ class Database:
                         'old_points': int(old_points),
                         'new_points': int(points),
                         'reason': str(reason or '').strip(),
-                        'added_by': str(added_by or '').strip()
+                        'added_by': str(added_by or '').strip(),
+                        'log_action_type': str(action_type or '').strip(),
                     }
                 )
             except Exception:
@@ -8377,7 +8407,8 @@ class Database:
                                 'old_points': int(old_points),
                                 'new_points': int(new_points),
                                 'reason': str(reason or '').strip(),
-                                'added_by': str(added_by or '').strip()
+                                'added_by': str(added_by or '').strip(),
+                                'log_action_type': 'עדכון מהיר'
                             }
                         )
                     except Exception:

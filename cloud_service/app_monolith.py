@@ -4454,7 +4454,8 @@ def api_students_manual_arrival(
             _record_tenant_change(tenant_id, 'student_points', sid, 'update', {
                 'old_points': old_points,
                 'new_points': new_points,
-                'reason': f"תיקוף ידני: {d_str} {t_str} ({bonus_name})"
+                'reason': f"תיקוף ידני: {d_str} {t_str} ({bonus_name})",
+                'log_action_type': 'manual_arrival'
             })
             if tbg_id:
                 _record_tenant_change(tenant_id, 'time_bonus_given', tbg_id, 'create', {
@@ -5905,6 +5906,8 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
             (final_points, student_id)
         )
         try:
+            log_action = _safe_str(payload.get('log_action_type') or '').strip() or 'sync'
+            actor = _safe_str(payload.get('added_by') or '').strip() or 'sync'
             cur.execute(
                 _sql_placeholder(
                     '''
@@ -5912,7 +5915,7 @@ def _apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     '''
                 ),
-                (int(student_id), int(cur_points), int(final_points), int(final_points - cur_points), reason, 'sync', 'sync')
+                (int(student_id), int(cur_points), int(final_points), int(final_points - cur_points), reason, actor, log_action)
             )
         except Exception:
             pass
@@ -12090,7 +12093,7 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                                 entity_type='student_points',
                                 entity_id=str(sid),
                                 action_type='update',
-                                payload={'old_points': current_points, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name}
+                                payload={'old_points': current_points, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name, 'log_action_type': 'Excel'}
                             )
                         except: pass
 
@@ -12139,7 +12142,7 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                                 entity_type='student_points',
                                 entity_id=str(new_sid),
                                 action_type='update',
-                                payload={'old_points': 0, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name}
+                                payload={'old_points': 0, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name, 'log_action_type': 'Excel'}
                             )
                         except: pass
 
@@ -14561,6 +14564,7 @@ def api_students_points_delta(request: Request, payload: StudentPointsDeltaPaylo
                     'new_points': int(new_p),
                     'reason': str(payload.reason or '').strip() or 'ווב',
                     'added_by': str(teacher_name),
+                    'log_action_type': 'עדכון מהיר',
                 },
                 created_at=None,
             )
@@ -14832,6 +14836,7 @@ def api_students_quick_update(request: Request, payload: StudentQuickUpdatePaylo
                             'new_points': int(new_points),
                             'reason': str(reason),
                             'added_by': str(teacher_name),
+                            'log_action_type': 'עדכון מהיר',
                         },
                         created_at=None,
                     )

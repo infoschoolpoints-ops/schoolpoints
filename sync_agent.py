@@ -1911,8 +1911,9 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
             action_type = str(ev.get('action_type') or '').strip()
             entity_id = str(ev.get('entity_id') or '').strip()
             # Skip log-only event types that don't need to be applied
-            # (card_validation, anti_spam_event, swipe_log are just logs)
-            if entity_type in ('card_validation', 'anti_spam_event', 'swipe_log'):
+            # (anti_spam_event, swipe_log are just logs; card_validation is
+            # handled below to sync 'תיקוף אחרון' — last_swiped_at)
+            if entity_type in ('anti_spam_event', 'swipe_log'):
                 if event_id:
                     _mark_event_applied(conn, event_id)
                 continue
@@ -1923,6 +1924,35 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
             except Exception:
                 payload = {}
             _ev_id_short = str(ev.get('id') or '')
+
+            if entity_type == 'card_validation':
+                try:
+                    sid = int(entity_id or payload.get('student_id') or 0)
+                    ev_created_at = str(ev.get('created_at') or '').strip()
+                    if sid > 0:
+                        if ev_created_at:
+                            cur.execute(
+                                '''
+                                UPDATE students
+                                   SET total_swipes = COALESCE(total_swipes, 0) + 1,
+                                       last_swiped_at = CASE
+                                           WHEN last_swiped_at IS NULL OR last_swiped_at < ?
+                                           THEN ? ELSE last_swiped_at END
+                                 WHERE id = ?
+                                ''',
+                                (ev_created_at, ev_created_at, int(sid))
+                            )
+                        else:
+                            cur.execute(
+                                'UPDATE students SET total_swipes = COALESCE(total_swipes, 0) + 1 WHERE id = ?',
+                                (int(sid),)
+                            )
+                        applied += 1
+                except Exception as e:
+                    print(f"[SYNC] card_validation apply error: {e}")
+                if event_id:
+                    _mark_event_applied(conn, event_id)
+                continue
 
             if entity_type == 'student_points' and action_type == 'update':
                 sid = int(entity_id or '0')
@@ -1958,12 +1988,14 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                 cur.execute('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', (int(final_points), int(sid)))
                 try:
                     reason = str(payload.get('reason') or '').strip()
+                    actor = str(payload.get('added_by') or '').strip() or 'sync'
+                    log_action = str(payload.get('log_action_type') or '').strip() or 'sync'
                     cur.execute(
                         '''
                         INSERT INTO points_log (student_id, old_points, new_points, delta, reason, actor_name, action_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
                         ''',
-                        (int(sid), int(cur_points), int(final_points), int(final_points - cur_points), reason, 'sync', 'sync')
+                        (int(sid), int(cur_points), int(final_points), int(final_points - cur_points), reason, actor, log_action)
                     )
                 except Exception:
                     pass
@@ -2475,6 +2507,37 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                     print(f"[APPLY] UNHANDLED #{_ev_id_short} type={entity_type}/{action_type} eid={entity_id}")
                 except Exception:
                     pass
+            # Propagate cloud/web events to local LAN clients: write a synced change_log
+            # entry on the master so that stations pulling from the local sync server
+            # receive the same event (e.g. updates done via the web admin).
+            if not is_local_client and event_id and entity_type:
+                try:
+                    cur.execute('SELECT 1 FROM change_log WHERE event_id = ? LIMIT 1', (str(event_id),))
+                    if not cur.fetchone():
+                        # Preserve the Hebrew action category in change_log so the local
+                        # "last update" query recognises web/quick updates.
+                        try:
+                            _payload_obj = json.loads(payload_json or '{}') if payload_json else {}
+                        except Exception:
+                            _payload_obj = {}
+                        _log_action_type = str(_payload_obj.get('log_action_type') or action_type or 'update')
+                        cur.execute(
+                            '''INSERT INTO change_log (entity_type, entity_id, action_type, payload_json, event_id, station_id, created_at, synced_at)
+                               VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)''',
+                            (
+                                str(entity_type),
+                                str(entity_id or ''),
+                                _log_action_type,
+                                str(payload_json or '{}'),
+                                str(event_id),
+                                str(local_station_id or ev.get('station_id') or 'web')
+                            )
+                        )
+                except Exception as _clog_err:
+                    try:
+                        print(f"[APPLY] change_log replay insert error: {_clog_err}")
+                    except Exception:
+                        pass
             if event_id:
                 _mark_event_applied(conn, event_id)
         except Exception as _apply_ex:

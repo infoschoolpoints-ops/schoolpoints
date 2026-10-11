@@ -139,10 +139,11 @@ def web_students(request: Request):
                   <div class="form-group"><label>נקודות</label><input type="number" id="m_points" class="form-input"></div>
                   <div class="form-group"><label>מס'/נתיב תמונה</label><input id="m_photo_number" class="form-input"></div>
                 </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;">
                   <div class="form-group"><label>מגדר</label><select id="m_gender" class="form-input"><option value="">—</option><option value="M">בן</option><option value="F">בת</option></select></div>
                   <div class="form-group"><label>יום (עברי)</label><select id="m_hb_day" class="form-input"><option value="">—</option></select></div>
                   <div class="form-group"><label>חודש (עברי)</label><select id="m_hb_month" class="form-input"><option value="">—</option><option value="7">תשרי</option><option value="8">חשון</option><option value="9">כסלו</option><option value="10">טבת</option><option value="11">שבט</option><option value="12">אדר</option><option value="13">אדר ב'</option><option value="1">ניסן</option><option value="2">אייר</option><option value="3">סיון</option><option value="4">תמוז</option><option value="5">אב</option><option value="6">אלול</option></select></div>
+                  <div class="form-group"><label>שנה (עברי)</label><input type="number" id="m_hb_year" class="form-input" placeholder="לדוג' 5786"></div>
                 </div>
                 <div class="form-group"><label>הודעה פרטית</label><input id="m_private_message" class="form-input"></div>
                 <label style="display:flex;align-items:center;gap:8px;margin-top:8px;"><input type="checkbox" id="m_is_free_fix_blocked" style="width:18px;height:18px;"> חסום לתיקון חופשי</label>
@@ -229,7 +230,7 @@ def web_students(request: Request):
                         <td style="padding:10px; font-weight:bold;">${esc(s.first_name)}</td>
                         <td style="padding:10px;">${esc(s.last_name)}</td>
                         <td class="col_class" style="padding:10px;">${esc(s.class_name)}</td>
-                        <td class="col_points" style="padding:10px; color:#2ecc71; font-weight:bold;">${s.points}</td>
+                        <td class="col_points" style="padding:10px; color:#2ecc71; font-weight:bold;" title="לחץ פעמיים לעריכה" ondblclick="editPoints(event, ${s.id}, ${s.points})">${s.points}</td>
                         <td class="col_swipe" style="padding:10px; font-size:12px;">${fmtDate(s.last_swiped_at)}</td>
                         <td class="col_bday" style="padding:10px; font-size:12px;">${fmtBday(s)}</td>
                         <td class="col_msg" style="padding:10px; opacity:0.8;">${esc(s.private_message)}</td>
@@ -262,6 +263,7 @@ def web_students(request: Request):
             const mGender = document.getElementById('m_gender');
             const mHbDay = document.getElementById('m_hb_day');
             const mHbMonth = document.getElementById('m_hb_month');
+            const mHbYear = document.getElementById('m_hb_year');
             const bulkModal = document.getElementById('bulk_modal');
             // Populate hebrew days 1-30
             for(let i=1;i<=30;i++){const o=document.createElement('option');o.value=i;o.textContent=i;mHbDay.appendChild(o);}
@@ -273,12 +275,34 @@ def web_students(request: Request):
                 if (!d) return '-';
                 try { return d.replace('T',' ').substring(0,16); } catch(e) { return d; }
             }
-            const hMonths = ['','תשרי','חשון','כסלו','טבת','שבט','אדר','ניסן','אייר','סיון','תמוז','אב','אלול'];
+            const hMonths = {1:'ניסן',2:'אייר',3:'סיון',4:'תמוז',5:'אב',6:'אלול',7:'תשרי',8:'חשון',9:'כסלו',10:'טבת',11:'שבט',12:'אדר',13:"אדר ב'"};
+            function numToHebLetters(n) {
+                n = parseInt(n) || 0;
+                if (n <= 0) return '';
+                const ones = ['', 'א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ז', 'ח', 'ט'];
+                const tens = ['', 'י', 'כ', 'ל', 'מ', 'נ', 'ס', 'ע', 'פ', 'צ'];
+                const hundreds = ['', 'ק', 'ר', 'ש', 'ת'];
+                let parts = [];
+                while (n >= 400) { parts.push('ת'); n -= 400; }
+                if (n >= 100) { parts.push(hundreds[Math.floor(n / 100)]); n %= 100; }
+                if (n === 15) { parts.push('ט', 'ו'); n = 0; }
+                else if (n === 16) { parts.push('ט', 'ז'); n = 0; }
+                if (n >= 10) { parts.push(tens[Math.floor(n / 10)]); n %= 10; }
+                if (n > 0) parts.push(ones[n]);
+                let raw = parts.join('');
+                if (!raw) return '';
+                if (raw.length === 1) return raw + "'";
+                return raw.slice(0, -1) + '"' + raw.slice(-1);
+            }
             function fmtBday(s) {
                 if (!s.hebrew_birth_day && !s.hebrew_birth_month) return '-';
-                let d = s.hebrew_birth_day || '?';
+                let d = numToHebLetters(s.hebrew_birth_day) || '?';
                 let m = hMonths[s.hebrew_birth_month] || '?';
-                return d + ' ' + m;
+                let out = d + ' ' + m;
+                if (s.hebrew_birth_year) {
+                    out += ' ' + (numToHebLetters(parseInt(s.hebrew_birth_year) % 1000) || s.hebrew_birth_year);
+                }
+                return out;
             }
 
             function setSelected(id) {
@@ -332,6 +356,62 @@ def web_students(request: Request):
                 modal.style.display = 'none';
             }
 
+            function editPoints(event, id, current) {
+                event.stopPropagation();
+                const cell = event.currentTarget;
+                if (cell.querySelector('input')) return;
+                const inp = document.createElement('input');
+                inp.type = 'number';
+                inp.value = current;
+                inp.style.width = '80px';
+                inp.style.fontSize = '16px';
+                inp.style.textAlign = 'center';
+                inp.style.padding = '4px';
+                inp.style.border = '1px solid #2ecc71';
+                inp.style.borderRadius = '6px';
+                inp.style.color = '#1f2d3a';
+                inp.style.background = '#fff';
+                cell.innerHTML = '';
+                cell.appendChild(inp);
+                inp.focus();
+                inp.select();
+                function finish() {
+                    const val = parseInt(inp.value || 0);
+                    if (isNaN(val) || val < 0) { renderRows(); return; }
+                    if (val === current) { renderRows(); return; }
+                    submitInlinePoints(id, val, cell);
+                }
+                inp.addEventListener('blur', finish);
+                inp.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); finish(); }
+                    if (e.key === 'Escape') { e.preventDefault(); renderRows(); }
+                });
+            }
+
+            async function submitInlinePoints(id, newPoints, cell) {
+                cell.textContent = '...';
+                try {
+                    const resp = await fetch('/api/students/quick-points', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'include',
+                        body: JSON.stringify({student_id: id, delta: newPoints, mode: 'set', reason: 'עדכון נקודות מהטבלה'})
+                    });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const data = await resp.json();
+                    if (data.ok) {
+                        const stu = _allStudents.find(s => s.id === id);
+                        if (stu) stu.points = data.new_points;
+                        load();
+                    } else {
+                        throw new Error(data.detail || 'error');
+                    }
+                } catch(e) {
+                    alert('שגיאה בעדכון נקודות: ' + e);
+                    load();
+                }
+            }
+
             function openAdd() {
                 document.getElementById('s_modal_title').textContent = 'תלמיד חדש';
                 mId.value = '';
@@ -348,6 +428,7 @@ def web_students(request: Request):
                 mGender.value = '';
                 mHbDay.value = '';
                 mHbMonth.value = '';
+                mHbYear.value = '';
                 openModal();
             }
 
@@ -373,6 +454,7 @@ def web_students(request: Request):
                     mGender.value = s.gender || '';
                     mHbDay.value = s.hebrew_birth_day || '';
                     mHbMonth.value = s.hebrew_birth_month || '';
+                    mHbYear.value = s.hebrew_birth_year || '';
                     
                     openModal();
                 } catch(e) {
@@ -395,7 +477,8 @@ def web_students(request: Request):
                     photo_number: mPhoto.value || null,
                     gender: mGender.value || null,
                     hebrew_birth_day: mHbDay.value ? parseInt(mHbDay.value) : null,
-                    hebrew_birth_month: mHbMonth.value ? parseInt(mHbMonth.value) : null
+                    hebrew_birth_month: mHbMonth.value ? parseInt(mHbMonth.value) : null,
+                    hebrew_birth_year: mHbYear.value ? parseInt(mHbYear.value) : null
                 };
                 
                 try {
@@ -550,7 +633,7 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
                 allowed_classes = None
         
         q_str = str(q or '').strip()
-        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number FROM students"
+        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number FROM students ORDER BY (serial_number IS NULL OR serial_number = 0), serial_number, class_name, last_name, first_name"
         params = []
         where_parts = []
         
@@ -739,9 +822,15 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
 
     sid = int(payload.get('student_id') or 0)
     delta = int(payload.get('delta') or 0)
+    mode = str(payload.get('mode') or 'add').strip().lower()
     reason = str(payload.get('reason') or '').strip()
-    if sid <= 0 or delta == 0:
-        raise HTTPException(status_code=400, detail="Invalid student_id or delta")
+    if sid <= 0:
+        raise HTTPException(status_code=400, detail="Invalid student_id")
+    if mode == 'set':
+        if delta < 0:
+            raise HTTPException(status_code=400, detail="Absolute points cannot be negative")
+    elif delta == 0:
+        raise HTTPException(status_code=400, detail="Invalid delta")
 
     conn = tenant_db_connection(tenant_id)
     try:
@@ -751,7 +840,7 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
         if not row:
             raise HTTPException(status_code=404, detail="Student not found")
         old_points = int((row['points'] if isinstance(row, dict) else row[1]) or 0)
-        new_points = old_points + delta
+        new_points = delta if mode == 'set' else old_points + delta
 
         cur.execute(sql_placeholder("UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"), (new_points, sid))
         
@@ -782,7 +871,8 @@ def api_student_quick_points(request: Request, payload: Dict[str, Any] = Body(..
                 'old_points': int(old_points),
                 'new_points': int(new_points),
                 'reason': reason or 'עדכון מהיר מהאתר',
-                'added_by': 'web'
+                'added_by': 'web',
+                'log_action_type': 'עדכון מהיר'
             }
         )
 

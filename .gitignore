@@ -1,6 +1,9 @@
 # Build artifacts
 /dist/
 /build/
+/build_onefile/
+/build_installer/
+/dist_installer/
 /__pycache__/
 *.pyc
 *.pyo
@@ -88,7 +91,6 @@ db_scan*.py
 debug_*.py
 fix_*.py
 run_sync_server.py
-sp_logger.py
 sync_*_audit.py
 test_*.py
 update_*_from_excel.py

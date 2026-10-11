@@ -245,7 +245,7 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                                 entity_type='student_points',
                                 entity_id=str(sid),
                                 action_type='update',
-                                payload={'old_points': current_points, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name}
+                                payload={'old_points': current_points, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name, 'log_action_type': 'Excel'}
                             )
                         except: pass
 
@@ -317,7 +317,7 @@ async def api_import_upload(request: Request, file: UploadFile = File(...), clea
                                 entity_type='student_points',
                                 entity_id=str(new_sid),
                                 action_type='update',
-                                payload={'old_points': 0, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name}
+                                payload={'old_points': 0, 'new_points': points, 'reason': 'ייבוא', 'added_by': teacher_name, 'log_action_type': 'Excel'}
                             )
                         except: pass
 

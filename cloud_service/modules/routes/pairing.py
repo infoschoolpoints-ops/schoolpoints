@@ -157,10 +157,10 @@ def web_device_pair(request: Request, code: str = '') -> str:
         
     body = f"""
     <h2>חיבור עמדה</h2>
-    <p style='font-size:16px;font-weight:800;'>האם לאשר חיבור עמדה עם האתר?</p>
-    <div style='margin-top:10px; padding:12px; border:1px solid #d6dde3; border-radius:12px; background:#f8fafc;'>
+    <p style='font-size:16px;font-weight:800;color:#fff;'>האם לאשר חיבור עמדה עם האתר?</p>
+    <div style='margin-top:10px; padding:12px; border:1px solid #d6dde3; border-radius:12px; background:#f8fafc; color:#1f2d3a;'>
       <div style='font-weight:800; color:#2f3e4e;'>קוד התאמה:</div>
-      <div style='font-size:26px;font-weight:950;letter-spacing:2px;margin-top:6px;'>{code}</div>
+      <div style='font-size:26px;font-weight:950;letter-spacing:2px;margin-top:6px; color:#1f2d3a;'>{code}</div>
       <div style='margin-top:8px; font-size:13px; color:#637381; line-height:1.6;'>אשר/י רק אם התחלת עכשיו חיבור מתוך התוכנה בעמדת הניהול.</div>
     </div>
     <form method='post' action='/web/device/pair' style='margin-top:14px;'>

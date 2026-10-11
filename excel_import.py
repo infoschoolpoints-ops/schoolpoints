@@ -1094,12 +1094,13 @@ class ExcelImporter:
             return False
 
     def export_attendance_excel(self, excel_path: str, mode: str = "day", target_date_iso: str = None, bonus_id: int = None,
-                               allowed_classes: list = None) -> bool:
+                               allowed_classes: list = None, start_date_iso: str = None, end_date_iso: str = None) -> bool:
         """ייצוא נוכחות מבוססת בונוס זמנים.
 
         mode:
             "day"         – נוכחות ליום מסוים (כל הבונוסים).
             "bonus"       – נוכחות לפי בונוס אחד, כל התאריכים (עמודה לכל תאריך).
+            "bonus_range" – נוכחות לפי בונוס אחד, מוגבל לטווח תאריכים (start_date_iso..end_date_iso).
             "all_bonuses" – כל הבונוסים וכל התאריכים, גליון נפרד לכל בונוס.
         """
         try:
@@ -1265,9 +1266,25 @@ class ExcelImporter:
                 return True
 
             # מצב 2: לפי בונוס אחד – כל התאריכים, עמודה לכל תאריך
-            if mode == "bonus":
+            # מצב 2ב: bonus_range – זהה, אך מוגבל לטווח תאריכים start..end
+            if mode in ("bonus", "bonus_range"):
                 if not bonus_id:
                     return False
+
+                # נרמול גבולות הטווח (כולל) — השוואת מחרוזות ISO תקפה לתאריכים
+                range_start = str(start_date_iso or '').strip() or None
+                range_end = str(end_date_iso or '').strip() or None
+                if mode == "bonus_range" and range_start and range_end and range_start > range_end:
+                    range_start, range_end = range_end, range_start
+
+                def _in_range(d_iso_val: str) -> bool:
+                    if mode != "bonus_range":
+                        return True
+                    if range_start and str(d_iso_val) < range_start:
+                        return False
+                    if range_end and str(d_iso_val) > range_end:
+                        return False
+                    return True
 
                 chosen_bonus = next((b for b in time_bonuses if b['id'] == bonus_id), None)
                 if not chosen_bonus:
@@ -1293,6 +1310,8 @@ class ExcelImporter:
                 for row in rows:
                     sid = row['student_id']
                     d_iso = row['given_date']
+                    if not _in_range(d_iso):
+                        continue
                     dates_set.add(d_iso)
                     time_str = _given_at_to_time_str(row.get('given_at'))
                     if not time_str:

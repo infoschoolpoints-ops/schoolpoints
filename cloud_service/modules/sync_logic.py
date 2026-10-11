@@ -150,7 +150,9 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
             sql_placeholder('UPDATE students SET points = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),
             (final_points, student_id)
         )
-        insert_points_log(tconn, student_id, final_points - cur_points, old_points=cur_points, new_points=final_points, reason=reason, actor_name='Sync', action_type='sync')
+        log_action = str(payload.get('log_action_type') or '').strip() or 'sync'
+        actor = str(payload.get('added_by') or '').strip() or 'Sync'
+        insert_points_log(tconn, student_id, final_points - cur_points, old_points=cur_points, new_points=final_points, reason=reason, actor_name=actor, action_type=log_action)
         tconn.commit()
         return
 

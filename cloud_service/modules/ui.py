@@ -117,12 +117,14 @@ def basic_web_shell(title: str, body_html: str, request: Request = None, is_admi
           color: rgba(255,255,255,0.5) !important;
         }
 
-        table { border-collapse: collapse; }
-        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.92); }
-        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.82); }
-        table tbody td { color: #1f2d3a; padding: 10px 12px; }
-        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; }
-        .table-scroll { overflow: auto; }
+        table { border-collapse: collapse; width: 100%; }
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.96); }
+        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.88); }
+        table tbody tr:hover { background: rgba(236, 240, 241, 1); }
+        table tbody tr { transition: background 0.15s ease; }
+        table tbody td { color: #1f2d3a; padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; font-weight: 800; text-align: right; }
+        .table-scroll { overflow: auto; border-radius: 12px; border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 4px 12px rgba(0,0,0,0.08); background: #fff; }
         .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; }
 
         /* Glassmorphism Utilities */
@@ -557,12 +559,14 @@ def public_web_shell(title: str, body_html: str, request: Request = None) -> str
           color: rgba(255,255,255,0.5) !important;
         }
 
-        table { border-collapse: collapse; }
-        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.92); }
-        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.82); }
-        table tbody td { color: #1f2d3a; padding: 10px 12px; }
-        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; }
-        .table-scroll { overflow: auto; }
+        table { border-collapse: collapse; width: 100%; }
+        table tbody tr:nth-child(even) { background: rgba(255,255,255,0.96); }
+        table tbody tr:nth-child(odd) { background: rgba(255,255,255,0.88); }
+        table tbody tr:hover { background: rgba(236, 240, 241, 1); }
+        table tbody tr { transition: background 0.15s ease; }
+        table tbody td { color: #1f2d3a; padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,0.05); }
+        table thead th { background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; padding: 12px; font-weight: 800; text-align: right; }
+        .table-scroll { overflow: auto; border-radius: 12px; border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 4px 12px rgba(0,0,0,0.08); background: #fff; }
         .table-scroll thead th { position: sticky; top: 0; z-index: 6; background: linear-gradient(135deg, #2c3e50, #34495e); color: #fff; }
 
         /* Glassmorphism Utilities */

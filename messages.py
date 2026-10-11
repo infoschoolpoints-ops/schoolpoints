@@ -17,7 +17,16 @@ class MessagesDB:
         self._remote_write_api_key = 'local'
         # ברירת מחדל: קובץ ה-DB בתיקייה של הפרויקט (תומך ב-UNC)
         if db_path is None:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
+            # בבילד frozen (PyInstaller) – נשתמש בתיקיית קובץ ה-EXE ולא בתיקיית __file__
+            # (ב-onefile תיקיית __file__ היא תיקיית _MEIPASS זמנית שנמחקת בכל הרצה → אובדן נתונים)
+            import sys as _sys
+            try:
+                if bool(getattr(_sys, 'frozen', False)):
+                    base_dir = os.path.dirname(os.path.abspath(_sys.executable))
+                else:
+                    base_dir = os.path.dirname(os.path.abspath(__file__))
+            except Exception:
+                base_dir = os.path.dirname(os.path.abspath(__file__))
             
             # בדיקה אם יש נתיב DB משותף מוגדר (כמו ב-database.py)
             custom_db_path = None

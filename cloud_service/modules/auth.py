@@ -92,10 +92,11 @@ def web_teacher_from_cookie(request: Request) -> int:
         return 0
 
 def web_require_tenant(request: Request) -> Optional[Response]:
-    """Guard: Require tenant cookie. Redirect to signin if missing."""
+    """Guard: Require tenant cookie. Redirect to signin with next URL if missing."""
     tid = web_tenant_from_cookie(request)
     if not tid:
-        return RedirectResponse(url='/web/signin', status_code=302)
+        nxt = urllib.parse.quote(str(request.url.path) + ('?' + str(request.url.query) if request.url.query else ''), safe='')
+        return RedirectResponse(url=f'/web/signin?next={nxt}', status_code=302)
     return None
 
 
