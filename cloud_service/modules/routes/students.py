@@ -12,6 +12,32 @@ from ..sync_logic import record_sync_event, apply_change_to_tenant_db
 
 router = APIRouter()
 
+
+def _fmt_rel_update(dt_str, delta=None):
+    """Format like the desktop app: 'היום 11:28 +5' / 'אתמול 17:48' / '17.2 14:30'."""
+    if not dt_str:
+        return ''
+    try:
+        from datetime import datetime, date, timezone
+        dt_utc = datetime.strptime(str(dt_str).replace('T', ' ')[:19], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+        dt = dt_utc.astimezone().replace(tzinfo=None)
+        today = date.today()
+        t = dt.strftime('%H:%M')
+        if dt.date() == today:
+            pre = f'היום {t}'
+        elif (today - dt.date()).days == 1:
+            pre = f'אתמול {t}'
+        elif (today - dt.date()).days == 2:
+            pre = f'שלשום {t}'
+        else:
+            pre = f'{dt.day}.{dt.month} {t}'
+        if delta is not None and int(delta) != 0:
+            sign = '+' if int(delta) > 0 else ''
+            return f'{pre} {sign}{int(delta)}'
+        return pre
+    except Exception:
+        return str(dt_str)[:16]
+
 @router.get("/web/students", response_class=HTMLResponse)
 def web_students(request: Request):
     try:
@@ -88,6 +114,9 @@ def web_students(request: Request):
                     <button class="stu-btn stu-btn-red" onclick="delSelected()" id="s_delete" disabled>🗑 מחק</button>
                 </div>
                 <div class="stu-toolbar-right">
+                    <select id="s_class_filter" onchange="renderRows()" style="padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(0,0,0,0.25);color:#fff;font-size:14px;max-width:150px;">
+                        <option value="">כל הכיתות</option>
+                    </select>
                     <div class="stu-search"><input type="text" id="s_search" placeholder="חיפוש לפי שם, ת&quot;ז, כיתה..." onkeyup="if(event.key==='Enter') load()"></div>
                     <button class="stu-btn stu-btn-gray" onclick="load()">� רענן</button>
                     <button class="stu-btn stu-btn-purple" onclick="toggleColPanel()">📋 עמודות</button>
@@ -98,11 +127,15 @@ def web_students(request: Request):
                 <span style="font-weight:800; color:#fff;">עמודות:</span>
                 <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_class" checked onchange="applyColVis()"> כיתה</label>
                 <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_points" checked onchange="applyColVis()"> נקודות</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_upd" checked onchange="applyColVis()"> עדכון אחרון</label>
                 <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_swipe" checked onchange="applyColVis()"> תיקוף אחרון</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_swtot" checked onchange="applyColVis()"> סה"כ תיקופים</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_swavg" checked onchange="applyColVis()"> ממוצע תיקופים</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_gender" onchange="applyColVis()"> מגדר</label>
                 <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_bday" checked onchange="applyColVis()"> יום הולדת</label>
-                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_msg" onchange="applyColVis()"> הודעה פרטית</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_msg" checked onchange="applyColVis()"> הודעה פרטית</label>
                 <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_card" checked onchange="applyColVis()"> מס' כרטיס</label>
-                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_idnum" checked onchange="applyColVis()"> ת"ז</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_idnum" onchange="applyColVis()"> ת"ז</label>
                 <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_serial" checked onchange="applyColVis()"> מס' סידורי</label>
                 <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_photo" onchange="applyColVis()"> תמונה</label>
             </div>
@@ -117,18 +150,21 @@ def web_students(request: Request):
                     <table id="s_table">
                         <thead>
                             <tr>
-                                <th style="width:36px;">#</th>
                                 <th onclick="sortBy('first_name')" style="cursor:pointer;"><span id="sh_first_name">שם פרטי</span></th>
                                 <th onclick="sortBy('last_name')" style="cursor:pointer;"><span id="sh_last_name">שם משפחה</span></th>
                                 <th class="col_class" onclick="sortBy('class_name')" style="cursor:pointer; width:70px;"><span id="sh_class_name">כיתה</span></th>
                                 <th class="col_points" onclick="sortBy('points')" style="cursor:pointer; width:70px;"><span id="sh_points">נקודות</span></th>
-                                <th class="col_swipe" onclick="sortBy('last_swiped_at')" style="cursor:pointer; width:120px;"><span id="sh_last_swiped_at">תיקוף אחרון</span></th>
+                                <th class="col_upd" style="width:110px;">עדכון אחרון</th>
+                                <th class="col_swipe" onclick="sortBy('last_swiped_at')" style="cursor:pointer; width:110px;"><span id="sh_last_swiped_at">תיקוף אחרון</span></th>
+                                <th class="col_swtot" style="width:70px;">סה"כ תיקופים</th>
+                                <th class="col_swavg" style="width:80px;">ממוצע תיקופים</th>
+                                <th class="col_gender" style="width:50px;">מגדר</th>
                                 <th class="col_bday" style="width:100px;">יום הולדת</th>
                                 <th class="col_msg" onclick="sortBy('private_message')" style="cursor:pointer;"><span id="sh_private_message">הודעה פרטית</span></th>
                                 <th class="col_card" style="width:110px;">מס' כרטיס</th>
                                 <th class="col_idnum" style="width:110px;">ת"ז</th>
-                                <th class="col_serial" onclick="sortBy('serial_number')" style="cursor:pointer; width:90px;"><span id="sh_serial_number">מס' סידורי</span></th>
-                                <th class="col_photo" style="width:80px;">תמונה</th>
+                                <th class="col_serial" onclick="sortBy('serial_number')" style="cursor:pointer; width:80px;"><span id="sh_serial_number">מס' סידורי</span></th>
+                                <th class="col_photo" style="width:70px;">תמונה</th>
                             </tr>
                         </thead>
                         <tbody id="s_rows"></tbody>
@@ -248,7 +284,7 @@ def web_students(request: Request):
                 p.style.display = p.style.display === 'none' ? 'flex' : 'none';
             }
             function applyColVis() {
-                const map = {col_class:'col_class',col_points:'col_points',col_swipe:'col_swipe',col_bday:'col_bday',col_msg:'col_msg',col_card:'col_card',col_idnum:'col_idnum',col_serial:'col_serial',col_photo:'col_photo'};
+                const map = {col_class:'col_class',col_points:'col_points',col_upd:'col_upd',col_swipe:'col_swipe',col_swtot:'col_swtot',col_swavg:'col_swavg',col_gender:'col_gender',col_bday:'col_bday',col_msg:'col_msg',col_card:'col_card',col_idnum:'col_idnum',col_serial:'col_serial',col_photo:'col_photo'};
                 for (const [cbId, cls] of Object.entries(map)) {
                     const cb = document.getElementById(cbId);
                     if (!cb) continue;
@@ -269,28 +305,33 @@ def web_students(request: Request):
                 renderRows();
             }
             function renderRows() {
-                if (!_allStudents || !_allStudents.length) return;
-                const sorted = _sortCol ? [..._allStudents].sort((a,b) => {
+                if (!_allStudents || !_allStudents.length) { rowsEl.innerHTML=''; return; }
+                const clsF = document.getElementById('s_class_filter').value;
+                const pool = clsF ? _allStudents.filter(s => String(s.class_name||'') === clsF) : _allStudents;
+                const sorted = _sortCol ? [...pool].sort((a,b) => {
                     let va = a[_sortCol], vb = b[_sortCol];
                     if (va == null) va = ''; if (vb == null) vb = '';
-                    if (_sortCol === 'serial_number') return _sortDir * ((parseInt(va)||0) - (parseInt(vb)||0));
+                    if (_sortCol === 'serial_number' || _sortCol === 'swipe_total' || _sortCol === 'swipe_avg') return _sortDir * ((parseFloat(va)||0) - (parseFloat(vb)||0));
                     if (typeof va === 'number' && typeof vb === 'number') return _sortDir*(va-vb);
                     return _sortDir * String(va).localeCompare(String(vb), 'he');
-                }) : _allStudents;
+                }) : pool;
                 rowsEl.innerHTML = sorted.map((s,i) => `
                     <tr data-id="${s.id}" onclick="setSelected(${s.id})" class="${selectedId == s.id ? 'selected' : ''}">
-                        <td class="stu-small" style="text-align:center; opacity:0.6;">${i+1}</td>
                         <td style="font-weight:700;">${esc(s.first_name)}</td>
                         <td>${esc(s.last_name)}</td>
                         <td class="col_class" style="text-align:center;">${esc(s.class_name)}</td>
                         <td class="col_points stu-points" title="לחץ פעמיים לעריכה" ondblclick="editPoints(event, ${s.id}, ${s.points})">${s.points}</td>
+                        <td class="col_upd stu-small" style="text-align:center;">${esc(s.last_update || '')}</td>
                         <td class="col_swipe stu-small" style="direction:ltr; text-align:right;">${fmtDate(s.last_swiped_at)}</td>
+                        <td class="col_swtot stu-small" style="text-align:center;">${s.swipe_total || 0}</td>
+                        <td class="col_swavg stu-small" style="text-align:center;">${s.swipe_avg || 0}</td>
+                        <td class="col_gender stu-small" style="text-align:center;">${esc(s.gender || '')}</td>
                         <td class="col_bday stu-small" style="text-align:center;">${fmtBday(s)}</td>
-                        <td class="col_msg stu-small">${esc(s.private_message)}</td>
+                        <td class="col_msg stu-small stu-points" title="לחץ פעמיים לעריכה" ondblclick="editMsg(event, ${s.id})">${esc(stripMsg(s.private_message))}</td>
                         <td class="col_card stu-num">${esc(s.card_number)}</td>
                         <td class="col_idnum stu-num">${esc(s.id_number)}</td>
                         <td class="col_serial stu-num" style="text-align:center;">${esc(s.serial_number)}</td>
-                        <td class="col_photo" style="text-align:center;">${s.photo_number ? '<span class="stu-small">🖼 '+esc(s.photo_number)+'</span>' : '-'}</td>
+                        <td class="col_photo" style="text-align:center;">${s.photo_number ? '🖼' : '-'}</td>
                     </tr>
                 `).join('');
                 applyColVis();
@@ -318,6 +359,9 @@ def web_students(request: Request):
 
             function esc(s) {
                 return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            }
+            function stripMsg(t) {
+                return String(t || '').replace(/\\*[^*]*\\*/g, '').replace(/\\s{2,}/g, ' ').trim();
             }
             function fmtDate(d) {
                 if (!d) return '-';
@@ -384,7 +428,13 @@ def web_students(request: Request):
                     
                     _allStudents = data.items;
                     statusEl.textContent = data.items.length + ' תלמידים';
-                    
+
+                    // Populate class filter (keep current selection if still exists)
+                    const cf = document.getElementById('s_class_filter');
+                    const curVal = cf.value;
+                    const classes = [...new Set(_allStudents.map(s => String(s.class_name||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'he'));
+                    cf.innerHTML = '<option value="">כל הכיתות</option>' + classes.map(c => '<option value="'+esc(c)+'"'+(c===curVal?' selected':'')+'>'+esc(c)+'</option>').join('');
+
                     renderRows();
                     
                 } catch (e) {
@@ -454,6 +504,62 @@ def web_students(request: Request):
                 } catch(e) {
                     alert('שגיאה בעדכון נקודות: ' + e);
                     load();
+                }
+            }
+
+            function editMsg(event, id) {
+                event.stopPropagation();
+                const cell = event.currentTarget;
+                if (cell.querySelector('input')) return;
+                const stu = _allStudents.find(s => s.id === id);
+                if (!stu) return;
+                const inp = document.createElement('input');
+                inp.type = 'text';
+                inp.value = stu.private_message || '';
+                inp.style.width = '100%';
+                inp.style.fontSize = '13px';
+                inp.style.padding = '4px';
+                inp.style.border = '1px solid #3498db';
+                inp.style.borderRadius = '6px';
+                inp.style.color = '#1f2d3a';
+                inp.style.background = '#fff';
+                cell.innerHTML = '';
+                cell.appendChild(inp);
+                inp.focus();
+                inp.select();
+                function finish() {
+                    const val = inp.value.trim();
+                    if (val === (stu.private_message || '')) { renderRows(); return; }
+                    submitInlineMsg(id, val, cell);
+                }
+                inp.addEventListener('blur', finish);
+                inp.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') { e.preventDefault(); finish(); }
+                    if (e.key === 'Escape') { e.preventDefault(); renderRows(); }
+                });
+            }
+
+            async function submitInlineMsg(id, msg, cell) {
+                cell.textContent = '...';
+                try {
+                    const resp = await fetch('/api/students/update-message', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        credentials: 'include',
+                        body: JSON.stringify({student_id: id, private_message: msg})
+                    });
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    const data = await resp.json();
+                    if (data.ok) {
+                        const stu = _allStudents.find(s => s.id === id);
+                        if (stu) stu.private_message = msg;
+                        renderRows();
+                    } else {
+                        throw new Error(data.detail || 'error');
+                    }
+                } catch(e) {
+                    alert('שגיאה בעדכון הודעה: ' + e);
+                    renderRows();
                 }
             }
 
@@ -678,7 +784,7 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
                 allowed_classes = None
         
         q_str = str(q or '').strip()
-        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number FROM students"
+        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number, total_swipes, updated_at FROM students"
         params = []
         where_parts = []
 
@@ -713,6 +819,57 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
             except Exception:
                 d['_sort_sn'] = 0
             items.append(d)
+
+        # Enrich: swipe totals + last manual update (matches desktop app columns)
+        try:
+            total_days = 0
+            try:
+                cur.execute(sql_placeholder("SELECT value FROM settings WHERE key = 'total_school_days' LIMIT 1"))
+                rr = cur.fetchone()
+                if rr:
+                    total_days = int((rr['value'] if isinstance(rr, dict) else rr[0]) or 0)
+            except Exception:
+                total_days = 0
+            if total_days <= 0:
+                try:
+                    if USE_POSTGRES:
+                        cur.execute("SELECT COUNT(DISTINCT DATE(swiped_at)) FROM swipe_log WHERE station_type='public' AND EXTRACT(DOW FROM swiped_at) != 6")
+                    else:
+                        cur.execute("SELECT COUNT(DISTINCT DATE(swiped_at)) FROM swipe_log WHERE station_type='public' AND strftime('%w', swiped_at) != '6'")
+                    rr = cur.fetchone()
+                    if rr:
+                        total_days = int((list(rr.values())[0] if isinstance(rr, dict) else rr[0]) or 0)
+                except Exception:
+                    total_days = 0
+
+            sids = [int(d['id']) for d in items if d.get('id')]
+            last_updates = {}
+            if sids:
+                ph = ','.join(['?'] * len(sids))
+                act = "'מנהל','מורה','עדכון מהיר','ביטול/שחזור','quick_update','web','sync'"
+                cur.execute(sql_placeholder(f'''
+                    SELECT student_id, created_at, delta FROM points_log
+                    WHERE student_id IN ({ph})
+                      AND action_type IN ({act})
+                      AND id IN (SELECT MAX(id) FROM points_log
+                                 WHERE student_id IN ({ph}) AND action_type IN ({act})
+                                 GROUP BY student_id)
+                '''), list(sids) + list(sids))
+                for r2 in (cur.fetchall() or []):
+                    sid2 = int(r2['student_id'] if isinstance(r2, dict) else r2[0])
+                    last_updates[sid2] = {
+                        'created_at': str(r2['created_at'] if isinstance(r2, dict) else r2[1] or ''),
+                        'delta': int((r2['delta'] if isinstance(r2, dict) else r2[2]) or 0),
+                    }
+
+            for d in items:
+                tot = int(d.get('total_swipes') or 0)
+                d['swipe_total'] = tot
+                d['swipe_avg'] = round(tot / total_days, 2) if (total_days > 0 and tot > 0) else 0
+                u = last_updates.get(d.get('id'))
+                d['last_update'] = _fmt_rel_update(u['created_at'], u['delta']) if u else ''
+        except Exception:
+            pass
 
         # Sort exactly like the desktop app: null/empty serials first, then serial,
         # then class, last_name, first_name
@@ -867,6 +1024,38 @@ def api_student_delete(request: Request, payload: StudentDeletePayload):
             payload={}
         )
         
+        return {'ok': True}
+    finally:
+        try: conn.close()
+        except: pass
+
+@router.post("/api/students/update-message")
+def api_student_update_message(request: Request, payload: Dict[str, Any] = Body(...)):
+    guard = web_require_teacher(request)
+    if guard: raise HTTPException(status_code=401, detail="Unauthorized")
+
+    tenant_id = web_tenant_from_cookie(request)
+    if not tenant_id: raise HTTPException(status_code=400, detail="Missing tenant")
+
+    sid = int(payload.get('student_id') or 0)
+    msg = str(payload.get('private_message') or '').strip()
+    if sid <= 0:
+        raise HTTPException(status_code=400, detail="Invalid student_id")
+
+    conn = tenant_db_connection(tenant_id)
+    try:
+        cur = conn.cursor()
+        cur.execute(sql_placeholder("UPDATE students SET private_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"), (msg, sid))
+        conn.commit()
+
+        record_sync_event(
+            tenant_id=tenant_id,
+            station_id='web',
+            entity_type='student',
+            entity_id=str(sid),
+            action_type='update',
+            payload={'private_message': msg}
+        )
         return {'ok': True}
     finally:
         try: conn.close()
