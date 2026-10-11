@@ -633,15 +633,15 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
                 allowed_classes = None
         
         q_str = str(q or '').strip()
-        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number FROM students ORDER BY (serial_number IS NULL OR serial_number = 0), serial_number, class_name, last_name, first_name"
+        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number FROM students"
         params = []
         where_parts = []
-        
+
         if q_str:
             where_parts.append("(first_name LIKE ? OR last_name LIKE ? OR card_number LIKE ? OR class_name LIKE ? OR id_number LIKE ?)")
             p = f"%{q_str}%"
             params = [p, p, p, p, p]
-        
+
         if allowed_classes is not None and len(allowed_classes) > 0:
             placeholders = ','.join(['?' for _ in allowed_classes])
             where_parts.append(f"class_name IN ({placeholders})")
@@ -649,23 +649,38 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
         elif allowed_classes is not None and len(allowed_classes) == 0:
             # Teacher has no assigned classes — show nothing
             return {'items': []}
-        
+
         if where_parts:
             sql += " WHERE " + " AND ".join(where_parts)
-        
-        sql += " ORDER BY class_name, last_name"
-        
+
         cur.execute(sql_placeholder(sql), params)
         rows = cur.fetchall() or []
         items = []
         for r in rows:
             d = dict(r) if isinstance(r, dict) else {k: r[k] for k in r.keys()} if hasattr(r, 'keys') else {
-                'id': r[0], 'first_name': r[1], 'last_name': r[2], 'class_name': r[3], 
+                'id': r[0], 'first_name': r[1], 'last_name': r[2], 'class_name': r[3],
                 'points': r[4], 'private_message': r[5], 'card_number': r[6], 'id_number': r[7],
                 'is_free_fix_blocked': r[8] if len(r) > 8 else 0
             }
+            # Normalize serial_number for cross-DB sorting (text in PG, may be numeric)
+            try:
+                d['_sort_sn'] = int(d.get('serial_number') or 0)
+            except Exception:
+                d['_sort_sn'] = 0
             items.append(d)
-            
+
+        # Sort exactly like the desktop app: null/empty serials first, then serial,
+        # then class, last_name, first_name
+        items.sort(key=lambda s: (
+            0 if (s.get('serial_number') or '0') in ('', '0') else 1,
+            s['_sort_sn'],
+            str(s.get('class_name') or ''),
+            str(s.get('last_name') or ''),
+            str(s.get('first_name') or '')
+        ))
+        for s in items:
+            s.pop('_sort_sn', None)
+
         return {'items': items}
     finally:
         try: conn.close()
