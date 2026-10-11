@@ -25,60 +25,110 @@ def web_students(request: Request):
         # For now, admins see all, teachers might see filtered.
         
         html_content = """
-        <div style="max-width:1200px; margin:0 auto;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; flex-wrap:wrap; gap:10px;">
-                <h2 style="margin:0;">ניהול תלמידים</h2>
-                <div style="display:flex; gap:10px; flex-wrap:wrap;">
-                    <button class="blue" onclick="openAdd()" id="btn-add">➕ תלמיד חדש</button>
-                    <button style="background:#e67e22;color:#fff;border:none;padding:10px 14px;border-radius:10px;font-weight:900;cursor:pointer;" onclick="openBulk()">⚡ עדכון מהיר</button>
-                    <button class="gray" onclick="load()">🔄 רענן</button>
+        <style>
+        .stu-toolbar {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: rgba(15, 32, 39, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding: 10px 14px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            margin: -16px -16px 14px -16px;
+        }
+        .stu-toolbar-left, .stu-toolbar-right { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+        .stu-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 0;
+            font-weight: 800;
+            font-size: 13px;
+            cursor: pointer;
+            color: #fff;
+            transition: transform .1s, filter .1s;
+        }
+        .stu-btn:hover { transform: translateY(-1px); filter: brightness(1.1); }
+        .stu-btn:disabled { opacity: .4; pointer-events: none; }
+        .stu-btn-blue { background: #3498db; }
+        .stu-btn-green { background: #27ae60; }
+        .stu-btn-orange { background: #e67e22; }
+        .stu-btn-red { background: #e74c3c; }
+        .stu-btn-purple { background: #9b59b6; }
+        .stu-btn-gray { background: #7f8c8d; }
+        .stu-search { flex:1; min-width:220px; max-width:420px; }
+        .stu-search input { width:100%; padding:8px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); background:rgba(0,0,0,0.25); color:#fff; font-size:14px; }
+        .stu-search input::placeholder { color: rgba(255,255,255,0.5); }
+        .stu-table-wrap { background:#fff; border-radius:0 0 12px 12px; overflow:hidden; border:1px solid rgba(0,0,0,0.08); box-shadow:0 4px 14px rgba(0,0,0,0.08); }
+        .stu-table-wrap table { width:100%; border-collapse:collapse; font-size:13px; }
+        .stu-table-wrap th { background: linear-gradient(135deg, #2c3e50, #34495e); color:#fff; padding:10px 8px; font-weight:800; text-align:right; white-space:nowrap; position: sticky; top: 0; }
+        .stu-table-wrap td { padding:8px; border-bottom:1px solid rgba(0,0,0,0.06); color:#1f2d3a; vertical-align:middle; }
+        .stu-table-wrap tr:nth-child(even) { background: #f8f9fa; }
+        .stu-table-wrap tr:hover { background: #e8f4f8; }
+        .stu-table-wrap tr.selected { background: #d6eaf8 !important; }
+        .stu-points { color:#27ae60; font-weight:900; cursor:pointer; }
+        .stu-points:hover { text-decoration: underline; }
+        .stu-small { font-size:12px; opacity:.85; }
+        .stu-num { direction:ltr; text-align:right; font-family: monospace; }
+        </style>
+        <div>
+            <div class="stu-toolbar">
+                <div class="stu-toolbar-left">
+                    <button class="stu-btn stu-btn-green" onclick="openAdd()">➕ תלמיד חדש</button>
+                    <button class="stu-btn stu-btn-orange" onclick="openBulk()">⚡ עדכון מהיר</button>
+                    <button class="stu-btn stu-btn-blue" onclick="openQuickPoints()" id="s_qpoints" disabled>⚡ נקודות לנבחר</button>
+                    <button class="stu-btn stu-btn-purple" onclick="openEdit()" id="s_edit" disabled>✏️ ערוך</button>
+                    <button class="stu-btn stu-btn-red" onclick="delSelected()" id="s_delete" disabled>🗑 מחק</button>
+                </div>
+                <div class="stu-toolbar-right">
+                    <div class="stu-search"><input type="text" id="s_search" placeholder="חיפוש לפי שם, ת&quot;ז, כיתה..." onkeyup="if(event.key==='Enter') load()"></div>
+                    <button class="stu-btn stu-btn-gray" onclick="load()">� רענן</button>
+                    <button class="stu-btn stu-btn-purple" onclick="toggleColPanel()">📋 עמודות</button>
                 </div>
             </div>
 
-            <div class="card" style="margin-bottom:20px; padding:15px; display:flex; gap:15px; flex-wrap:wrap; align-items:center;">
-                <div style="flex:1; min-width:200px;">
-                    <input type="text" id="s_search" placeholder="חיפוש לפי שם, תעודת זהות, כיתה..." class="form-input" onkeyup="if(event.key==='Enter') load()">
-                </div>
-                <button class="blue" onclick="load()">🔍 חיפוש</button>
+            <div id="col_panel" style="display:none; padding:10px; background:rgba(255,255,255,0.08); border-radius:8px; margin-bottom:12px; flex-wrap:wrap; gap:12px; align-items:center;">
+                <span style="font-weight:800; color:#fff;">עמודות:</span>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_class" checked onchange="applyColVis()"> כיתה</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_points" checked onchange="applyColVis()"> נקודות</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_swipe" checked onchange="applyColVis()"> תיקוף אחרון</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_bday" checked onchange="applyColVis()"> יום הולדת</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_msg" onchange="applyColVis()"> הודעה פרטית</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_card" checked onchange="applyColVis()"> מס' כרטיס</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_idnum" checked onchange="applyColVis()"> ת"ז</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_serial" checked onchange="applyColVis()"> מס' סידורי</label>
+                <label style="font-size:13px; color:#fff;"><input type="checkbox" id="col_photo" onchange="applyColVis()"> תמונה</label>
             </div>
 
-            <div class="card" style="padding:0; overflow:hidden;">
-                <div style="padding:10px; background:rgba(0,0,0,0.03); border-bottom:1px solid rgba(0,0,0,0.1); display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
-                    <div id="s_status" style="font-size:13px; font-weight:bold; opacity:0.7;">טוען...</div>
-                    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
-                        <span id="s_selected" style="font-size:13px; padding-top:6px;">לא נבחר תלמיד</span>
-                        <button id="s_qpoints" class="green" style="font-size:12px; padding:4px 10px; background:#27ae60; color:white; border:none; border-radius:4px; opacity:0.5; pointer-events:none;" onclick="openQuickPoints()">⚡ עדכון נקודות</button>
-                        <button id="s_edit" class="blue" style="font-size:12px; padding:4px 10px; opacity:0.5; pointer-events:none;" onclick="openEdit()">✏️ ערוך</button>
-                        <button id="s_delete" class="red" style="font-size:12px; padding:4px 10px; background:#e74c3c; border:none; opacity:0.5; pointer-events:none;" onclick="delSelected()">🗑 מחק</button>
-                        <button onclick="toggleColPanel()" style="font-size:12px; padding:4px 10px; background:#8e44ad; color:white; border:none; border-radius:4px; cursor:pointer;">📋 עמודות</button>
-                    </div>
-                </div>
-                <!-- Column visibility panel -->
-                <div id="col_panel" style="display:none; padding:10px; background:rgba(0,0,0,0.05); border-bottom:1px solid rgba(0,0,0,0.1); flex-wrap:wrap; gap:12px;">
-                    <label style="font-size:12px;"><input type="checkbox" id="col_class" checked onchange="applyColVis()"> כיתה</label>
-                    <label style="font-size:12px;"><input type="checkbox" id="col_points" checked onchange="applyColVis()"> נקודות</label>
-                    <label style="font-size:12px;"><input type="checkbox" id="col_swipe" checked onchange="applyColVis()"> תיקוף אחרון</label>
-                    <label style="font-size:12px;"><input type="checkbox" id="col_bday" checked onchange="applyColVis()"> יום הולדת</label>
-                    <label style="font-size:12px;"><input type="checkbox" id="col_msg" onchange="applyColVis()"> הודעה פרטית</label>
-                    <label style="font-size:12px;"><input type="checkbox" id="col_card" checked onchange="applyColVis()"> מס' כרטיס</label>
-                    <label style="font-size:12px;"><input type="checkbox" id="col_idnum" onchange="applyColVis()"> ת"ז</label>
-                    <label style="font-size:12px;"><input type="checkbox" id="col_serial" onchange="applyColVis()"> מס' סידורי</label>
-                </div>
-                <div class="table-scroll" style="max-height:600px;">
-                    <table id="s_table" style="width:100%; border-collapse:collapse; min-width:700px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px; color:#fff;">
+                <div id="s_status" style="font-size:13px; font-weight:bold; opacity:0.8;">טוען...</div>
+                <div id="s_selected" style="font-size:13px;">לא נבחר תלמיד</div>
+            </div>
+
+            <div class="stu-table-wrap">
+                <div class="table-scroll" style="max-height:68vh;">
+                    <table id="s_table">
                         <thead>
-                            <tr style="text-align:right; user-select:none;">
-                                <th style="padding:10px; width:44px; cursor:default;">#</th>
-                                <th style="padding:10px; cursor:pointer;" onclick="sortBy('first_name')"><span id="sh_first_name">שם פרטי</span></th>
-                                <th style="padding:10px; cursor:pointer;" onclick="sortBy('last_name')"><span id="sh_last_name">שם משפחה</span></th>
-                                <th class="col_class" style="padding:10px; cursor:pointer;" onclick="sortBy('class_name')"><span id="sh_class_name">כיתה</span></th>
-                                <th class="col_points" style="padding:10px; cursor:pointer;" onclick="sortBy('points')"><span id="sh_points">נקודות</span></th>
-                                <th class="col_swipe" style="padding:10px; cursor:pointer;" onclick="sortBy('last_swiped_at')"><span id="sh_last_swiped_at">תיקוף אחרון</span></th>
-                                <th class="col_bday" style="padding:10px;">יום הולדת</th>
-                                <th class="col_msg" style="padding:10px; cursor:pointer;" onclick="sortBy('private_message')"><span id="sh_private_message">הודעה פרטית</span></th>
-                                <th class="col_card" style="padding:10px;">מס' כרטיס</th>
-                                <th class="col_idnum" style="padding:10px;">ת"ז</th>
-                                <th class="col_serial" style="padding:10px; cursor:pointer;" onclick="sortBy('serial_number')"><span id="sh_serial_number">מס' סידורי</span></th>
+                            <tr>
+                                <th style="width:36px;">#</th>
+                                <th onclick="sortBy('first_name')" style="cursor:pointer;"><span id="sh_first_name">שם פרטי</span></th>
+                                <th onclick="sortBy('last_name')" style="cursor:pointer;"><span id="sh_last_name">שם משפחה</span></th>
+                                <th class="col_class" onclick="sortBy('class_name')" style="cursor:pointer; width:70px;"><span id="sh_class_name">כיתה</span></th>
+                                <th class="col_points" onclick="sortBy('points')" style="cursor:pointer; width:70px;"><span id="sh_points">נקודות</span></th>
+                                <th class="col_swipe" onclick="sortBy('last_swiped_at')" style="cursor:pointer; width:120px;"><span id="sh_last_swiped_at">תיקוף אחרון</span></th>
+                                <th class="col_bday" style="width:100px;">יום הולדת</th>
+                                <th class="col_msg" onclick="sortBy('private_message')" style="cursor:pointer;"><span id="sh_private_message">הודעה פרטית</span></th>
+                                <th class="col_card" style="width:110px;">מס' כרטיס</th>
+                                <th class="col_idnum" style="width:110px;">ת"ז</th>
+                                <th class="col_serial" onclick="sortBy('serial_number')" style="cursor:pointer; width:90px;"><span id="sh_serial_number">מס' סידורי</span></th>
+                                <th class="col_photo" style="width:80px;">תמונה</th>
                             </tr>
                         </thead>
                         <tbody id="s_rows"></tbody>
@@ -198,9 +248,11 @@ def web_students(request: Request):
                 p.style.display = p.style.display === 'none' ? 'flex' : 'none';
             }
             function applyColVis() {
-                const map = {col_class:'col_class',col_points:'col_points',col_swipe:'col_swipe',col_bday:'col_bday',col_msg:'col_msg',col_card:'col_card',col_idnum:'col_idnum',col_serial:'col_serial'};
+                const map = {col_class:'col_class',col_points:'col_points',col_swipe:'col_swipe',col_bday:'col_bday',col_msg:'col_msg',col_card:'col_card',col_idnum:'col_idnum',col_serial:'col_serial',col_photo:'col_photo'};
                 for (const [cbId, cls] of Object.entries(map)) {
-                    const show = document.getElementById(cbId).checked;
+                    const cb = document.getElementById(cbId);
+                    if (!cb) continue;
+                    const show = cb.checked;
                     document.querySelectorAll('.'+cls).forEach(el => el.style.display = show ? '' : 'none');
                 }
             }
@@ -225,27 +277,22 @@ def web_students(request: Request):
                     return _sortDir * String(va).localeCompare(String(vb), 'he');
                 });
                 rowsEl.innerHTML = sorted.map((s,i) => `
-                    <tr data-id="${s.id}" onclick="setSelected(${s.id})" style="border-bottom:1px solid rgba(255,255,255,0.05); cursor:pointer;">
-                        <td style="padding:10px; opacity:0.5; font-size:12px;">${i+1}</td>
-                        <td style="padding:10px; font-weight:bold;">${esc(s.first_name)}</td>
-                        <td style="padding:10px;">${esc(s.last_name)}</td>
-                        <td class="col_class" style="padding:10px;">${esc(s.class_name)}</td>
-                        <td class="col_points" style="padding:10px; color:#2ecc71; font-weight:bold;" title="לחץ פעמיים לעריכה" ondblclick="editPoints(event, ${s.id}, ${s.points})">${s.points}</td>
-                        <td class="col_swipe" style="padding:10px; font-size:12px;">${fmtDate(s.last_swiped_at)}</td>
-                        <td class="col_bday" style="padding:10px; font-size:12px;">${fmtBday(s)}</td>
-                        <td class="col_msg" style="padding:10px; opacity:0.8;">${esc(s.private_message)}</td>
-                        <td class="col_card" style="padding:10px; direction:ltr; text-align:right;">${esc(s.card_number)}</td>
-                        <td class="col_idnum" style="padding:10px;">${esc(s.id_number)}</td>
-                        <td class="col_serial" style="padding:10px; opacity:0.7;">${esc(s.serial_number)}</td>
+                    <tr data-id="${s.id}" onclick="setSelected(${s.id})" class="${selectedId == s.id ? 'selected' : ''}">
+                        <td class="stu-small" style="text-align:center; opacity:0.6;">${i+1}</td>
+                        <td style="font-weight:700;">${esc(s.first_name)}</td>
+                        <td>${esc(s.last_name)}</td>
+                        <td class="col_class" style="text-align:center;">${esc(s.class_name)}</td>
+                        <td class="col_points stu-points" title="לחץ פעמיים לעריכה" ondblclick="editPoints(event, ${s.id}, ${s.points})">${s.points}</td>
+                        <td class="col_swipe stu-small" style="direction:ltr; text-align:right;">${fmtDate(s.last_swiped_at)}</td>
+                        <td class="col_bday stu-small" style="text-align:center;">${fmtBday(s)}</td>
+                        <td class="col_msg stu-small">${esc(s.private_message)}</td>
+                        <td class="col_card stu-num">${esc(s.card_number)}</td>
+                        <td class="col_idnum stu-num">${esc(s.id_number)}</td>
+                        <td class="col_serial stu-num" style="text-align:center;">${esc(s.serial_number)}</td>
+                        <td class="col_photo" style="text-align:center;">${s.photo_number ? '<span class="stu-small">🖼 '+esc(s.photo_number)+'</span>' : '-'}</td>
                     </tr>
                 `).join('');
                 applyColVis();
-                // Restore selection highlight
-                if (selectedId) {
-                    document.querySelectorAll('#s_rows tr').forEach(tr => {
-                        tr.style.background = (tr.dataset.id == selectedId) ? 'rgba(52, 152, 219, 0.2)' : '';
-                    });
-                }
             }
             
             // Fields
@@ -308,18 +355,15 @@ def web_students(request: Request):
             function setSelected(id) {
                 selectedId = id;
                 const on = (selectedId !== null);
-                btnEdit.style.opacity = on ? '1' : '0.5';
-                btnEdit.style.pointerEvents = on ? 'auto' : 'none';
-                btnDelete.style.opacity = on ? '1' : '0.5';
-                btnDelete.style.pointerEvents = on ? 'auto' : 'none';
-                btnQP.style.opacity = on ? '1' : '0.5';
-                btnQP.style.pointerEvents = on ? 'auto' : 'none';
+                btnEdit.disabled = !on;
+                btnDelete.disabled = !on;
+                btnQP.disabled = !on;
                 const stu = _allStudents.find(x => x.id == id);
                 const stuName = stu ? (stu.first_name + ' ' + stu.last_name).trim() : 'תלמיד';
                 selectedEl.textContent = on ? 'נבחר: ' + stuName : 'לא נבחר תלמיד';
                 
                 document.querySelectorAll('#s_rows tr').forEach(tr => {
-                    tr.style.background = (tr.dataset.id == id) ? 'rgba(52, 152, 219, 0.2)' : '';
+                    tr.classList.toggle('selected', tr.dataset.id == id);
                 });
             }
 
