@@ -65,6 +65,26 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+def _warm_pool_bg():
+    """Pre-create the pool's min connections so the first request isn't cold."""
+    try:
+        if not USE_POSTGRES:
+            return
+        conn = _pg_pool().getconn()
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _pg_pool().putconn(conn)
+    except Exception:
+        pass
+
+try:
+    if USE_POSTGRES:
+        threading.Thread(target=_warm_pool_bg, daemon=True).start()
+except Exception:
+    pass
+
 def sql_placeholder(sql: str) -> str:
     """Replace ? with %s for Postgres if needed."""
     if not USE_POSTGRES:
@@ -174,8 +194,13 @@ def insert_points_log(conn, student_id, delta, old_points=None, new_points=None,
     placeholders = ','.join([ph] * len(fields))
     col_sql = ','.join(fields)
     if 'created_at' in cols:
+        # Write an explicit UTC timestamp — the DB server's local timezone is
+        # unknown (DigitalOcean runs UTC, but don't rely on it), and all
+        # display code converts UTC → Israel time.
+        from datetime import datetime, timezone as _tz
         col_sql += ',created_at'
-        placeholders += ',CURRENT_TIMESTAMP' if USE_POSTGRES else ",datetime('now')"
+        placeholders += ',' + ph
+        values.append(datetime.now(_tz.utc).strftime('%Y-%m-%d %H:%M:%S'))
     sql = f"INSERT INTO points_log ({col_sql}) VALUES ({placeholders})"
     cur = conn.cursor()
     if USE_POSTGRES:
