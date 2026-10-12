@@ -784,7 +784,19 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
                 allowed_classes = None
         
         q_str = str(q or '').strip()
-        sql = "SELECT id, first_name, last_name, class_name, points, private_message, card_number, id_number, is_free_fix_blocked, last_swiped_at, hebrew_birth_day, hebrew_birth_month, hebrew_birth_year, gender, serial_number, photo_number, total_swipes, updated_at FROM students"
+        # Select only columns that actually exist — schema varies between tenants/versions
+        _wanted_cols = ['id', 'first_name', 'last_name', 'class_name', 'points', 'private_message',
+                        'card_number', 'id_number', 'is_free_fix_blocked', 'last_swiped_at',
+                        'hebrew_birth_day', 'hebrew_birth_month', 'hebrew_birth_year', 'gender',
+                        'serial_number', 'photo_number', 'total_swipes', 'updated_at']
+        try:
+            _existing = set(table_columns(conn, 'students'))
+            _sel_cols = [c for c in _wanted_cols if c in _existing]
+            if not _sel_cols:
+                _sel_cols = ['id', 'first_name', 'last_name', 'points']
+        except Exception:
+            _sel_cols = _wanted_cols
+        sql = "SELECT " + ", ".join(_sel_cols) + " FROM students"
         params = []
         where_parts = []
 
@@ -822,6 +834,8 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
 
         # Enrich: swipe totals + last manual update (matches desktop app columns)
         try:
+            sids = [int(d['id']) for d in items if d.get('id')]
+
             total_days = 0
             try:
                 cur.execute(sql_placeholder("SELECT value FROM settings WHERE key = 'total_school_days' LIMIT 1"))
@@ -842,28 +856,48 @@ def api_students_list(request: Request, q: str = "") -> Dict[str, Any]:
                 except Exception:
                     total_days = 0
 
-            sids = [int(d['id']) for d in items if d.get('id')]
+            swipe_totals = {}
+            if sids:
+                try:
+                    ph = ','.join(['?'] * len(sids))
+                    cur.execute(sql_placeholder(
+                        f"SELECT student_id, COUNT(*) AS c FROM swipe_log WHERE student_id IN ({ph}) GROUP BY student_id"
+                    ), list(sids))
+                    for r2 in (cur.fetchall() or []):
+                        swipe_totals[int(r2['student_id'] if isinstance(r2, dict) else r2[0])] = int((r2['c'] if isinstance(r2, dict) else r2[1]) or 0)
+                except Exception:
+                    pass
+
             last_updates = {}
             if sids:
-                ph = ','.join(['?'] * len(sids))
-                act = "'מנהל','מורה','עדכון מהיר','ביטול/שחזור','quick_update','web','sync'"
-                cur.execute(sql_placeholder(f'''
-                    SELECT student_id, created_at, delta FROM points_log
-                    WHERE student_id IN ({ph})
-                      AND action_type IN ({act})
-                      AND id IN (SELECT MAX(id) FROM points_log
-                                 WHERE student_id IN ({ph}) AND action_type IN ({act})
-                                 GROUP BY student_id)
-                '''), list(sids) + list(sids))
-                for r2 in (cur.fetchall() or []):
-                    sid2 = int(r2['student_id'] if isinstance(r2, dict) else r2[0])
-                    last_updates[sid2] = {
-                        'created_at': str(r2['created_at'] if isinstance(r2, dict) else r2[1] or ''),
-                        'delta': int((r2['delta'] if isinstance(r2, dict) else r2[2]) or 0),
-                    }
+                try:
+                    pl_cols = set(table_columns(conn, 'points_log'))
+                    delta_col = 'delta' if 'delta' in pl_cols else ('points' if 'points' in pl_cols else ('points_change' if 'points_change' in pl_cols else None))
+                    if delta_col:
+                        ph = ','.join(['?'] * len(sids))
+                        if 'action_type' in pl_cols:
+                            act = "'מנהל','מורה','עדכון מהיר','ביטול/שחזור','quick_update','web','sync'"
+                            act_where = f" AND action_type IN ({act})"
+                        else:
+                            act_where = ''
+                        cur.execute(sql_placeholder(f'''
+                            SELECT student_id, created_at, {delta_col} AS delta FROM points_log
+                            WHERE student_id IN ({ph}){act_where}
+                              AND id IN (SELECT MAX(id) FROM points_log
+                                         WHERE student_id IN ({ph}){act_where}
+                                         GROUP BY student_id)
+                        '''), list(sids) + list(sids))
+                        for r2 in (cur.fetchall() or []):
+                            sid2 = int(r2['student_id'] if isinstance(r2, dict) else r2[0])
+                            last_updates[sid2] = {
+                                'created_at': str(r2['created_at'] if isinstance(r2, dict) else r2[1] or ''),
+                                'delta': int((r2['delta'] if isinstance(r2, dict) else r2[2]) or 0),
+                            }
+                except Exception:
+                    last_updates = {}
 
             for d in items:
-                tot = int(d.get('total_swipes') or 0)
+                tot = int(d.get('total_swipes') or 0) or swipe_totals.get(d.get('id'), 0)
                 d['swipe_total'] = tot
                 d['swipe_avg'] = round(tot / total_days, 2) if (total_days > 0 and tot > 0) else 0
                 u = last_updates.get(d.get('id'))
