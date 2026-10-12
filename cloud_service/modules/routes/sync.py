@@ -400,15 +400,18 @@ def sync_teacher_password(sync_token: str = Form(...), teacher_password: str = F
     tconn = tenant_db_connection(tenant_id)
     try:
         cur = tconn.cursor()
-        cur.execute(
-            sql_placeholder(
-                'SELECT id FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1'
-            ),
-            (card_number, card_number, card_number)
-        )
-        row = cur.fetchone()
-        if row:
-            teacher_id = row['id'] if isinstance(row, dict) else row[0]
+        cur.execute('SELECT id, card_number, card_number2, card_number3 FROM teachers')
+        rows = cur.fetchall() or []
+        want = card_number.lstrip('0') or '0'
+        for row in rows:
+            rid = row['id'] if isinstance(row, dict) else row[0]
+            for i in (1, 2, 3):
+                stored = str((row[i] if not isinstance(row, dict) else row.get(f'card_number{i if i > 1 else ""}')) or '').strip()
+                if stored and (stored == card_number or stored.lstrip('0') == want):
+                    teacher_id = rid
+                    break
+            if teacher_id:
+                break
     finally:
         try:
             tconn.close()
@@ -416,7 +419,7 @@ def sync_teacher_password(sync_token: str = Form(...), teacher_password: str = F
             pass
 
     if not teacher_id:
-        return JSONResponse({'ok': False, 'error': 'מורה לא נמצא'})
+        return JSONResponse({'ok': False, 'error': 'מורה לא נמצא. אם זו הפעלה ראשונה — המתן לסיום סנכרון המורים ונסה שוב.'})
 
     state['teacher_verified'] = True
     response = JSONResponse({

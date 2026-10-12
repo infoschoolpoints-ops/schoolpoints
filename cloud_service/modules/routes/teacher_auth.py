@@ -222,16 +222,24 @@ def web_teacher_login_submit(
         cur = conn.cursor()
         # We assume columns exist or handled by sync
         try:
-            cur.execute(
-                sql_placeholder(
-                    'SELECT id, name, is_admin FROM teachers WHERE card_number = ? OR card_number2 = ? OR card_number3 = ? LIMIT 1'
-                ),
-                (card_number, card_number, card_number)
-            )
-            row = cur.fetchone()
+            cur.execute('SELECT id, name, is_admin, card_number, card_number2, card_number3 FROM teachers')
+            rows = cur.fetchall() or []
+            want = card_number.lstrip('0') or '0'
+            row = None
+            for r in rows:
+                for i in (3, 4, 5):
+                    if isinstance(r, dict):
+                        stored = str(r.get('card_number' + ('' if i == 3 else str(i - 2))) or '').strip()
+                    else:
+                        stored = str(r[i] or '').strip()
+                    if stored and (stored == card_number or stored.lstrip('0') == want):
+                        row = r
+                        break
+                if row is not None:
+                    break
             if not row:
                 return HTMLResponse(public_web_shell('כניסת מורה', '<h2>שגיאה</h2><p>מורה לא נמצא.</p>', request=request))
-            
+
             t_id = row['id'] if isinstance(row, dict) else row[0]
             
             nxt = web_next_from_request(request, '/web/admin')
