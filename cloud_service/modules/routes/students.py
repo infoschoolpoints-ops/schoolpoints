@@ -370,12 +370,13 @@ def web_students(request: Request):
             }
             function fmtDate(d) {
                 if (!d) return '-';
+                // last_swiped_at arrives from stations already in Israel local time
+                // — display as-is (no timezone conversion).
                 try {
                     const s = String(d).replace('T', ' ').substring(0, 19);
-                    const dt = new Date(s.replace(' ', 'T') + 'Z'); // server stores UTC
-                    if (isNaN(dt)) return s.substring(0, 16);
-                    const pad = n => String(n).padStart(2, '0');
-                    return `${dt.getDate()}.${dt.getMonth() + 1} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+                    const m = s.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})/);
+                    if (m) return `${parseInt(m[3])}.${parseInt(m[2])} ${m[4]}:${m[5]}`;
+                    return s.substring(0, 16);
                 } catch(e) { return d; }
             }
             const hMonths = {1:'ניסן',2:'אייר',3:'סיון',4:'תמוז',5:'אב',6:'אלול',7:'תשרי',8:'חשון',9:'כסלו',10:'טבת',11:'שבט',12:'אדר',13:"אדר ב'"};
