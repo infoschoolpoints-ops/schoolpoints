@@ -23,12 +23,42 @@ logger = logging.getLogger("schoolpoints.db")
 _ENSURED_TENANTS: Set[str] = set()
 _ENSURED_LOCK = threading.Lock()
 
+# Postgres connection pool — opening a fresh TLS connection to a managed DB
+# on every request caused multi-second latency across the whole web app.
+_PG_POOL = None
+_PG_POOL_LOCK = threading.Lock()
+
+def _pg_pool():
+    global _PG_POOL
+    if _PG_POOL is None:
+        with _PG_POOL_LOCK:
+            if _PG_POOL is None:
+                from psycopg2 import pool as _pgpool
+                _PG_POOL = _pgpool.ThreadedConnectionPool(
+                    2, 20, DATABASE_URL,
+                    cursor_factory=psycopg2.extras.RealDictCursor,
+                )
+    return _PG_POOL
+
 def get_db_connection():
     """Get a database connection (Postgres or SQLite)."""
     if USE_POSTGRES:
         if psycopg2 is None:
             raise RuntimeError('DATABASE_URL is set but psycopg2 is not installed')
-        return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            conn = _pg_pool().getconn()
+            # Clear any leftover transaction/search_path state from a previous borrower
+            # (tenant connections SET search_path — must not leak to public-schema users).
+            try:
+                conn.rollback()
+                cur = conn.cursor()
+                cur.execute('SET search_path TO public')
+            except Exception:
+                pass
+            return conn
+        except Exception:
+            # Pool may be stale after deploy/network blip — fall back to direct connect.
+            return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
