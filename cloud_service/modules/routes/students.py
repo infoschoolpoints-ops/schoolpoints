@@ -413,13 +413,13 @@ def web_students(request: Request):
             }
 
             async function load() {
-                statusEl.textContent = 'טוען...';
-                rowsEl.innerHTML = '';
+                statusEl.textContent = 'מרענן...';
+                // Keep the existing table visible while fetching — no flicker
                 try {
                     const q = encodeURIComponent(searchEl.value);
                     const resp = await fetch('/api/students?q=' + q, {credentials: 'include'});
                     const data = await resp.json();
-                    
+
                     if (!data.items || data.items.length === 0) {
                         rowsEl.innerHTML = '<tr><td colspan="10" style="padding:20px; text-align:center;">לא נמצאו תלמידים</td></tr>';
                         statusEl.textContent = '0 תלמידים';
@@ -470,20 +470,43 @@ def web_students(request: Request):
                 cell.appendChild(inp);
                 inp.focus();
                 inp.select();
-                function finish() {
+                let moved = false;
+                function finish(moveNext) {
+                    if (moved) return;
+                    moved = true;
                     const val = parseInt(inp.value || 0);
-                    if (isNaN(val) || val < 0) { renderRows(); return; }
-                    if (val === current) { renderRows(); return; }
-                    submitInlinePoints(id, val, cell);
+                    if (isNaN(val) || val < 0) { cell.textContent = current; return; }
+                    if (val === current) {
+                        cell.textContent = current;
+                        if (moveNext) openNextPoints(id);
+                        return;
+                    }
+                    submitInlinePoints(id, val, cell, moveNext);
                 }
-                inp.addEventListener('blur', finish);
+                inp.addEventListener('blur', function(){ finish(false); });
                 inp.addEventListener('keydown', function(e) {
-                    if (e.key === 'Enter') { e.preventDefault(); finish(); }
-                    if (e.key === 'Escape') { e.preventDefault(); renderRows(); }
+                    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+                    if (e.key === 'Escape') { e.preventDefault(); moved = true; cell.textContent = current; }
                 });
             }
 
-            async function submitInlinePoints(id, newPoints, cell) {
+            function openNextPoints(currentId) {
+                // Find next visible row after currentId and open its points cell for editing
+                const rows = Array.from(document.querySelectorAll('#s_rows tr'));
+                const idx = rows.findIndex(tr => String(tr.dataset.id) === String(currentId));
+                const next = (idx >= 0 && idx + 1 < rows.length) ? rows[idx + 1] : rows[0];
+                if (!next) return;
+                const nid = parseInt(next.dataset.id);
+                const stu = _allStudents.find(s => s.id === nid);
+                const cell = next.querySelector('.col_points');
+                if (cell && stu) {
+                    const fake = {stopPropagation(){}, currentTarget: cell};
+                    editPoints(fake, nid, stu.points);
+                    next.scrollIntoView({block:'nearest'});
+                }
+            }
+
+            async function submitInlinePoints(id, newPoints, cell, moveNext) {
                 cell.textContent = '...';
                 try {
                     const resp = await fetch('/api/students/quick-points', {
@@ -496,14 +519,15 @@ def web_students(request: Request):
                     const data = await resp.json();
                     if (data.ok) {
                         const stu = _allStudents.find(s => s.id === id);
-                        if (stu) stu.points = data.new_points;
-                        load();
+                        if (stu) { stu.points = data.new_points; stu.last_update = 'היום'; }
+                        cell.textContent = data.new_points;
+                        if (moveNext) openNextPoints(id);
                     } else {
                         throw new Error(data.detail || 'error');
                     }
                 } catch(e) {
                     alert('שגיאה בעדכון נקודות: ' + e);
-                    load();
+                    renderRows();
                 }
             }
 

@@ -2004,9 +2004,12 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
             if entity_type == 'student' and action_type in ('create', 'update', 'delete'):
                 try:
                     # דלג על student/update עם payload ריק (trigger-generated) - ימחק שדות
-                    if action_type == 'update' and not payload.get('first_name') and not payload.get('serial_number'):
+                    _UPDATABLE_STU_KEYS = {'first_name','last_name','class_name','card_number','photo_number',
+                                           'private_message','id_number','is_free_fix_blocked','serial_number',
+                                           'hebrew_birth_day','hebrew_birth_month','hebrew_birth_year','gender'}
+                    if action_type == 'update' and not any(k in payload for k in _UPDATABLE_STU_KEYS):
                         try:
-                            print(f"[APPLY] SKIP student/update #{_ev_id_short} eid={entity_id}: empty first_name+serial")
+                            print(f"[APPLY] SKIP student/update #{_ev_id_short} eid={entity_id}: no updatable fields")
                         except Exception:
                             pass
                         if event_id:
@@ -2100,21 +2103,29 @@ def apply_pull_events(conn: sqlite3.Connection, items: List[Dict[str, Any]], *, 
                         applied += 1
                         
                     elif exists:
-                        # Update
-                        sets = [
-                            "serial_number = ?", "first_name = ?", "last_name = ?", 
-                            "class_name = ?", "card_number = ?", "photo_number = ?",
-                            "private_message = ?", "id_number = ?", "is_free_fix_blocked = ?",
-                            "hebrew_birth_day = ?", "hebrew_birth_month = ?", "hebrew_birth_year = ?", "gender = ?",
-                            "updated_at = ?"
-                        ]
-                        pvals = [serial, first, last, cls_name, card, photo, p_msg, idn, blocked, hb_day, hb_month, hb_year, gender, datetime.now()]
-                        
-                        # נקודות עוברות רק דרך student_points/update (דלתא) — לא דרך student/update
-                        # כדי למנוע ספירה כפולה כשגם trigger וגם _log_change יוצרים events
-                            
+                        # Update — apply only fields actually present in the payload
+                        # (partial updates like private_message alone must NOT wipe other columns)
+                        _val_map = {
+                            'serial_number': serial, 'first_name': first, 'last_name': last,
+                            'class_name': cls_name, 'card_number': card, 'photo_number': photo,
+                            'private_message': p_msg, 'id_number': idn, 'is_free_fix_blocked': blocked,
+                            'hebrew_birth_day': hb_day, 'hebrew_birth_month': hb_month,
+                            'hebrew_birth_year': hb_year, 'gender': gender,
+                        }
+                        sets = []
+                        pvals = []
+                        for k in _UPDATABLE_STU_KEYS:
+                            if k in payload:
+                                sets.append(f"{k} = ?")
+                                pvals.append(_val_map[k])
+                        if not sets:
+                            if event_id:
+                                _mark_event_applied(conn, event_id)
+                            continue
+                        sets.append("updated_at = ?")
+                        pvals.append(datetime.now())
                         pvals.append(sid)
-                        
+
                         sql = f"UPDATE students SET {', '.join(sets)} WHERE id = ?"
                         cur.execute(sql, pvals)
                         try:
@@ -2622,6 +2633,15 @@ def run_full_cycle(db_path: str, push_url: str, *, api_key: str = '', tenant_id:
                 since_id = 0
             resp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=since_id)
             if isinstance(resp, dict) and resp.get('ok'):
+                try:
+                    _smax = int(resp.get('server_max_id') or 0)
+                except Exception:
+                    _smax = 0
+                if _smax > 0 and since_id > _smax:
+                    print(f"[PULL] STALE CURSOR: local {since_id} > server_max {_smax}, resetting to 0")
+                    _set_sync_state(conn, 'pull_since_id', '0')
+                    since_id = 0
+                    resp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=0)
                 items = resp.get('items') or []
                 if isinstance(items, list) and items:
                     _CHUNK = 50
@@ -3059,6 +3079,20 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
             if pull_url and api_key and tenant_id:
                 resp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=since_id)
                 if isinstance(resp, dict) and resp.get('ok'):
+                    # Detect stale cursor: our since_id is beyond the server's real max
+                    # (e.g. sync_events sequence was reset) → re-pull from the beginning.
+                    # applied_events dedup protects already-applied events.
+                    try:
+                        _smax = int(resp.get('server_max_id') or 0)
+                    except Exception:
+                        _smax = 0
+                    if _smax > 0 and since_id > _smax:
+                        print(f"[PULL] STALE CURSOR: local {since_id} > server_max {_smax}, resetting to 0")
+                        _set_sync_state(conn, since_id_key, '0')
+                        since_id = 0
+                        resp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=0)
+                        if not (isinstance(resp, dict) and resp.get('ok')):
+                            resp = {'ok': False, 'items': []}
                     items = resp.get('items') or []
                     _is_client = bool(local_sync_enabled and local_sync_role == 'client')
                     applied = 0

@@ -638,11 +638,26 @@ def sync_pull(
                 max_id = max(max_id, int(r.get('id') or 0))
             except Exception:
                 pass
+        # True server-side max for this tenant — lets clients detect a stale cursor
+        # (e.g. sync_events sequence reset) and re-sync instead of being stuck.
+        server_max_id = max_id
+        try:
+            cur.execute(
+                sql_placeholder('SELECT MAX(id) FROM sync_events WHERE tenant_id = ?'),
+                (tenant_id,)
+            )
+            rm = cur.fetchone()
+            if rm:
+                v = rm[0] if not isinstance(rm, dict) else list(rm.values())[0]
+                server_max_id = int(v or 0)
+        except Exception:
+            pass
         return {
             'ok': True,
             'tenant_id': tenant_id,
             'since_id': int(since_id or 0),
             'next_since_id': int(max_id),
+            'server_max_id': int(server_max_id),
             'items': items,
         }
     finally:
