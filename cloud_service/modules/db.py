@@ -40,13 +40,44 @@ def _pg_pool():
                 )
     return _PG_POOL
 
+class _PooledConnection:
+    def __init__(self, conn, pool):
+        self._conn = conn
+        self._pool = pool
+        self._returned = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        if self._returned:
+            return
+        self._returned = True
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
+        self._pool.putconn(self._conn, close=bool(getattr(self._conn, 'closed', False)))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.rollback()
+        self.close()
+        return False
+
 def get_db_connection():
     """Get a database connection (Postgres or SQLite)."""
     if USE_POSTGRES:
         if psycopg2 is None:
             raise RuntimeError('DATABASE_URL is set but psycopg2 is not installed')
         try:
-            conn = _pg_pool().getconn()
+            pool = _pg_pool()
+            conn = pool.getconn()
             # Clear any leftover transaction/search_path state from a previous borrower
             # (tenant connections SET search_path — must not leak to public-schema users).
             try:
@@ -55,7 +86,7 @@ def get_db_connection():
                 cur.execute('SET search_path TO public')
             except Exception:
                 pass
-            return conn
+            return _PooledConnection(conn, pool)
         except Exception:
             # Pool may be stale after deploy/network blip — fall back to direct connect.
             return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)

@@ -97,8 +97,17 @@ def web_students(request: Request):
         .stu-search { flex:1; min-width:220px; max-width:420px; }
         .stu-search input { width:100%; padding:8px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); background:rgba(0,0,0,0.25); color:#fff; font-size:14px; }
         .stu-search input::placeholder { color: rgba(255,255,255,0.5); }
-        .stu-table-wrap { background:#fff; border-radius:0 0 12px 12px; overflow:hidden; border:1px solid rgba(0,0,0,0.08); box-shadow:0 4px 14px rgba(0,0,0,0.08); }
-        .stu-table-wrap table { width:100%; border-collapse:collapse; font-size:13px; }
+        .stu-table-wrap { background:#fff; border-radius:0 0 12px 12px; overflow-x:auto; overflow-y:hidden; -webkit-overflow-scrolling:touch; border:1px solid rgba(0,0,0,0.08); box-shadow:0 4px 14px rgba(0,0,0,0.08); }
+        .stu-table-wrap .table-scroll { overflow:auto; }
+        .stu-table-wrap table { width:100%; min-width:1250px; border-collapse:collapse; font-size:13px; }
+        @media (max-width:700px) {
+            .stu-toolbar { top:54px; margin:-12px -12px 10px; padding:8px; }
+            .stu-toolbar-left, .stu-toolbar-right { width:100%; flex-wrap:nowrap; overflow-x:auto; padding-bottom:3px; }
+            .stu-btn { flex:0 0 auto; padding:7px 10px; }
+            .stu-search { min-width:180px; flex:0 0 220px; }
+            .stu-table-wrap table { min-width:1150px; font-size:12px; }
+            .stu-table-wrap th, .stu-table-wrap td { padding:7px 6px; }
+        }
         .stu-table-wrap th { background: linear-gradient(135deg, #2c3e50, #34495e); color:#fff; padding:10px 8px; font-weight:800; text-align:right; white-space:nowrap; position: sticky; top: 0; }
         .stu-table-wrap td { padding:8px; border-bottom:1px solid rgba(0,0,0,0.06); color:#1f2d3a; vertical-align:middle; }
         .stu-table-wrap tr:nth-child(even) { background: #f8f9fa; }
@@ -563,19 +572,39 @@ def web_students(request: Request):
                 cell.appendChild(inp);
                 inp.focus();
                 inp.select();
-                function finish() {
+                let finished = false;
+                function finish(moveNext) {
+                    if (finished) return;
+                    finished = true;
                     const val = inp.value.trim();
-                    if (val === (stu.private_message || '')) { renderRows(); return; }
-                    submitInlineMsg(id, val, cell);
+                    if (val === (stu.private_message || '')) {
+                        cell.textContent = stripMsg(stu.private_message || '') || '-';
+                        if (moveNext) openNextMsg(id);
+                        return;
+                    }
+                    submitInlineMsg(id, val, cell, moveNext);
                 }
-                inp.addEventListener('blur', finish);
+                inp.addEventListener('blur', function(){ finish(false); });
                 inp.addEventListener('keydown', function(e) {
-                    if (e.key === 'Enter') { e.preventDefault(); finish(); }
-                    if (e.key === 'Escape') { e.preventDefault(); renderRows(); }
+                    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+                    if (e.key === 'Escape') { e.preventDefault(); finished = true; cell.textContent = stripMsg(stu.private_message || '') || '-'; }
                 });
             }
 
-            async function submitInlineMsg(id, msg, cell) {
+            function openNextMsg(currentId) {
+                const rows = Array.from(document.querySelectorAll('#s_rows tr'));
+                const idx = rows.findIndex(tr => String(tr.dataset.id) === String(currentId));
+                const next = (idx >= 0 && idx + 1 < rows.length) ? rows[idx + 1] : rows[0];
+                if (!next) return;
+                const cell = next.querySelector('.col_msg');
+                const nid = parseInt(next.dataset.id);
+                if (cell && nid) {
+                    editMsg({stopPropagation(){}, currentTarget:cell}, nid);
+                    next.scrollIntoView({block:'nearest'});
+                }
+            }
+
+            async function submitInlineMsg(id, msg, cell, moveNext) {
                 cell.textContent = '...';
                 try {
                     const resp = await fetch('/api/students/update-message', {
@@ -590,6 +619,7 @@ def web_students(request: Request):
                         const stu = _allStudents.find(s => s.id === id);
                         if (stu) stu.private_message = msg;
                         renderRows();
+                        if (moveNext) openNextMsg(id);
                     } else {
                         throw new Error(data.detail || 'error');
                     }

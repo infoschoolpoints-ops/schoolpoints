@@ -152,7 +152,14 @@ def apply_change_to_tenant_db(tconn, ch: Dict[str, Any]) -> None:
         )
         log_action = str(payload.get('log_action_type') or '').strip() or 'sync'
         actor = str(payload.get('added_by') or '').strip() or 'Sync'
-        insert_points_log(tconn, student_id, final_points - cur_points, old_points=cur_points, new_points=final_points, reason=reason, actor_name=actor, action_type=log_action)
+        # A parallel student/update trigger may already have set points before this
+        # event is applied. Preserve the originating station's old/new values so
+        # points_log doesn't incorrectly record delta=0.
+        try:
+            log_old = int(payload.get('old_points')) if payload.get('old_points') is not None else cur_points
+        except (TypeError, ValueError):
+            log_old = cur_points
+        insert_points_log(tconn, student_id, final_points - log_old, old_points=log_old, new_points=final_points, reason=reason, actor_name=actor, action_type=log_action)
         tconn.commit()
         return
 

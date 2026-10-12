@@ -7345,17 +7345,27 @@ class AdminStation:
                 # רענן רק אם ה-DB השתנה (חיסכון בביצועים ובהבהובי מסך)
                 sig = self._get_db_change_signature()
                 last_sig = getattr(self, '_last_db_change_signature', None)
+                candidate = getattr(self, '_pending_db_change_signature', None)
                 if sig and sig != last_sig:
-                    self._last_db_change_signature = sig
-                    self.load_students(keep_selection=True)
-                    # שחזור מיון נוכחי אם קיים
-                    try:
-                        sort_col = getattr(self, '_current_sort_col', None)
-                        if sort_col:
-                            sort_rev = getattr(self, '_current_sort_reverse', False)
-                            self._apply_sort(sort_col, sort_rev)
-                    except Exception:
-                        pass
+                    if sig != candidate:
+                        # Sync applies large pulls in committed chunks. Wait for one
+                        # stable poll before repainting so the UI never shows a
+                        # half-applied batch (mixed/temporarily distorted rows).
+                        self._pending_db_change_signature = sig
+                    else:
+                        self._pending_db_change_signature = None
+                        self._last_db_change_signature = sig
+                        self.load_students(keep_selection=True)
+                        # שחזור מיון נוכחי אם קיים
+                        try:
+                            sort_col = getattr(self, '_current_sort_col', None)
+                            if sort_col:
+                                sort_rev = getattr(self, '_current_sort_reverse', False)
+                                self._apply_sort(sort_col, sort_rev)
+                        except Exception:
+                            pass
+                elif sig == last_sig:
+                    self._pending_db_change_signature = None
         except Exception as e:
             safe_print(f"⚠️ שגיאה ברענון אוטומטי: {e}")
 
