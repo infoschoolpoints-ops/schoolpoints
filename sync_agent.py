@@ -3220,6 +3220,23 @@ def main_loop(interval_sec: int = 60, db_path: Optional[str] = None, push_url: O
                     print("[SNAPSHOT-PERIODIC] Pushing full snapshot to cloud...")
                     _sp_conn = _connect(db_path)
                     try:
+                        # Pull remote events FIRST so the snapshot doesn't overwrite
+                        # fresh cloud data (e.g. web updates) with stale local state.
+                        try:
+                            _ensure_change_log(_sp_conn)
+                            _ensure_sync_state(_sp_conn)
+                            _sid_s = _get_sync_state(_sp_conn, 'pull_since_id', '0')
+                            _sid = int(str(_sid_s or '0').strip() or '0')
+                            _presp = pull_changes(pull_url, api_key=api_key, tenant_id=tenant_id, since_id=_sid)
+                            if isinstance(_presp, dict) and _presp.get('ok'):
+                                _pitems = _presp.get('items') or []
+                                if _pitems:
+                                    _papplied = apply_pull_events(_sp_conn, _pitems, is_local_client=False, local_station_id=str(station_id or ''))
+                                    _nsi = int(_presp.get('next_since_id') or _sid)
+                                    _set_sync_state(_sp_conn, 'pull_since_id', str(_nsi))
+                                    print(f"[SNAPSHOT-PERIODIC] Pre-push pull applied {_papplied} event(s)")
+                        except Exception as _pp_err:
+                            print(f"[SNAPSHOT-PERIODIC] Pre-push pull skipped: {_pp_err}")
                         _sp_snap = build_snapshot(_sp_conn)
                         _sp_ok = False
                         try:
